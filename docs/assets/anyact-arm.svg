@@ -1,29 +1,29 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="AnyAct logo: the letter A drawn as a small robot arm">
   <!-- The A is a robot arm: the left stroke is its base, the long bar its forearm, the triangle its gripper.
-       Every 7 s the forearm lifts the gripper, which stays level (trailing by 60 ms), then turns until it
+       Every 6 s the forearm lifts the gripper, which stays level (trailing by 60 ms), then turns until it
        is back in line with the forearm; the two come down as one piece and the A reforms. Still otherwise.
        CSS animations run inside <img>; none under reduced motion. -->
   <style>
-    .forearm { transform-origin: 231.4px 199.9px; animation: aa-forearm 7s infinite; }
-    .level { transform-origin: 338.2px 280.6px; animation: aa-level 7s 0.06s infinite; }
-    .flick { transform-origin: 338.2px 280.6px; animation: aa-flick 7s 0.06s infinite; }
+    .forearm { transform-origin: 231.4px 199.9px; animation: aa-forearm 6s infinite; }
+    .level { transform-origin: 338.2px 280.6px; animation: aa-level 6s 0.06s infinite; }
+    .flick { transform-origin: 338.2px 280.6px; animation: aa-flick 6s 0.06s infinite; }
     @keyframes aa-forearm {
-      0%, 21.43% { transform: rotate(0deg); animation-timing-function: cubic-bezier(0.45, 0, 0.25, 1); }
-      36.43% { transform: rotate(-20deg); animation-timing-function: linear; }
-      45.71% { transform: rotate(-20deg); animation-timing-function: cubic-bezier(0.4, 0, 0.12, 1); }
-      62.14%, 100% { transform: rotate(0deg); }
+      0%, 25.00% { transform: rotate(0deg); animation-timing-function: cubic-bezier(0.45, 0, 0.25, 1); }
+      42.50% { transform: rotate(-20deg); animation-timing-function: linear; }
+      53.33% { transform: rotate(-20deg); animation-timing-function: cubic-bezier(0.4, 0, 0.12, 1); }
+      72.50%, 100% { transform: rotate(0deg); }
     }
     @keyframes aa-level {
-      0%, 21.43% { transform: rotate(0deg); animation-timing-function: cubic-bezier(0.45, 0, 0.25, 1); }
-      36.43% { transform: rotate(20deg); animation-timing-function: linear; }
-      45.71% { transform: rotate(20deg); animation-timing-function: cubic-bezier(0.4, 0, 0.12, 1); }
-      62.14%, 100% { transform: rotate(0deg); }
+      0%, 25.00% { transform: rotate(0deg); animation-timing-function: cubic-bezier(0.45, 0, 0.25, 1); }
+      42.50% { transform: rotate(20deg); animation-timing-function: linear; }
+      53.33% { transform: rotate(20deg); animation-timing-function: cubic-bezier(0.4, 0, 0.12, 1); }
+      72.50%, 100% { transform: rotate(0deg); }
     }
     @keyframes aa-flick {
-      0%, 32.00% { transform: rotate(0deg); animation-timing-function: cubic-bezier(0.3, 0, 0.2, 1); }
-      40.57% { transform: rotate(-20deg); animation-timing-function: linear; }
-      45.71% { transform: rotate(-20deg); animation-timing-function: cubic-bezier(0.4, 0, 0.12, 1); }
-      62.14%, 100% { transform: rotate(0deg); }
+      0%, 37.33% { transform: rotate(0deg); animation-timing-function: cubic-bezier(0.3, 0, 0.2, 1); }
+      47.33% { transform: rotate(-20deg); animation-timing-function: linear; }
+      53.33% { transform: rotate(-20deg); animation-timing-function: cubic-bezier(0.4, 0, 0.12, 1); }
+      72.50%, 100% { transform: rotate(0deg); }
     }
     @media (prefers-reduced-motion: reduce) { .forearm, .level, .flick { animation: none; } }
   </style>
