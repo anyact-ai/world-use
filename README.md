@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/anyact-arm.svg" width="150" alt="The AnyAct A as a small robot arm lifting its gripper">
+</p>
+
 # world-use
 
 Run frontier models as robot policies.

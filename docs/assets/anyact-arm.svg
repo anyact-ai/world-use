@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="AnyAct logo: the letter A drawn as a small robot arm">
+  <!-- The A is a robot arm: the left stroke is its base, the long bar its forearm, the triangle its gripper.
+       Every 7 s the forearm lifts the gripper, which stays level (trailing by 60 ms), then turns until it
+       is back in line with the forearm; the two come down as one piece and the A reforms. Still otherwise.
+       CSS animations run inside <img>; none under reduced motion. -->
+  <style>
+    .forearm { transform-origin: 231.4px 199.9px; animation: aa-forearm 7s infinite; }
+    .level { transform-origin: 338.2px 280.6px; animation: aa-level 7s 0.06s infinite; }
+    .flick { transform-origin: 338.2px 280.6px; animation: aa-flick 7s 0.06s infinite; }
+    @keyframes aa-forearm {
+      0%, 21.43% { transform: rotate(0deg); animation-timing-function: cubic-bezier(0.45, 0, 0.25, 1); }
+      36.43% { transform: rotate(-20deg); animation-timing-function: linear; }
+      45.71% { transform: rotate(-20deg); animation-timing-function: cubic-bezier(0.4, 0, 0.12, 1); }
+      62.14%, 100% { transform: rotate(0deg); }
+    }
+    @keyframes aa-level {
+      0%, 21.43% { transform: rotate(0deg); animation-timing-function: cubic-bezier(0.45, 0, 0.25, 1); }
+      36.43% { transform: rotate(20deg); animation-timing-function: linear; }
+      45.71% { transform: rotate(20deg); animation-timing-function: cubic-bezier(0.4, 0, 0.12, 1); }
+      62.14%, 100% { transform: rotate(0deg); }
+    }
+    @keyframes aa-flick {
+      0%, 32.00% { transform: rotate(0deg); animation-timing-function: cubic-bezier(0.3, 0, 0.2, 1); }
+      40.57% { transform: rotate(-20deg); animation-timing-function: linear; }
+      45.71% { transform: rotate(-20deg); animation-timing-function: cubic-bezier(0.4, 0, 0.12, 1); }
+      62.14%, 100% { transform: rotate(0deg); }
+    }
+    @media (prefers-reduced-motion: reduce) { .forearm, .level, .flick { animation: none; } }
+  </style>
+  <rect width="512" height="512" rx="102" fill="#FCF9F3"/>
+  <g fill="#1B1B1B">
+    <path d="M156.6 382.4 L153.1 382.7 L102.9 382.7 L101.1 382.4 L99.9 381.9 L98.2 380.5 L96.9 378.7 L96.3 377.0 L96.1 374.6 L96.8 372.3 L97.9 369.4 L146.3 254.2 L163.5 212.7 L165.8 208.1 L168.3 205.2 L171.3 203.1 L173.6 202.0 L178.3 200.9 L219.2 200.9 L221.5 201.3 L223.3 202.2 L224.9 203.4 L225.9 204.6 L226.8 206.3 L227.4 208.7 L227.4 209.8 L226.9 212.7 L186.4 320.9 L167.4 372.3 L165.7 375.8 L163.7 378.3 L160.7 380.7 L158.4 381.9 L156.6 382.4Z"/>
+    <g class="forearm">
+      <path d="M307.4 319.2 L305.1 319.4 L303.3 319.1 L301.0 318.0 L299.1 316.2 L199.6 122.7 L199.0 121.0 L198.7 118.1 L199.0 115.1 L199.5 113.4 L200.4 111.6 L201.8 109.9 L203.4 108.4 L205.2 107.3 L206.3 106.8 L209.8 106.1 L263.0 106.1 L266.5 106.7 L269.4 107.9 L272.4 109.6 L274.7 111.5 L277.8 115.1 L279.5 118.1 L302.7 164.8 L339.8 238.5 L340.9 241.4 L341.5 244.9 L341.4 249.0 L340.4 252.5 L312.5 315.6 L311.7 316.8 L310.3 318.0 L307.4 319.2Z"/>
+      <g class="level"><g class="flick"><path d="M397.4 382.4 L394.5 382.7 L318.5 382.8 L316.2 382.4 L313.9 381.2 L312.0 379.3 L311.1 377.6 L310.7 376.4 L310.4 374.1 L310.8 371.7 L311.4 370.0 L334.5 314.4 L346.4 285.2 L347.0 284.1 L347.8 283.2 L350.1 281.6 L352.4 280.9 L355.4 281.0 L358.1 282.3 L358.9 282.9 L360.2 284.6 L369.1 303.3 L402.4 371.1 L402.9 372.9 L403.1 374.6 L402.9 376.4 L402.2 378.2 L401.2 379.9 L400.4 380.8 L398.6 382.0 L397.4 382.4Z"/></g></g>
+    </g>
+  </g>
+</svg>
