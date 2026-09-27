@@ -14,7 +14,7 @@ Computer use gave models a screen and a mouse. This gives them an arm.
 ## Try it in simulation
 
 ```sh
-pip install "git+https://github.com/dimentary/world-use"      # or: uv tool install ...
+pip install "git+https://github.com/anyact-ai/world-use"      # or: uv tool install ...
 wu up --body sim --enable            # a daemon that owns the (simulated) robot
 wu card                              # what this robot is and can do
 wu check '[{"do": "line", "forward": 0.08, "up": 0.06}, {"do": "hold", "seconds": 1}]'

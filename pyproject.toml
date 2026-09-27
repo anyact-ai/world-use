@@ -22,7 +22,7 @@ rebot = ["motorbridge==0.5.5"]
 wu = "world_use.cli:main"
 
 [project.urls]
-Repository = "https://github.com/dimentary/world-use"
+Repository = "https://github.com/anyact-ai/world-use"
 
 [dependency-groups]
 dev = ["pytest>=8"]
