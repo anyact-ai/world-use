@@ -101,26 +101,31 @@ class Job:
 
 class Heat:
     """Temperature trend per joint from the readings since the torque last came on (at most the last minute):
-    how long until the limit at this rate. Readings from before a switch would dilute the trend."""
+    how long until the limit at this rate. Readings from before a switch would dilute the trend, and so would the
+    first WARMUP_S after it: a motor driver's reading jumps as the current comes on (the reBot's elbow read 28 to
+    37 C in 12 s, then flat), and a line through that said "1 min to 80 C"."""
+    WARMUP_S = 20.0
 
     def __init__(self):
         self.samples: deque[tuple[float, np.ndarray]] = deque(maxlen=60)
         self.last_t = -np.inf
         self.on = False
+        self.since = -np.inf                         # when the torque last came on or went off
 
     def update(self, t: float, temp, on: bool = True):
         if on != self.on:
             self.samples.clear()
-            self.on = on
+            self.on, self.since = on, t
         if temp is not None and t - self.last_t >= 1.0:
             self.samples.append((t, np.asarray(temp, float)))
             self.last_t = t
 
     def slope_per_min(self) -> np.ndarray | None:
-        if len(self.samples) < 5:
+        settled = [s for s in self.samples if s[0] >= self.since + self.WARMUP_S]
+        if len(settled) < 5:
             return None
-        t = np.array([s[0] for s in self.samples])
-        T = np.array([s[1] for s in self.samples])
+        t = np.array([s[0] for s in settled])
+        T = np.array([s[1] for s in settled])
         tc = t - t.mean()
         return (tc @ (T - T.mean(0))) / (tc @ tc) * 60.0
 

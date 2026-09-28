@@ -199,9 +199,17 @@ def test_hot_motor_goes_home_along_a_valid_route_and_otherwise_holds_and_alarms(
     assert np.allclose(k2.cmd.q, HOME, atol=1e-4)
 
 
-def test_heat_budget_is_reported(lifted):
+def test_no_heat_forecast_until_the_switch_on_transient_has_passed(lifted):
     k = lifted
     for _ in range(1500):
+        k.tick()
+        k.clock.wait()
+    assert k.heat.minutes_left(k.manifest.temp_limit_c) is None             # 15-18 s after switching on
+
+
+def test_heat_budget_is_reported(lifted):
+    k = lifted
+    for _ in range(3000):
         k.tick()
         k.clock.wait()
     left = k.heat.minutes_left(k.manifest.temp_limit_c)
