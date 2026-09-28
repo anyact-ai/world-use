@@ -93,5 +93,9 @@ class Client:
     def help(self) -> dict:
         return self._call("GET", "/help")["steps"]
 
+    def record(self) -> dict:
+        """Write the flight record so far, without stopping anything."""
+        return self._call("POST", "/record", {})
+
     def shutdown(self) -> dict:
         return self._call("POST", "/shutdown", {})

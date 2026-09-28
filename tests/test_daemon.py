@@ -151,3 +151,12 @@ def test_the_cli_exit_status_says_how_the_job_ended(client, capsys):
     assert cli.main(url + ["run", '[{"do": "checkpoint", "ask": "go on?"}]', "--wait", "5"]) == 5   # waits
     capsys.readouterr()
     assert cli.main(url + ["status", "--json"]) == 0 and '"line"' in capsys.readouterr().out
+
+
+def test_the_flight_record_can_be_written_without_stopping(client):
+    c = client
+    c.run({"do": "line", "up": 0.02, "duration": 0.5}, wait=10)
+    r = c.record()
+    run = Path(r["run"])
+    assert {"tape.npz", "summary.json", "world.json"} <= {f.name for f in run.iterdir()}
+    assert r["summary"]["moving_s"] > 0 and "idle" in c.status()["line"]          # still serving

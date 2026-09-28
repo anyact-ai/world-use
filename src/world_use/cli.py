@@ -13,6 +13,7 @@ every line ends up in a model's context.
     wu help [STEP]              the steps a plan can use, from the running daemon
     wu fact KEY VALUE           record a measurement with its source
     wu home-route '<steps>'     the way home from here ('[]' = fold straight back); wu home runs it
+    wu record                   write the flight record so far (tape, summary, world), without stopping
     wu stop | events | enable | release | down
     wu mcp                      the same verbs as MCP tools, over stdio
 
@@ -106,6 +107,7 @@ def main(argv=None) -> int:
     up.add_argument("--runs", default=os.environ.get("WORLD_USE_RUNS", "runs"))
     up.add_argument("--enable", action="store_true")
     sub.add_parser("down", help="release at rest and stop the daemon")
+    sub.add_parser("record", help="write the flight record so far, without stopping")
     sub.add_parser("status")
     sub.add_parser("card")
     for name in ("run", "check"):
@@ -174,6 +176,10 @@ def main(argv=None) -> int:
         if a.cmd == "down":
             r = c.shutdown()
             print(json.dumps(r["summary"]) if a.json else _summary(r["summary"]))
+            return 0
+        if a.cmd == "record":
+            r = c.record()
+            print(json.dumps(r) if a.json else f"{r['run'] or '(no run folder)'}\n{_summary(r['summary'])}")
             return 0
         r = _dispatch(a, c)
         if a.json:

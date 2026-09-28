@@ -133,6 +133,8 @@ class Daemon:
             return self._job(job.id, wait)
         if route == ["world"]:
             return self._world(body)
+        if route == ["record"]:
+            return 200, dict(summary=k.save_record(), run=str(k.run_dir) if k.run_dir else None)
         if route == ["shutdown"]:
             return 200, dict(summary=self.shutdown())
         return 404, dict(error=f"no route POST /{path.strip('/')}")

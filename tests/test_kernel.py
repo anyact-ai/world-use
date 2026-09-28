@@ -213,6 +213,7 @@ def test_motion_time_is_measured(k):
     k.run({"do": "hold", "seconds": 3.0})
     s = k.tape.summary(k.manifest.rate_hz)
     assert abs(s["moving_s"] - 3.0) < 0.1 and abs(s["moving_share"] - 0.5) < 0.05
+    assert s["tick_ms"] == dict(median=10.0, p99=10.0, max=10.0)
 
 
 def test_after_touching_down_the_arm_can_lift_off_even_if_it_rests_a_hair_inside_the_modelled_table(lifted):
@@ -452,3 +453,15 @@ def test_grip_squeezes_by_the_grippers_own_amount(lifted):
     k.world.add_box("block", "object", center=p, size=[0.04, 0.04, 0.06], frame="base")
     out = k.run({"do": "grip"})
     assert out.ok and abs(k.cmd.gripper - (out.data["contact_at"] - 0.05)) < 2e-3
+
+
+def test_the_tape_keeps_every_tick_across_its_blocks(monkeypatch):
+    from world_use.recorder import Tape
+
+    monkeypatch.setattr(Tape, "CHUNK", 5)
+    tape = Tape(2)
+    for i in range(12):
+        tape.add(i / 100, True, i % 2 == 0, 1, [i, i], [i, -i], None, [30.0, 31.0], None, 1.0, None)
+    a = tape.arrays()
+    assert len(tape) == 12 and a["t"].tolist() == [i / 100 for i in range(12)]
+    assert a["q"][:, 1].tolist() == [-i for i in range(12)] and np.isnan(a["tau"]).all() and a["grip"].sum() == 12

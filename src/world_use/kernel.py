@@ -280,14 +280,23 @@ class Kernel:
     def close(self) -> dict:
         """Close the connection (never switches torque off by itself) and write the flight record."""
         self.body.close()
-        summary = dict(body=self.manifest.name, **self.tape.summary(self.manifest.rate_hz))
-        if self.run_dir:
-            summary = dict(body=self.manifest.name, **self.tape.save(self.run_dir / "tape.npz", self.manifest.rate_hz))
-            summary["events"] = self.events.seq
-            save_summary(self.run_dir / "summary.json", summary)
-            (self.run_dir / "world.json").write_text(json.dumps(self.world.to_dict(), indent=1))
+        summary = self.save_record()
         self.emit("closed", "connection closed")
         self.events.close()
+        return summary
+
+    def save_record(self) -> dict:
+        """Write the flight record so far (tape, summary, world; events are written as they happen), without
+        closing: a run can be studied while it goes on. Returns the summary."""
+        rate = self.manifest.rate_hz
+        if not self.run_dir:
+            return dict(body=self.manifest.name, **self.tape.summary(rate))
+        summary = dict(body=self.manifest.name, **self.tape.save(self.run_dir / "tape.npz", rate))
+        summary["events"] = self.events.seq
+        save_summary(self.run_dir / "summary.json", summary)
+        with self.lock:                                  # the control thread moves held boxes about
+            world = self.world.to_dict()
+        (self.run_dir / "world.json").write_text(json.dumps(world, indent=1))
         return summary
 
     # -- requests (any thread) ---------------------------------------------------------------------

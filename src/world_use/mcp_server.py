@@ -149,6 +149,16 @@ def build(url: str = DEFAULT_URL):
                              for e in r["events"][-40:]) or "(none)"
         return call(recent)
 
+    @server.tool()
+    def record() -> str:
+        """Write the flight record so far (tape, summary, world) without stopping anything; returns where."""
+        def saved():
+            r = c.record()
+            s = r["summary"]
+            return (f"{r['run']}: powered {s.get('powered_s', 0)} s, moving {s.get('moving_s', 0)} s, "
+                    f"max temps {s.get('max_temp_c')}")
+        return call(saved)
+
     return server
 
 
