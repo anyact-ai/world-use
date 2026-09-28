@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -52,16 +53,20 @@ def work_frame(chain: Chain, q) -> np.ndarray:
     return T
 
 
+REST = Rest(q=(0.0,) * 6, joints=(1, 2, 3), tol=0.15)
 MANIFEST = Manifest(
     name="reBot Arm B601-RS",
     urdf=HERE / "ReBot_Arm_RS.urdf",
     tool_link="gripper_end",
-    joints=tuple(JointSpec(name, lo, hi, v_max=0.8, a_max=6.0, track_tol=tol, tau_max=tmax, tau_cont=STALL_CONTINUOUS[model],
-                           tau_hold_max=hold, excursion_exempt=(name == "joint6"), contact_dtau=contact)
-                 for (name, _, model, _, _, tol, tmax, hold, contact), (lo, hi) in zip(MOTORS, URDF_LIMITS)),
+    joints=tuple(JointSpec(name, lo, hi, v_max=0.8, a_max=6.0, track_tol=tol, tau_max=tmax,
+                           tau_cont=STALL_CONTINUOUS[model], tau_hold_max=hold, excursion_exempt=(name == "joint6"),
+                           contact_dtau=contact)
+                 for (name, _, model, _, _, tol, tmax, hold, contact), (lo, hi)
+                 in zip(MOTORS, URDF_LIMITS, strict=True)),
     rate_hz=100.0,
-    gripper=GripperSpec(closed=0.05, open=4.5, unit="rad", m_per_unit=0.020, v_max=4.5, track_tol=0.6, tau_max=4.0),
-    rest=Rest(q=(0.0,) * 6, joints=(1, 2, 3), tol=0.15),
+    gripper=GripperSpec(closed=0.05, open=4.5, unit="rad", m_per_unit=0.020, v_max=4.5, track_tol=0.6, tau_max=4.0,
+                        approach=(1.0, 0.0, 0.0), opens_along=(0.0, 1.0, 0.0)),
+    rest=REST,
     temp_warn_c=70.0,
     temp_limit_c=80.0,
     sensing=frozenset({"position", "torque", "temperature", "gripper_effort"}),
@@ -73,12 +78,15 @@ MANIFEST = Manifest(
     turn_clearance=((0, 4, 5), 0.05),
     frames=lambda chain, q: {"work": work_frame(chain, q)},
     notes=(
-        "Any raised pose loads the elbow at 6-8 Nm, its continuous rating: it heats about 8 C per minute from cold "
-        "and cools fast at rest. Decide with the arm folded; act in bursts.",
-        "Forward/up moves end 2-5 mm low (the elbow carries about 15% more than the URDF says). After base turns "
-        "the tool can be 5-10 mm off sideways: the base gain is soft.",
+        "With torque on, the elbow carries about 7 Nm, its continuous rating, even folded at rest (the adapter "
+        "supports the arm's weight in every pose): it heats about 8 C per minute from cold and cools only with "
+        "torque off. Decide with torque off; act in bursts.",
         "Gripper opening is roughly 20 mm per rad (approximate); holding shows as -1.4..-2.2 Nm of gripper effort.",
         "The work frame points where the arm points at rest: forward, left, up. It stays fixed for the session.",
+    ),
+    hardware_notes=(
+        "Forward/up moves end 2-5 mm low (the elbow carries about 15% more than the URDF says).",
+        "After base turns the tool can be 5-10 mm off sideways: the base gain is soft.",
     ),
 )
 
@@ -102,7 +110,8 @@ class ReBotBody:
         self.channel = channel or os.environ.get("REBOT_CHANNEL", "can0")
         self.velocity_ff, self.stiffness = velocity_ff, float(np.clip(stiffness, 0.2, 1.0))
         self.chain = Chain(MANIFEST.urdf, MANIFEST.tool_link)
-        self.ctrl, self.motors = None, []
+        self.ctrl: Any = None
+        self.motors: list = []
         self.enabled = False
         self.warnings: list[str] = []
         self.grip_offset = 0.0
@@ -110,20 +119,27 @@ class ReBotBody:
         self._stale, self._last_sig, self._blind = np.zeros(7, int), [None] * 7, 0
         self._mode_check = False              # armed only if every motor reports run mode after engage
         self._awake = None
-        self._last = None
+        self._last: JointState | None = None
+
+    @property
+    def last(self) -> JointState:
+        if self._last is None:
+            raise RuntimeError("the reBot is not connected")
+        return self._last
 
     # -- Body contract ----------------------------------------------------------------------------
     def connect(self) -> JointState:
         try:
-            from motorbridge.core import Controller
-            from motorbridge.errors import CallError
-            from motorbridge.models import Mode
+            from motorbridge.core import Controller  # ty: ignore[unresolved-import]
+            from motorbridge.errors import CallError  # ty: ignore[unresolved-import]
+            from motorbridge.models import Mode  # ty: ignore[unresolved-import]
         except ImportError as e:
             raise ImportError("the reBot adapter needs Seeed's driver: pip install 'world-use[rebot]'") from e
         self._Mode = Mode
         try:
             self.ctrl = Controller(self.channel)
-            self.motors = [self.ctrl.add_robstride_motor(mid, HOST_ID, model) for _, mid, model, *_ in (*MOTORS, GRIPPER_MOTOR)]
+            self.motors = [self.ctrl.add_robstride_motor(mid, HOST_ID, model)
+                           for _, mid, model, *_ in (*MOTORS, GRIPPER_MOTOR)]
         except CallError as e:
             self._close_bus()
             raise ConnectionError(f"{e}\nCould not open the CAN adapter: another program (MotorBridge Studio, "
@@ -131,10 +147,12 @@ class ReBotBody:
         rows = [self._telemetry(i) for i in range(7)]
         bad = [r for r in rows if r.get("error") or r.get("fault")]
         if bad:
-            raise ConnectionError("motor not healthy: " + "; ".join(f"{r['name']}: {r.get('error') or hex(r['fault'])}" for r in bad))
+            raise ConnectionError("motor not healthy: "
+                                  + "; ".join(f"{r['name']}: {r.get('error') or hex(r['fault'])}" for r in bad))
         low = [r for r in rows if r["vbus"] < 40.0]
         if low:
-            raise ConnectionError(f"bus voltage low ({low[0]['vbus']:.1f} V on {low[0]['name']}): is the 48 V supply on?")
+            raise ConnectionError(f"bus voltage low ({low[0]['vbus']:.1f} V on {low[0]['name']}): "
+                                  "is the 48 V supply on?")
         pos = np.array([r["pos"] for r in rows])
         if np.abs(pos[:6]).max() > WRAP_SUSPECT or not all(r["zero_sta"] == 1 for r in rows):
             raise ConnectionError(f"joint angles look wrapped (rad {np.round(pos, 2).tolist()}): a motor lost its zero")
@@ -150,7 +168,7 @@ class ReBotBody:
     def enable(self):
         """Torque on at the measured pose: gains and gravity support ramp in over a second, no jump."""
         q0 = self._params_positions()
-        if not MANIFEST.rest.holds(q0[:6]):
+        if not REST.holds(q0[:6]):
             raise Refused(f"the arm is not folded at rest (joints deg {np.round(np.degrees(q0[:6]), 1).tolist()}); "
                           "switching on away from rest is how a raised arm gets jerked", "not_at_rest",
                           "fold it by hand with torque off, or use a takeover recovery")
@@ -207,26 +225,28 @@ class ReBotBody:
         self._blind = self._blind + 1 if frozen else 0
         if self._blind > BLIND_TICKS:
             faults.append("no fresh feedback (48 V off? cable? adapter?)")
-        q = np.where(np.isnan(pos[:6]), self._last.q, pos[:6])
+        last = self.last
+        q = np.where(np.isnan(pos[:6]), last.q, pos[:6])
         self._last = JointState(time.monotonic(), q, None, np.nan_to_num(tau[:6]), temp[:6],
-                                float(np.nan_to_num(pos[6], nan=self._last.gripper or 0.0)), float(np.nan_to_num(tau[6])),
+                                float(np.nan_to_num(pos[6], nan=last.gripper or 0.0)),
+                                float(np.nan_to_num(tau[6])),
                                 tuple(faults))
         return self._last
 
     def command(self, q, dq, gripper, gripper_v=0.0):
         self._send_all(np.asarray(q, float), np.asarray(dq, float) if self.velocity_ff else np.zeros(6),
-                       self._last.gripper if gripper is None else gripper, gripper_v if self.velocity_ff else 0.0)
+                       self.last.gripper if gripper is None else gripper, gripper_v if self.velocity_ff else 0.0)
 
     def disable(self):
         """Gains and gravity support ramp out over a second at the commanded pose, then each motor is switched
         off and its acknowledgement checked. The kernel only calls this at the rest pose."""
-        q, grip = self._last.q.copy(), self._last.gripper
+        q, grip = self.last.q.copy(), self.last.gripper
         n = int(RELEASE_S * MANIFEST.rate_hz)
         for k in range(n):
             self._send_all(q, np.zeros(6), grip, 0.0, scale=1.0 - (k + 1) / n)
             time.sleep(1.0 / MANIFEST.rate_hz)
         unconfirmed = []
-        for (name, *_), m in zip((*MOTORS, GRIPPER_MOTOR), self.motors):
+        for (name, *_), m in zip((*MOTORS, GRIPPER_MOTOR), self.motors, strict=True):
             off = False
             for _ in range(3):
                 try:
@@ -244,7 +264,8 @@ class ReBotBody:
             self._awake.terminate()
             self._awake = None
         if unconfirmed:
-            raise RuntimeError(f"could not confirm torque-off on: {', '.join(unconfirmed)}. Treat the arm as energised.")
+            raise RuntimeError(f"could not confirm torque-off on: {', '.join(unconfirmed)}. "
+                               "Treat the arm as energised.")
 
     def close(self):
         """Release the adapter WITHOUT disable frames: if the arm is raised and holding, a disable drops it."""
@@ -316,7 +337,7 @@ class ReBotBody:
         _, _, model, kp, kd = GRIPPER_MOTOR
         frames.append((model, grip + self.grip_offset, grip_v, kp * scale, kd, 0.0))
         checked = [self._check(i, *f) for i, f in enumerate(frames)]
-        for m, vals in zip(self.motors, checked):
+        for m, vals in zip(self.motors, checked, strict=True):
             m.send_mit(*vals)
 
     @staticmethod

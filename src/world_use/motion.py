@@ -38,7 +38,9 @@ def cruise(tau, ramp=0.2):
     """
     tau = np.clip(tau, 0.0, 1.0)
     ramp = float(np.clip(ramp, 1e-3, 0.5))
-    area = lambda x: 2.5 * x**4 - 3 * x**5 + x**6          # integral of minjerk from 0 to x
+    def area(x):                                           # integral of minjerk from 0 to x
+        return 2.5 * x**4 - 3 * x**5 + x**6
+
     total = 1.0 - ramp
     out = np.where(tau < ramp, ramp * area(tau / ramp),
                    np.where(tau > 1 - ramp, total - ramp * area((1 - tau) / ramp), 0.5 * ramp + (tau - ramp)))
@@ -46,7 +48,7 @@ def cruise(tau, ramp=0.2):
 
 
 def resample(knots, duration, rate_hz, shape=minjerk):
-    n = max(2, int(round(duration * rate_hz)))
+    n = max(2, round(duration * rate_hz))
     s = shape(np.arange(1, n + 1) / n) * (len(knots) - 1)
     lo = np.clip(np.floor(s).astype(int), 0, len(knots) - 2)
     frac = (s - lo)[:, None]
@@ -77,16 +79,27 @@ def joint_move(q0, q1, timing: Timing, duration=None):
 
 def _solve(chain: Chain, q, targets, lower, upper, timing: Timing, weights=None):
     """IK along a list of 4x4 targets, each seeded by the last. Returns (knots incl. q, worst residual)."""
-    knots, worst = [np.asarray(q, float).copy()], 0.0
-    for T in targets:
+    q = np.asarray(q, float)
+    p0 = chain.fk(q)[:3, 3]
+    knots, worst, reached = [q.copy()], 0.0, None
+    for i, T in enumerate(targets):
         q, res = chain.ik(T, q, lower, upper, weights)
+        if res > timing.ik_tol and reached is None:
+            reached = i                              # the first target it could not reach
         worst = max(worst, res)
         if worst > 10 * timing.ik_tol:            # fail fast instead of grinding through the rest
             break
         knots.append(q.copy())
     if worst > timing.ik_tol:
-        raise Refused(f"target not reachable along a straight line (IK residual {worst * 1000:.1f} mm)", "reach",
-                      "shorten the move, change its direction, or go up first", residual_mm=round(worst * 1000, 1))
+        total = float(np.linalg.norm(targets[-1][:3, 3] - p0))
+        ok = 0.0 if not reached else float(np.linalg.norm(targets[reached - 1][:3, 3] - p0))
+        if total < 1e-4:
+            raise Refused(f"that orientation is not reachable from here (IK residual {worst * 1000:.1f} mm)", "reach",
+                          "turn less, or move the tool first", residual_mm=round(worst * 1000, 1))
+        raise Refused(f"only the first {100 * ok:.1f} cm of this {100 * total:.1f} cm straight line is reachable with "
+                      f"the gripper held at its current angle", "reach",
+                      f"stop after {np.floor(100 * ok):.0f} cm, go another way, or first change the gripper's angle "
+                      "with a joints move", reachable_m=round(ok, 4), length_m=round(total, 4))
     return np.array(knots), worst
 
 
@@ -98,8 +111,9 @@ def _bounds(chain: Chain, q0, lower=None, upper=None):
 
 
 def cartesian(chain: Chain, q0, T_goal, timing: Timing, duration=None, lower=None, upper=None, weights=None,
-              shape=minjerk):
-    """Tool point along a straight line to T_goal; orientation turns along the shortest rotation."""
+              shape=minjerk, knots=None):
+    """Tool point along a straight line to T_goal; orientation turns along the shortest rotation. `knots` overrides
+    the IK resolution (about one per millimetre), e.g. for a quick feasibility probe."""
     q0 = np.asarray(q0, float)
     T0 = chain.fk(q0)
     delta = T_goal[:3, 3] - T0[:3, 3]
@@ -107,7 +121,7 @@ def cartesian(chain: Chain, q0, T_goal, timing: Timing, duration=None, lower=Non
     length = float(np.linalg.norm(delta))
     if length < 1e-6 and turn < 1e-6:
         raise Refused("move has zero length", "zero_length")
-    n = int(np.clip(max(length / 0.001, turn / 0.005), 40, KNOTS))
+    n = knots or int(np.clip(max(length / 0.001, turn / 0.005), 40, KNOTS))
     targets = []
     for k in range(1, n + 1):
         T = np.eye(4)
@@ -120,11 +134,12 @@ def cartesian(chain: Chain, q0, T_goal, timing: Timing, duration=None, lower=Non
     return path, duration, worst
 
 
-def line(chain: Chain, q0, delta, timing: Timing, duration=None, lower=None, upper=None, weights=None, shape=minjerk):
+def line(chain: Chain, q0, delta, timing: Timing, duration=None, lower=None, upper=None, weights=None, shape=minjerk,
+         knots=None):
     """Tool point moves by `delta` (metres, base frame) along a straight line; orientation is held."""
     T = chain.fk(q0).copy()
     T[:3, 3] += np.asarray(delta, float)
-    return cartesian(chain, q0, T, timing, duration, lower, upper, weights, shape)
+    return cartesian(chain, q0, T, timing, duration, lower, upper, weights, shape, knots)
 
 
 def polyline(chain: Chain, q0, legs, timing: Timing, blend=0.02, duration=None, lower=None, upper=None,
@@ -148,12 +163,13 @@ def polyline(chain: Chain, q0, legs, timing: Timing, blend=0.02, duration=None, 
         a, b = pts[k] - pts[k - 1], pts[k + 1] - pts[k]
         turn = np.degrees(np.arccos(np.clip(a @ b / np.linalg.norm(a) / np.linalg.norm(b), -1, 1)))
         if turn > sharp_deg:
-            stretches.append(pts[first:k + 1]); first = k
+            stretches.append(pts[first:k + 1])
+            first = k
     stretches.append(pts[first:])
     lengths = [float(np.linalg.norm(np.diff(p, axis=0), axis=1).sum()) for p in stretches]
     lo, hi = _bounds(chain, q0, lower, upper)
     q, worst, pieces, total = q0.copy(), 0.0, [], 0.0
-    for p, length in zip(stretches, lengths):
+    for p, length in zip(stretches, lengths, strict=True):
         targets = []
         for x in blended_curve(p, blend):
             T = T0.copy()
@@ -163,7 +179,8 @@ def polyline(chain: Chain, q0, legs, timing: Timing, blend=0.02, duration=None, 
         worst = max(worst, w)
         share = None if duration is None else duration * length / sum(lengths)
         piece, d = time_scale(knots, share, timing, shape=cruise)
-        pieces.append(piece); total += d
+        pieces.append(piece)
+        total += d
         q = piece[-1].copy()
     return np.vstack(pieces), total, worst
 

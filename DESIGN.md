@@ -31,22 +31,28 @@ These are single-task, single-robot observations, not benchmarks. They are why t
 1. **Two clocks.** The robot runs at 100 Hz or faster; the model at a few seconds per decision. The model
    decides phases, targets and skills; the kernel runs everything below that. Think with the torque off.
 2. **Plans are data, checked before they run.** Code builds a plan; the plan is JSON; the same kernel runs
-   it on a twin first (`check`) and on the robot second. Refusals happen before torque, not halfway.
-3. **Every step says what it expects.** Contact within a distance, a grip within a width, an answer at a
+   it on a twin first and on the robot second. `wu run` rehearses every plan and refuses it whole if any step
+   would break a limit: refusals happen before anything moves, not halfway.
+3. **Say what would pass.** A refusal names every limit a plan would break, with the number that would pass
+   ("lift at least 2 cm more first"). The card says which way the gripper points and opens, where known
+   things are in the frame moves use, and which short moves are possible from here. A model should never
+   have to find the limits one refusal at a time.
+4. **Every step says what it expects.** Contact within a distance, a grip within a width, an answer at a
    checkpoint. Anything else is a surprise: the robot holds where it really is, queued work is cancelled,
    and the model gets an incident report instead of a stream of numbers.
-4. **Holding still is the safe state, and nothing moves on its own.** No idle timeouts that move. The only
+5. **Holding still is the safe state, and nothing moves on its own.** No idle timeouts that move. The only
    automatic motion is going home along a route the policy set, and only if nothing has been touched since.
-5. **Every motion stops on unexpected contact.** Joint torque is compared with what the arm's own weight
+6. **Every motion stops on unexpected contact.** Joint torque is compared with what the arm's own weight
    explains; guarded moves use tighter thresholds, fragile zones tighter still.
-6. **Facts remember their source.** A door angle, a table height, a camera pose: recorded with where they
+7. **Facts remember their source.** A door angle, a table height, a camera pose: recorded with where they
    came from, and marked stale when a surprise shows the world may have changed.
-7. **The robot process outlives the agent.** One daemon per robot. Agents, consoles and viewers are clients;
+8. **The robot process outlives the agent.** One daemon per robot. Agents, consoles and viewers are clients;
    a crashed or interrupted agent leaves a robot that is holding still, not one that is mid-motion or dead.
-8. **Context is a budget.** One state line per step. Events, not sensor streams. The embodiment card once.
-   Incidents with the expected and the observed side by side.
-9. **Failures are evidence.** Every run keeps a flight record (tape, events, world, summary) so the next
-   attempt, or the next plan written offline, starts from what actually happened.
+9. **Context is a budget.** One state line per step. Events, not sensor streams. The embodiment card once.
+   Incidents with the expected and the observed side by side. Pictures when asked for, with what the kernel
+   believes drawn on them, so a wrong belief shows in one look.
+10. **Failures are evidence.** Every run keeps a flight record (tape, events, pictures, world, summary) so the
+    next attempt, or the next plan written offline, starts from what actually happened.
 
 ## The core
 
@@ -58,7 +64,7 @@ Six concepts. Everything else is a plugin.
 | **World** | Frames, boxes (surfaces, objects, keep-out, fragile and slow zones) and facts with their sources. |
 | **Behavior** | Anything that moves the robot, under one contract: `start` plans and may refuse; `tick` runs one control step and returns an outcome when done. A line, a guarded touchdown, a grip, a checkpoint and a whole plan are all behaviors. |
 | **Event** | One numbered stream of everything that happened. |
-| **View** | State rendered for a reader: the state line, the status, an incident, the embodiment card. |
+| **View** | State rendered for a reader: the state line, the status, an incident, the embodiment card, a camera picture with the world drawn on it. |
 | **Kernel** | The only code that talks to the body. Each tick: read, watch, advance the behavior, command, record. |
 
 The envelope inside the kernel holds the limits: joint limits with a margin, speed and acceleration, the
@@ -84,8 +90,8 @@ So world-use serves both loops with the same kernel, behaviors and records:
 - **Between them**: online runs leave flight records; those records tune the twin and become test cases for
   the next offline iteration.
 
-We do not require ROS, a GPU simulator or an industrial arm. The core is numpy and the standard library, so a
-laptop and a low-cost arm are enough.
+We do not require ROS, a GPU simulator or an industrial arm. The core is numpy, Pillow and the standard library,
+so a laptop and a low-cost arm are enough.
 
 ## Where it goes
 
@@ -100,10 +106,11 @@ Near term, in order:
    heat rates, surface heights from touchdowns. Joint torques are evidence a video cannot give.
 4. **Evidence packages.** Every incident bundled with its tape window, events, camera clip and plan node, and
    every run recording what the policy was given: tools, views, twin, and human interventions.
-5. **Cameras and pointing.** Calibration checked at every session start, plans drawn onto real camera images
-   before they run, and clicks in a calibrated image turned into positions.
-6. **More ways in.** An MCP server beside the CLI, a console where a person can stop, nudge and approve, and
-   skills compatible with the open robot-skill libraries growing around this work.
+5. **Cameras and pointing.** `wu look` already draws the tool, the known boxes and a plan's path onto
+   calibrated pictures, and a simulator renders its scene. Next: calibration checked at every session start,
+   and clicks in a calibrated image turned into positions.
+6. **More ways in.** The MCP server ships beside the CLI (`wu mcp`). Next: a console where a person can stop,
+   nudge and approve, and skills compatible with the open robot-skill libraries growing around this work.
 
 Further out: learned policies (VLAs) as behaviors, a streaming interface for models fast enough to steer
 continuously, and flight records exported as training data.

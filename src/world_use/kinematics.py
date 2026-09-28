@@ -29,6 +29,14 @@ class _Joint:
     upper: float
 
 
+def _attr(element, name: str) -> str:
+    """A required URDF attribute."""
+    value = None if element is None else element.get(name)
+    if value is None:
+        raise ValueError(f"URDF element is missing its {name!r}")
+    return value
+
+
 def _floats(text, default):
     return np.array([float(v) for v in text.split()]) if text else np.array(default, float)
 
@@ -39,10 +47,11 @@ class Chain:
         self.links: dict[str, tuple[float, np.ndarray]] = {}           # link -> (mass, centre of mass in link frame)
         for link in root.findall("link"):
             inertial = link.find("inertial")
-            if inertial is not None and inertial.find("mass") is not None:
+            mass = None if inertial is None else inertial.find("mass")
+            if inertial is not None and mass is not None:
                 origin = inertial.find("origin")
                 com = _floats(origin.get("xyz") if origin is not None else None, [0, 0, 0])
-                self.links[link.get("name")] = (float(inertial.find("mass").get("value")), com)
+                self.links[_attr(link, "name")] = (float(_attr(mass, "value")), com)
         joints = []
         for j in root.findall("joint"):
             o, a, lim = j.find("origin"), j.find("axis"), j.find("limit")
@@ -54,11 +63,12 @@ class Chain:
             lower = float(lim.get("lower", -np.inf)) if lim is not None and kind != "continuous" else -np.inf
             upper = float(lim.get("upper", np.inf)) if lim is not None and kind != "continuous" else np.inf
             norm = np.linalg.norm(axis)
-            joints.append(_Joint(j.get("name"), kind, j.find("parent").get("link"), j.find("child").get("link"),
-                                 T, axis / norm if norm > 0 else np.array([1.0, 0, 0]), lower, upper))
+            joints.append(_Joint(_attr(j, "name"), _attr(j, "type"), _attr(j.find("parent"), "link"),
+                                 _attr(j.find("child"), "link"), T, axis / norm if norm > 0 else np.array([1.0, 0, 0]),
+                                 lower, upper))
         by_child = {j.child: j for j in joints}
         children = {j.parent for j in joints} | {j.child for j in joints}
-        roots = [l for l in children if l not in by_child]
+        roots = [c for c in children if c not in by_child]
         if len(roots) != 1:
             raise ValueError(f"URDF must have exactly one root link, found {roots}")
         self.root, self.tool_link = roots[0], tool_link
@@ -81,7 +91,9 @@ class Chain:
             if not ready:
                 raise ValueError("URDF joints do not form a tree")
             for j in ready:
-                ordered.append(j); known.add(j.child); pending.remove(j)
+                ordered.append(j)
+                known.add(j.child)
+                pending.remove(j)
         self._joints = ordered
         self._carried = {}                          # links each active joint holds up (for gravity)
         for j in self.active:
@@ -89,11 +101,17 @@ class Chain:
             for k in ordered:
                 if k.parent in carried:
                     carried.add(k.child)
-            self._carried[j.name] = [l for l in carried if l in self.links]
+            self._carried[j.name] = [link for link in carried if link in self.links]
+        self._carried_mass = [sum(self.links[link][0] for link in self._carried[j.name]) for j in self.active]
+        self._memo: tuple[np.ndarray, dict] | None = None   # the last pose's link frames: many callers ask per tick
 
     # -- forward kinematics ---------------------------------------------------------------------
     def link_frames(self, q) -> dict[str, np.ndarray]:
+        """Every link's pose in the root frame. Read-only: the result is cached for the next call with the same q."""
         q = np.asarray(q, float)
+        memo = self._memo
+        if memo is not None and np.array_equal(memo[0], q):
+            return memo[1]
         T = {self.root: np.eye(4)}
         for j in self._joints:
             Tj = j.origin
@@ -106,11 +124,12 @@ class Chain:
                     Tq[:3, :3] = axis_angle(j.axis, q[i])
                 Tj = Tj @ Tq
             T[j.child] = T[j.parent] @ Tj
+        self._memo = (q.copy(), T)
         return T
 
     def fk(self, q) -> np.ndarray:
         """Pose of the tool link in the root frame."""
-        return self.link_frames(q)[self.tool_link]
+        return self.link_frames(q)[self.tool_link].copy()
 
     def points(self, q) -> np.ndarray:
         """Joint origins and the tool point: a coarse stick model for clearance checks."""
@@ -155,19 +174,23 @@ class Chain:
     def gravity(self, q) -> np.ndarray:
         """Torque (or force) each joint must supply to hold q against gravity, from the URDF inertials."""
         F = self.link_frames(q)
+        weighted = {link: m * (F[link][:3, :3] @ com + F[link][:3, 3])
+                    for link, (m, com) in self.links.items() if link in F}
         g = np.zeros(self.n)
         for i, j in enumerate(self.active):
             axis = F[j.child][:3, :3] @ j.axis
-            origin = F[j.child][:3, 3]
-            for link in self._carried[j.name]:
-                m, com = self.links[link]
-                r = (F[link] @ np.append(com, 1.0))[:3] - origin
-                g[i] += m * G * (axis[2] if j.type == "prismatic" else np.cross(axis, r)[2])
+            mass = self._carried_mass[i]
+            if j.type == "prismatic":
+                g[i] = G * mass * axis[2]
+                continue
+            # z of axis x (moment of the carried mass about the joint origin): gravity only pulls along -z
+            r = sum((weighted[link] for link in self._carried[j.name]), np.zeros(3)) - mass * F[j.child][:3, 3]
+            g[i] = G * (axis[0] * r[1] - axis[1] * r[0])
         return g
 
     def potential(self, q) -> float:
         F = self.link_frames(q)
-        return sum(m * G * (F[l] @ np.append(c, 1.0))[2] for l, (m, c) in self.links.items() if l in F)
+        return sum(m * G * (F[link] @ np.append(c, 1.0))[2] for link, (m, c) in self.links.items() if link in F)
 
     @property
     def mass(self) -> float:

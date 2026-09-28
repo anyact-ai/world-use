@@ -19,7 +19,7 @@ from .plan import Plan, Report, check, twin
 from .views import card, incident, state_line, status
 from .world import World
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.2.0.dev0"
 __all__ = ["Behavior", "Body", "GripperSpec", "JointSpec", "JointState", "Kernel", "Manifest", "Outcome", "Plan",
            "RealClock", "Refused", "Report", "Rest", "VirtualClock", "World", "bodies", "build", "card", "check",
            "incident", "register", "state_line", "status", "twin"]

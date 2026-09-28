@@ -87,7 +87,7 @@ class Job:
         return self.status in TERMINAL
 
     def to_dict(self) -> dict:
-        d = dict(id=self.id, status=self.status, what=self.behavior.describe())
+        d: dict = dict(id=self.id, status=self.status, what=self.behavior.describe())
         if self.question:
             d["question"] = self.question
         if self.outcome:
@@ -132,12 +132,19 @@ class Heat:
 
 
 class Kernel:
+    state: JointState                                # the latest measurement; set by connect()
+    cmd: Command                                     # what the body is told each tick; set by connect()
+    q_start: np.ndarray                              # joints at the session start
+    envelope: Envelope
+    t0: float
+
     def __init__(self, body: Body, world: World | None = None, clock=None, run_dir: Path | None = None,
                  ik_weights=None, auto_answer: bool = False):
         self.body, self.manifest = body, body.manifest
         self.chain = Chain(self.manifest.urdf, self.manifest.tool_link)
         if self.chain.n != self.manifest.n:
-            raise ValueError(f"URDF chain to {self.manifest.tool_link} has {self.chain.n} joints; manifest has {self.manifest.n}")
+            raise ValueError(f"URDF chain to {self.manifest.tool_link} has {self.chain.n} joints; "
+                             f"manifest has {self.manifest.n}")
         self.world = world or World()
         self.clock = clock or RealClock(self.manifest.rate_hz)
         m = self.manifest
@@ -157,13 +164,13 @@ class Kernel:
         self._ids = itertools.count(1)
         self._stop: str | None = None
         self.enabled = self.faulted = False
-        self.state: JointState | None = None
-        self.cmd: Command | None = None
+        self.cameras: dict = {}                     # name -> camera, when a daemon owns some (the card lists them)
         self.last_touch = 0                        # event seq of the last contact (0 = none this session)
         self.home_route: tuple[list, int] | None = None   # (specs, event seq when set)
         self._hot_alarm_t = -np.inf
         self._warned: set[int] = set()
         self._sense: ContactSense | None = None    # collision check for every move (guarded moves add their own)
+        self._held_at: float | None = None         # gripper position where the held object stopped the fingers
 
     # -- lifecycle -------------------------------------------------------------------------------
     def connect(self) -> JointState:
@@ -302,6 +309,7 @@ class Kernel:
 
     def ask(self, question: dict):
         job = self.active
+        assert job is not None, "a question is asked by the running job"
         if self.auto_answer:
             job.answer = question.get("expect", "yes")
             self.emit("assumed", f"assumed '{job.answer}' for: {question['ask']}", "warn", **question)
@@ -312,6 +320,7 @@ class Kernel:
 
     def take_answer(self) -> str | None:
         job = self.active
+        assert job is not None, "an answer is taken by the running job"
         if job.answer is None:
             return None
         answer, job.answer, job.question = job.answer, None, None
@@ -328,7 +337,7 @@ class Kernel:
         if self._sense is None:
             return None
         dev = self._sense.deviation(self)
-        if len(self._sense.hist) < self._sense.hist.maxlen:
+        if len(self._sense.hist) < (self._sense.hist.maxlen or 0):
             return None
         limit = np.array([j.contact_dtau for j in self.manifest.joints])
         tool = self.chain.fk(self.state.q)[:3, 3]
@@ -339,12 +348,40 @@ class Kernel:
         if over.any():
             i = int(np.argmax(np.abs(dev) - limit))
             return Trip("contact", f"unexpected contact: {self.manifest.joints[i].name} torque moved {dev[i]:+.1f} Nm "
-                        f"beyond what the arm's weight explains (limit {limit[i]:.1f})", i, float(dev[i]), float(limit[i]))
+                        f"beyond what the arm's weight explains (limit {limit[i]:.1f})", i, float(dev[i]),
+                        float(limit[i]))
         return None
 
     def touched(self, kind: str, message: str):
         e = self.emit(kind, message)
         self.last_touch = e["seq"]
+
+    def gripped(self, contact: float) -> str | None:
+        """A grip closed on something at `contact`. If the world knows an object at the tool point, it now moves
+        with the tool (until the gripper opens past it). Returns the object's name, if known."""
+        self._held_at = contact
+        held = self.world.held
+        if held is None:
+            box = self.world.grab(self.tool)
+            return None if box is None else box.name
+        return held[0]
+
+    def _track_held(self):
+        """Keep a held object's box with the tool; let go of it when the gripper opens past it."""
+        if self.world.held is None:
+            self._held_at = None
+            return
+        g = self.manifest.gripper
+        if (g is not None and self._held_at is not None and self.cmd.gripper is not None
+                and (self.cmd.gripper - self._held_at) * np.sign(g.open - g.closed) > 0.1):
+            box = self.world.drop()
+            self._held_at = None
+            if box is not None:
+                c = self.world.from_base("work", box.pose[:3, 3]) if "work" in self.world.frames else box.pose[:3, 3]
+                self.emit("let_go",
+                          f"let go of {box.name!r}; it should now stand at F{c[0]:+.3f} L{c[1]:+.3f} U{c[2]:+.3f}")
+            return
+        self.world.carry(self.tool)
 
     def emit(self, kind: str, message: str, level: str = "info", **data) -> dict:
         return self.events.emit(kind, message, level, **data)
@@ -356,6 +393,7 @@ class Kernel:
         now = self.clock.now()
         self.heat.update(now, st.temp)
         with self.lock:
+            self._track_held()
             if self.enabled:
                 trip = self.envelope.watch(st, self.cmd.q, self.cmd.gripper)
                 b = self.active.behavior if self.active is not None and self.active.status == "running" else None
@@ -395,6 +433,7 @@ class Kernel:
         job.t_start = time.time()
         self.active = job
         self.rebias()
+        self.envelope.context = job.behavior.describe()
         try:
             job.behavior.start(self)
         except Refused as e:
@@ -431,7 +470,8 @@ class Kernel:
             self.cmd.gripper, self.cmd.gripper_v = self.state.gripper, 0.0
             self.emit("gripper_trip", trip.message, "warn")
             if self.active is not None and self.active.behavior.kind in ("gripper", "grip"):
-                self._end(self.active, Outcome("surprise", self.active.behavior.kind, trip.message, hint="look at the gripper"))
+                self._end(self.active, Outcome("surprise", self.active.behavior.kind, trip.message,
+                                               hint="look at the gripper"))
             return
         if trip.kind == "hot":
             self._on_hot(trip, now)
@@ -498,7 +538,8 @@ class Kernel:
             if self.clock.now() > deadline and self._stop is None:
                 self.stop(f"timeout after {timeout_s:.0f} s")
             if job.status == "waiting" and not self.auto_answer:
-                raise RuntimeError(f"job {job.id} is waiting for an answer: {job.question['ask']}")
+                raise RuntimeError(f"job {job.id} is waiting for an answer: {(job.question or {}).get('ask')}")
+        assert job.outcome is not None
         return job.outcome
 
     def loop(self, stop: threading.Event):

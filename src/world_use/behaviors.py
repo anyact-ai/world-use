@@ -10,6 +10,7 @@ A spec is plain JSON: {"do": "line", "up": 0.05}. A list is a sequence. `build(s
 """
 from __future__ import annotations
 
+import inspect
 from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -49,9 +50,16 @@ class Outcome:
 
 
 class Behavior:
+    """The docstring is the help a policy reads (`wu help KIND`): a summary line, then one line per parameter."""
     kind = "behavior"
+    example: dict | None = None       # one spec that shows the typical use
     moves = True                      # counts as motion time (holding, waiting and asking do not)
     senses_contact = False            # True: it expects contact and judges it itself (the kernel's check steps aside)
+
+    @classmethod
+    def help(cls) -> dict:
+        summary, _, params = inspect.cleandoc(cls.__doc__ or cls.kind).partition("\n")
+        return dict(kind=cls.kind, summary=summary.strip(), params=inspect.cleandoc(params), example=cls.example)
 
     def __init__(self, label: str | None = None, **params):
         self.label, self.params = label, params
@@ -114,8 +122,15 @@ def _speed_timing(k: Kernel, speed=None):
 
 
 class Joints(PathBehavior):
-    """Joint-space move. target_deg / delta_deg map joint number (1-based) to degrees."""
+    """Joint-space move: each joint turns straight to its target. The only step that changes the gripper's angle.
+
+    target_deg  {joint number: degrees}, joints numbered from 1
+    delta_deg   {joint number: degrees to add}
+    duration    seconds (default: from the speed limit)
+    speed       peak joint speed, rad/s
+    """
     kind = "joints"
+    example = {"do": "joints", "delta_deg": {"6": -90}}
 
     def plan(self, k):
         goal = k.cmd.q.copy()
@@ -125,7 +140,8 @@ class Joints(PathBehavior):
             goal[_joint(k, key)] += np.radians(float(v))
         if not self.params.get("target_deg") and not self.params.get("delta_deg"):
             raise Refused("joints needs target_deg or delta_deg", "spec")
-        path, _ = motion.joint_move(k.cmd.q, goal, _speed_timing(k, self.params.get("speed")), self.params.get("duration"))
+        timing = _speed_timing(k, self.params.get("speed"))
+        path, _ = motion.joint_move(k.cmd.q, goal, timing, self.params.get("duration"))
         return path
 
 
@@ -137,13 +153,20 @@ def _joint(k, key) -> int:
 
 
 class Line(PathBehavior):
-    """Straight tool-point line, orientation held. forward/left/up in metres along `frame`'s axes."""
+    """Straight line of the tool point; the gripper keeps its angle. At most one segment long (see the card).
+
+    forward, left, up  metres along the frame's axes (negative: back, right, down)
+    frame              whose axes (default: work)
+    duration           seconds (default: from the speed limit)
+    speed              peak joint speed, rad/s
+    """
     kind = "line"
+    example = {"do": "line", "forward": 0.05, "up": 0.02}
 
     def delta(self, k):
-        f, l, u = k.world.frame(self.params.get("frame", "work")).axes
+        fwd, left, up = k.world.frame(self.params.get("frame", "work")).axes
         p = self.params
-        return p.get("forward", 0.0) * f + p.get("left", 0.0) * l + p.get("up", 0.0) * u
+        return p.get("forward", 0.0) * fwd + p.get("left", 0.0) * left + p.get("up", 0.0) * up
 
     def plan(self, k):
         d = self.delta(k)
@@ -156,12 +179,18 @@ class Line(PathBehavior):
 
 
 class Lines(PathBehavior):
-    """Several legs [[forward, left, up], ...] as one blended motion: no stop at each corner."""
+    """Several straight legs as one smooth motion: corners are rounded, so the arm does not stop at each one.
+
+    legs      [[forward, left, up], ...] metres, each leg from the end of the last
+    blend     how much to round each corner, metres (default 0.02)
+    frame, duration, speed  as for line
+    """
     kind = "lines"
+    example = {"do": "lines", "legs": [[0.05, 0, 0], [0, 0.03, 0]], "blend": 0.02}
 
     def plan(self, k):
-        f, l, u = k.world.frame(self.params.get("frame", "work")).axes
-        legs = [a * f + b * l + c * u for a, b, c in self.params["legs"]]
+        fwd, left, up = k.world.frame(self.params.get("frame", "work")).axes
+        legs = [a * fwd + b * left + c * up for a, b, c in self.params["legs"]]
         for d in legs:
             if np.linalg.norm(d) > k.manifest.max_segment_m:
                 raise Refused("a leg is longer than one segment may be", "segment_length", "split it")
@@ -172,8 +201,13 @@ class Lines(PathBehavior):
 
 
 class MoveTo(PathBehavior):
-    """Tool point to an absolute position [x, y, z] (metres) in `frame`, in a straight line, orientation held."""
+    """Tool point to an absolute position, in a straight line; the gripper keeps its angle.
+
+    to        [forward, left, up] metres in the frame (default: work)
+    frame, duration, speed  as for line
+    """
     kind = "move_to"
+    example = {"do": "move_to", "to": [0.35, -0.05, 0.30]}
 
     def plan(self, k):
         target = k.world.to_base(self.params.get("frame", "work"), self.params["to"])
@@ -225,12 +259,16 @@ class ContactSense:
 
 
 class Guarded(Line):
-    """A slow straight line that stops the moment something pushes back (joint torque change > dtau Nm).
+    """Slow straight line that stops the moment something pushes back; no contact by the end is a surprise.
 
-    expect_contact=True (the default): reaching the end without contact is a surprise, not success.
-    Fragile zones lower dtau automatically.
+    forward, left, up  metres along the frame's axes: the furthest it may go
+    dtau               joint torque change that counts as contact, Nm (default 0.6; fragile zones use less)
+    expect_contact     false to probe: then no contact is success
+    speed_mps          tool speed, m/s (default 0.02)
+    joints             joint numbers to watch (default: the ones with leverage along the motion)
     """
     kind = "guarded"
+    example = {"do": "guarded", "forward": 0.03, "dtau": 0.6}
     allow_contact = True
     senses_contact = True
 
@@ -290,8 +328,13 @@ class Guarded(Line):
 
 
 class Touchdown(Guarded):
-    """Guarded move straight down (at most `max` metres) until contact: find a table, put an object down."""
+    """Guarded move straight down until contact: find a table, set an object down.
+
+    max      how far down it may go, metres (default 0.06); over a known surface, at most 2 cm past its top
+    dtau, speed_mps, joints  as for guarded
+    """
     kind = "touchdown"
+    example = {"do": "touchdown", "max": 0.06}
 
     def delta(self, k):
         return np.array([0.0, 0.0, -float(self.params.get("max", 0.06))])
@@ -300,15 +343,21 @@ class Touchdown(Guarded):
 # -- gripper ------------------------------------------------------------------------------------------
 
 class Gripper(Behavior):
-    """Move the gripper to `to` (native units) or `aperture_mm`, over `seconds` or at its speed limit."""
+    """Open or close the gripper to a given opening.
+
+    aperture_mm  opening between the fingers, mm
+    to           the same in the gripper's native units (see the card)
+    seconds      how long to take (default: as fast as its speed limit allows)
+    """
     kind = "gripper"
+    example = {"do": "gripper", "aperture_mm": 60}
     moves = True
 
     def start(self, k):
         g = k.manifest.gripper
         if g is None:
             raise Refused("this robot has no gripper", "no_gripper")
-        to = g.position(self.params["aperture_mm"] / 1000) if "aperture_mm" in self.params else float(self.params["to"])
+        to = _native(g, self.params, "aperture_mm", "to")
         lo, hi = sorted((g.closed, g.open))
         if not lo <= to <= hi:
             raise Refused(f"gripper target {to:.2f} {g.unit} is outside {lo}..{hi}", "gripper_limit")
@@ -340,13 +389,30 @@ def _mm(g, pos):
     return "" if a is None else f" ({1000 * a:.0f} mm)"
 
 
-class Grip(Behavior):
-    """Close until the fingers meet something, then squeeze a little and hold.
+def _native(g, params: dict, mm_key: str, native_key: str):
+    """A gripper value from params, given in mm (mm_key) or native units (native_key); lists convert elementwise."""
+    if mm_key in params:
+        if g.m_per_unit is None:
+            raise Refused("this gripper has no mm calibration; give it in native units", "spec", f"use {native_key}")
+        v = params[mm_key]
+        return [g.position(float(x) / 1000) for x in v] if isinstance(v, (list, tuple)) else g.position(float(v) / 1000)
+    if native_key in params:
+        v = params[native_key]
+        return [float(x) for x in v] if isinstance(v, (list, tuple)) else float(v)
+    raise Refused(f"give {mm_key} (or {native_key}, native units)", "spec")
 
-    Contact = gripper effort over `effort`, or the gripper falling `lag` behind its command. `expect` = [lo, hi]
-    (native units): contact outside it, or no contact, is a surprise: the wrong thing, or nothing, is in the hand.
+
+class Grip(Behavior):
+    """Close until the fingers meet something, squeeze a little and hold; the width it closes on is checked.
+
+    expect_mm  [lo, hi] opening where the fingers should meet the object; outside it, or nothing, is a surprise
+    expect     the same in the gripper's native units
+    start_mm   open to this first (or start, native units)
+    squeeze    how much further to close after contact, native units (default 0.1)
+    effort     gripper effort that counts as contact (default 0.6)
     """
     kind = "grip"
+    example = {"do": "grip", "start_mm": 60, "expect_mm": [35, 45]}
 
     def start(self, k):
         g = k.manifest.gripper
@@ -354,9 +420,11 @@ class Grip(Behavior):
             raise Refused("this robot has no gripper", "no_gripper")
         p = self.params
         here = k.cmd.gripper if k.cmd.gripper is not None else k.state.gripper
+        self.expect = sorted(_native(g, p, "expect_mm", "expect")) if ("expect_mm" in p or "expect" in p) else None
+        start = _native(g, p, "start_mm", "start") if ("start_mm" in p or "start" in p) else None
         self.pre = None
-        if "start" in p and abs(float(p["start"]) - here) > 0.02:     # open to the start width first, smoothly
-            self.pre = Gripper(to=float(p["start"]))
+        if start is not None and abs(start - here) > 0.02:             # open to the start width first, smoothly
+            self.pre = Gripper(to=start)
             self.pre.start(k)
         self.speed = float(p.get("speed", 0.3)) * np.sign(g.closed - g.open)     # units/s, towards closed
         self.effort, self.lag = float(p.get("effort", 0.6)), float(p.get("lag", 0.1))
@@ -387,17 +455,24 @@ class Grip(Behavior):
         self.wait -= 1                                    # squeeze: let it settle, then judge
         if self.wait > 0:
             return None
-        k.touched("grip", f"grip contact at {self.contact:.2f} {g.unit}")
-        data = dict(contact_at=round(self.contact, 3), holding_effort=None if st.gripper_tau is None else round(st.gripper_tau, 2))
+        contact = self.contact
+        assert contact is not None, "the squeeze phase starts at a contact"
+        k.touched("grip", f"grip contact at {contact:.2f} {g.unit}")
+        data = dict(contact_at=round(contact, 3),
+                    holding_effort=None if st.gripper_tau is None else round(st.gripper_tau, 2))
         a = g.aperture(self.contact)
         if a is not None:
             data["aperture_mm"] = round(1000 * a, 1)
-        lo, hi = p.get("expect", (None, None))
-        if lo is not None and not lo <= self.contact <= hi:
-            return self.surprise(f"fingers met something at {self.contact:.2f} {g.unit}, outside the expected {lo}..{hi}",
-                                 expected=[lo, hi], observed=self.contact,
+        if self.expect is not None and not self.expect[0] <= self.contact <= self.expect[1]:
+            lo, hi = self.expect
+            mm = p.get("expect_mm")
+            want = f"{mm[0]}..{mm[1]} mm" if mm else f"{lo:.2f}..{hi:.2f} {g.unit}"
+            return self.surprise(f"fingers met something at {self.contact:.2f} {g.unit}{_mm(g, self.contact)}, "
+                                 f"outside the expected {want}", expected=[lo, hi], observed=self.contact,
                                  hint="the object is not where, or not the size, planned: open and look", **data)
-        return self.done(f"holding at {self.contact:.2f} {g.unit}" + _mm(g, self.contact), **data)
+        name = k.gripped(self.contact)
+        what = f"holding {name!r}" if name else "holding"
+        return self.done(f"{what} at {self.contact:.2f} {g.unit}" + _mm(g, self.contact), **data)
 
     def _no_contact(self, k):
         return self.surprise("the gripper closed on nothing", expected="contact", observed="no contact",
@@ -407,12 +482,17 @@ class Grip(Behavior):
 # -- waiting, asking, composing -----------------------------------------------------------------------
 
 class Hold(Behavior):
-    """Hold the current command for `seconds` (forever if omitted, until stopped or replaced)."""
+    """Hold still.
+
+    seconds  how long (omit it to hold until stopped or replaced)
+    """
     kind = "hold"
+    example = {"do": "hold", "seconds": 2}
     moves = False
 
     def start(self, k):
-        self.left = None if self.params.get("seconds") is None else int(float(self.params["seconds"]) * k.manifest.rate_hz)
+        seconds = self.params.get("seconds")
+        self.left = None if seconds is None else int(float(seconds) * k.manifest.rate_hz)
 
     def tick(self, k):
         k.set(k.cmd.q, np.zeros(k.manifest.n))
@@ -423,14 +503,14 @@ class Hold(Behavior):
 
 
 class Checkpoint(Behavior):
-    """Stop and ask. The arm holds while the question waits for an answer.
+    """Stop and ask; the arm holds until `wu answer`. A check assumes the expected answer and says so.
 
     ask     the question, e.g. "is the black loop between the jaws?"
-    view    which camera answers it best; roi = region of interest [x0, y0, x1, y1] in that image
-    expect  the answer that means "carry on" (default "yes"); any other answer ends the plan with a surprise
-    In a twin check the expected answer is assumed and flagged as an assumption.
+    view    the camera that answers it best (`wu look VIEW`); roi = [x0, y0, x1, y1] in that image
+    expect  the answer that means carry on (default "yes"); any other answer ends the plan
     """
     kind = "checkpoint"
+    example = {"do": "checkpoint", "ask": "is the block between the jaws?", "view": "side"}
     moves = False
 
     def start(self, k):
@@ -452,8 +532,12 @@ class Checkpoint(Behavior):
 
 
 class Sequence(Behavior):
-    """Run steps in order. The first step that does not end "done" ends the sequence with its outcome."""
+    """Steps in order; the first one that does not end "done" ends the sequence. A plain list is one too.
+
+    steps  the steps
+    """
     kind = "seq"
+    example = {"do": "seq", "label": "lift, wait", "steps": [{"do": "line", "up": 0.05}, {"do": "hold", "seconds": 1}]}
 
     def __init__(self, steps, label=None, **params):
         super().__init__(label, **params)
@@ -480,11 +564,12 @@ class Sequence(Behavior):
                 self.current = self.steps[self.i]
                 k.emit("step", f"step {self.i + 1}/{len(self.steps)}: {self.current.describe()}", step=self.i + 1)
                 k.rebias()
+                k.envelope.context = f"step {self.i + 1}/{len(self.steps)}: {self.current.describe()}"
                 try:
                     self.current.start(k)
                 except Refused as e:
-                    return Outcome("refused", self.current.kind, f"step {self.i + 1}: {e}", dict(step=self.i + 1),
-                                   hint=e.hint)
+                    return Outcome("refused", self.current.kind, f"step {self.i + 1}/{len(self.steps)}: {e}",
+                                   dict(step=self.i + 1, rule=e.rule), hint=e.hint)
             out = self.current.tick(k)
             if out is None:
                 return None
@@ -499,7 +584,8 @@ class Sequence(Behavior):
 
     def stop(self, k, reason):
         k.hold_here()
-        return Outcome("stopped", self.kind, f"stopped at step {self.i + 1}/{len(self.steps)}: {reason}", dict(step=self.i + 1))
+        return Outcome("stopped", self.kind, f"stopped at step {self.i + 1}/{len(self.steps)}: {reason}",
+                       dict(step=self.i + 1))
 
     def describe(self):
         return self.label or f"sequence of {len(self.steps)}"

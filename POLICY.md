@@ -5,28 +5,35 @@ plans each motion, checks it against the robot's limits and the known world, exe
 and holds the robot still whenever something unexpected happens. You decide what to do next. You are slow
 compared to the robot, so decide in phases, not in single small steps.
 
+(Agents that speak MCP get the same verbs as tools: `wu mcp`.)
+
 ## Before anything moves
 
-1. `wu card` tells you what this robot is: joints, gripper, reach, frames, known surfaces and zones, and its
-   quirks. Read it once.
-2. `wu status` is one line: what is running, where the tool is, the gripper, joint torques, the hottest motor.
-3. Think with the torque off. Holding a raised pose heats the motors (on the reBot the elbow gains about
-   8 C per minute), so work out the whole next phase before `wu enable`, not while the arm hangs in the air.
-4. If the task involves contact you have not seen work before, describe your strategy to the human in two
+1. `wu card` tells you what this robot is: joints, gripper, which way the gripper points and opens, the frames,
+   the surfaces and objects the kernel knows (in the work frame, the frame your moves use), its cameras, which
+   short moves are possible from where it is, and its quirks. Read it once.
+2. `wu look [CAMERA]` saves a picture and prints its path: read the image. The tool point (magenta cross), the
+   work axes (F, L, U) and the boxes the kernel knows (green outlines) are drawn on it, so you can see whether
+   its world matches the scene. `wu look side --plan '<plan>'` also draws the plan's tool path in blue.
+3. `wu status` is one line: what is running, where the tool is, the gripper, joint torques, the hottest motor.
+4. Think with the torque off. With torque on, motors heat even while holding still (on the reBot the elbow
+   gains about 8 C per minute, folded or raised), so work out the whole next phase before `wu enable`.
+5. If the task involves contact you have not seen work before, describe your strategy to the human in two
    lines and ask for a sanity check. Physical intuition about friction, magnets and compliance is where a
    person helps most.
 
 ## The loop
 
-1. **Write a phase as a plan**: a JSON list of steps (vocabulary below). Put a checkpoint wherever the next
-   step only makes sense if something looks right.
-2. **Rehearse it**: `wu check '<plan>'` runs the same kernel on a twin from the measured state. It reports
-   refusals (with the step and a hint), predicted contacts, time, and heat. Nothing real moves. Fix and
-   re-check until it passes.
-3. **Run it**: `wu run '<plan>'`. It waits up to 60 s by default and prints the outcome and the state line.
-4. **At a checkpoint** the arm holds and the job waits: look at the named camera, then `wu answer JOB yes`
-   (or any other answer, which ends the plan so you can decide what to do instead).
-5. **On anything but "done"** read the incident: what was expected, what was observed, a hint, the state.
+1. **Write a phase as a plan**: a JSON list of steps (vocabulary below; `wu help` has every parameter). Put a
+   checkpoint wherever the next step only makes sense if something looks right.
+2. **Run it**: `wu run '<plan>'`. It first rehearses the plan on a twin from the measured state. If the kernel
+   would refuse any step, nothing moves and you get every problem at once, each with the numbers that would
+   pass, plus which short moves are possible from here. Otherwise it runs, waits up to 60 s, and prints the
+   outcome and the state line. (`wu check '<plan>'` rehearses without running: time, contacts, heat.)
+3. **At a checkpoint** the arm holds and the job waits: `wu look` at the named camera, then
+   `wu answer JOB yes` (any other answer ends the plan so you can decide what to do instead). `wu answer`
+   waits until the next checkpoint or the end of the plan.
+4. **On anything but "done"** read the incident: what was expected, what was observed, a hint, the state.
    Do not resend the same command. Change something: measure, adjust a number, look, or ask the human.
 
 ## Outcomes
@@ -34,7 +41,7 @@ compared to the robot, so decide in phases, not in single small steps.
 | status | meaning | the robot |
 |---|---|---|
 | done | it did what the step said and what you expected | holds where it ended |
-| refused | a limit would have been broken; the message names it and usually hints at what would pass | never moved |
+| refused | a limit would have been broken; the message names each one and what would pass | never moved |
 | surprise | something differed from the plan: contact where none was expected, no contact where one was, the gripper closing on nothing or on the wrong size | holds where it really is; anything queued is cancelled |
 | stopped | you or the operator stopped it, or a motor got too hot | holds |
 | faulted | hardware trouble; the operator has to reset it | holds |
@@ -44,22 +51,34 @@ A surprise also marks remembered facts as stale (`wu status` shows them): re-che
 ## Vocabulary
 
 Distances in metres, angles in degrees unless noted. `forward`/`left`/`up` follow the axes of a frame, by
-default `work` (see the card). Every step takes an optional `"label"`.
+default `work` (see the card). Moves keep the gripper's angle; only `joints` changes it. Every step takes an
+optional `"label"`. `wu help STEP` lists a step's parameters.
 
 | step | example | notes |
 |---|---|---|
-| line | `{"do": "line", "forward": 0.05, "up": 0.02}` | straight tool line, orientation held; at most one segment long (card) |
+| line | `{"do": "line", "forward": 0.05, "up": 0.02}` | straight tool line; at most one segment long (card) |
 | lines | `{"do": "lines", "legs": [[0.05, 0, 0], [0, 0.03, 0]], "blend": 0.02}` | several legs as one smooth motion |
 | move_to | `{"do": "move_to", "to": [0.35, -0.05, 0.30]}` | absolute position in a frame |
 | joints | `{"do": "joints", "delta_deg": {"6": -90}}` | joint numbers from 1; or `target_deg` |
 | touchdown | `{"do": "touchdown", "max": 0.06}` | slow move down that stops on contact; no contact is a surprise |
 | guarded | `{"do": "guarded", "forward": 0.03, "dtau": 0.6}` | the same in any direction; `expect_contact: false` to probe |
-| gripper | `{"do": "gripper", "to": 3.0}` or `{"aperture_mm": 40}` | native units are on the card |
-| grip | `{"do": "grip", "start": 3.0, "expect": [0.5, 1.0], "squeeze": 0.1}` | close until contact, check the width, squeeze, hold |
+| gripper | `{"do": "gripper", "aperture_mm": 60}` | or `to` in native units (card) |
+| grip | `{"do": "grip", "start_mm": 60, "expect_mm": [35, 45]}` | close until contact, check the width, squeeze, hold |
 | hold | `{"do": "hold", "seconds": 2}` | |
-| checkpoint | `{"do": "checkpoint", "ask": "is the loop between the jaws?", "view": "side"}` | `expect` defaults to "yes" |
+| checkpoint | `{"do": "checkpoint", "ask": "is the block between the jaws?", "view": "side"}` | `expect` defaults to "yes" |
 
 A plain list is a sequence; the first step that does not end "done" ends the whole plan.
+
+## The world
+
+- `wu world` lists what the kernel knows: frames, boxes (surfaces, objects, zones) and facts with their sources.
+- Tell it what you see: `wu box tray surface 0.32,0,0.14 0.30,0.40,0.02 --source "side camera"` (centre and
+  size as forward, left, up in metres). Plans are then checked against it and guarded moves stop 2 cm past it.
+  `wu box tray --remove` forgets it.
+- An object you grip moves with the gripper in the kernel's world, and stays where you let go of it.
+- `wu fact door.angle_deg 24 --source "side camera, 14:02"` records a measurement with its source. Facts go stale
+  after a surprise. Record what you measured, not what you assume.
+- In a simulation the cameras show the simulator's scene, which may hold things the kernel does not know yet.
 
 ## Contact
 
@@ -77,12 +96,8 @@ A plain list is a sequence; the first step that does not end "done" ends the who
   fold". If the way back is not clear (a door you opened, an object in the way), give the moves that get
   clear first: `wu home-route '[{"do": "line", "up": 0.05}]'`.
 - Any contact makes the home route stale. Look again and set it again.
-- `wu home` runs it. `wu release` switches torque off, which is only allowed at the rest pose.
-
-## Remember what you learn
-
-`wu fact door.angle_deg 24 --source "side camera, 14:02"` records a measurement with its source. Facts show
-in `wu status` and become stale after a surprise. Record what you measured, not what you assume.
+- `wu home` runs it. `wu release` switches torque off, which is only allowed at the rest pose; `wu down` does
+  that and stops the daemon, printing how much of the powered time the robot moved.
 
 ## Limits you cannot change
 

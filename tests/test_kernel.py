@@ -1,8 +1,8 @@
 """Kernel semantics on a simulated reBot: refusals, surprises, contact, grip, checkpoints, stop, heat, home."""
 import numpy as np
 import pytest
-
 from conftest import Q_REST, make_kernel
+
 from world_use import Refused, World
 
 
@@ -21,7 +21,8 @@ def test_refused_command_moves_nothing_and_cancels_what_was_queued(lifted):
     bad = k.submit({"do": "line", "forward": 0.40})              # longer than one segment may be
     queued = k.submit({"do": "line", "up": 0.01})
     while not queued.finished:
-        k.tick(); k.clock.wait()
+        k.tick()
+        k.clock.wait()
     assert bad.status == "refused" and "segment" in bad.outcome.message
     assert queued.status == "cancelled"
     assert np.allclose(k.cmd.q, q0)
@@ -103,15 +104,18 @@ def test_checkpoint_waits_for_an_answer_and_a_different_answer_ends_the_plan(lif
     job = k.submit([{"do": "checkpoint", "ask": "is the loop between the jaws?", "view": "side"},
                     {"do": "line", "up": 0.02}])
     for _ in range(20):
-        k.tick(); k.clock.wait()
+        k.tick()
+        k.clock.wait()
     assert job.status == "waiting" and job.question["view"] == "side"
     q_hold = k.cmd.q.copy()
     for _ in range(200):                                        # the arm holds while the question waits
-        k.tick(); k.clock.wait()
+        k.tick()
+        k.clock.wait()
     assert np.allclose(k.cmd.q, q_hold)
     k.answer(job.id, "no")
     while not job.finished:
-        k.tick(); k.clock.wait()
+        k.tick()
+        k.clock.wait()
     assert job.status == "surprise" and job.outcome.observed == "no"
 
 
@@ -119,14 +123,17 @@ def test_stop_holds_where_the_arm_is(lifted):
     k = lifted
     job = k.submit({"do": "line", "forward": 0.05, "duration": 4.0})
     for _ in range(100):
-        k.tick(); k.clock.wait()
+        k.tick()
+        k.clock.wait()
     k.stop("operator said stop")
     for _ in range(3):
-        k.tick(); k.clock.wait()
+        k.tick()
+        k.clock.wait()
     assert job.status == "stopped"
     q = k.cmd.q.copy()
     for _ in range(50):
-        k.tick(); k.clock.wait()
+        k.tick()
+        k.clock.wait()
     assert np.allclose(k.cmd.q, q)
 
 
@@ -164,21 +171,24 @@ def test_hot_motor_goes_home_along_a_valid_route_and_otherwise_holds_and_alarms(
     k = make_kernel(temp_c=[30, 30, 79.0, 30, 30, 30])
     assert k.run({"do": "line", "forward": 0.08, "up": 0.06}).ok
     for _ in range(3000):                                        # holding a raised pose: the elbow heats
-        k.tick(); k.clock.wait()
+        k.tick()
+        k.clock.wait()
         if any(e["kind"] == "hot" for e in k.events.since(0)):
             break
     alarms = [e for e in k.events.since(0) if e["kind"] == "hot"]
     assert alarms and "holding" in alarms[-1]["message"]
     q = k.cmd.q.copy()
     for _ in range(100):
-        k.tick(); k.clock.wait()
+        k.tick()
+        k.clock.wait()
     assert np.allclose(k.cmd.q, q, atol=1e-6)                    # no route: it did not move on its own
 
     k2 = make_kernel(temp_c=[30, 30, 79.0, 30, 30, 30])
     assert k2.run({"do": "line", "forward": 0.08, "up": 0.06}).ok
     k2.set_home_route([])
     for _ in range(6000):
-        k2.tick(); k2.clock.wait()
+        k2.tick()
+        k2.clock.wait()
         if k2.active is None and np.allclose(k2.cmd.q, Q_REST, atol=1e-4):
             break
     assert np.allclose(k2.cmd.q, Q_REST, atol=1e-4)
@@ -187,7 +197,8 @@ def test_hot_motor_goes_home_along_a_valid_route_and_otherwise_holds_and_alarms(
 def test_heat_budget_is_reported(lifted):
     k = lifted
     for _ in range(1500):
-        k.tick(); k.clock.wait()
+        k.tick()
+        k.clock.wait()
     left = k.heat.minutes_left(k.manifest.temp_limit_c)
     assert left is not None and left[0] == 2 and 1 < left[2] < 30   # the elbow, several minutes from its limit
 
@@ -218,3 +229,42 @@ def test_an_intended_touchdown_inside_a_fragile_zone_ends_done_not_surprise(lift
     k.world.add_box("near glass", "fragile", center=tool - [0, 0, 0.03], size=[0.3, 0.3, 0.1], dtau=0.4)
     out = k.run({"do": "touchdown", "max": 0.06})
     assert out.ok, out.message
+
+
+def test_grip_takes_millimetres(lifted):
+    k = lifted
+    assert k.run({"do": "gripper", "aperture_mm": 60}).ok          # open before the object appears between the jaws
+    tool = k.chain.fk(k.state.q)[:3, 3]
+    k.body.world.add_box("block", "object", center=tool, size=[0.04, 0.04, 0.04])
+    out = k.run({"do": "grip", "start_mm": 60, "expect_mm": [35, 45]})
+    assert out.ok and "40 mm" in out.message and "'block'" in out.message
+
+
+def test_grip_outside_the_expected_millimetres_says_so_in_millimetres(lifted):
+    k = lifted
+    assert k.run({"do": "gripper", "aperture_mm": 60}).ok
+    tool = k.chain.fk(k.state.q)[:3, 3]
+    k.body.world.add_box("block", "object", center=tool, size=[0.04, 0.04, 0.04])
+    out = k.run({"do": "grip", "start_mm": 60, "expect_mm": [10, 20]})
+    assert out.status == "surprise" and "10..20 mm" in out.message
+
+
+def test_a_gripped_object_moves_with_the_tool_in_the_model_and_lands_where_it_is_let_go(lifted):
+    """The simulator and the kernel keep separate worlds here: the kernel tracks the object on its own."""
+    truth = World.from_dict(lifted.world.to_dict())
+    k = make_kernel(sim_world=truth)
+    assert k.run({"do": "line", "forward": 0.08, "up": 0.06}).ok
+    assert k.run({"do": "gripper", "aperture_mm": 60}).ok
+    top = k.chain.fk(k.state.q)[2, 3] - 0.09
+    for w in (k.world, truth):
+        w.add_box("tray", "surface", center=[0.3, 0, top - 0.01], size=[0.6, 0.6, 0.02])
+        w.add_box("block", "object", center=k.chain.fk(k.state.q)[:3, 3] + [0, 0, -0.01], size=[0.04, 0.04, 0.08])
+    assert k.run({"do": "grip", "start_mm": 60, "expect_mm": [35, 45]}).ok
+    assert k.world.held is not None and k.world.held[0] == "block"
+    before = k.world.boxes["block"].pose[:3, 3].copy()
+    assert k.run({"do": "line", "up": 0.03}).ok
+    assert np.allclose(k.world.boxes["block"].pose[:3, 3] - before, [0, 0, 0.03], atol=2e-3)
+    assert k.run({"do": "gripper", "aperture_mm": 60}).ok
+    assert k.world.held is None
+    assert abs(k.world.boxes["block"].pose[2, 3] - (top + 0.04)) < 1e-6           # standing on the tray
+    assert any(e["kind"] == "let_go" for e in k.events.since(0))

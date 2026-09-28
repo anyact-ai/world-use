@@ -4,8 +4,8 @@ import types
 
 import numpy as np
 import pytest
-
 from conftest import Q_REST
+
 from world_use import Kernel, Refused, VirtualClock, World
 from world_use.bodies import rebot
 from world_use.kinematics import Chain

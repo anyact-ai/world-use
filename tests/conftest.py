@@ -1,7 +1,9 @@
 import numpy as np
 import pytest
 
-from world_use import Kernel, VirtualClock, World, bodies
+from world_use import Kernel, RealClock, VirtualClock, World, bodies, cameras
+from world_use.client import Client
+from world_use.daemon import Daemon, apply_workcell
 
 # Measured on the physical reBot (2026-09-16): its folded rest pose.
 Q_REST = np.array([0.3782, 0.0015, -0.0005, -0.0011, 0.0625, 0.0051])
@@ -28,3 +30,30 @@ def lifted():
     k = make_kernel()
     assert k.run({"do": "line", "forward": 0.08, "up": 0.06}).ok
     return k
+
+
+def serve(tmp_path, cell=None):
+    """A daemon on a simulated reBot as `wu up` makes it: the simulator's truth and the kernel's model apart."""
+    world, truth = World(), World()
+    body = bodies.make("sim", truth, q=Q_REST, gripper=1.0)
+    k = Kernel(body, world, RealClock(100.0), run_dir=tmp_path / "run")
+    k.connect()
+    truth.frames.update(world.frames)
+    apply_workcell(cell or {}, k, truth)
+    k.enable()
+    d = Daemon(k, port=0, cams=cameras.sim_cameras(body, truth))      # port 0: any free port
+    d.start()
+    return d, Client(f"http://127.0.0.1:{d.http.server_address[1]}")
+
+
+@pytest.fixture
+def daemon(tmp_path):
+    d, c = serve(tmp_path)
+    yield d, c
+    d.stop_loop.set()
+    d.http.shutdown()
+
+
+@pytest.fixture
+def client(daemon):
+    return daemon[1]

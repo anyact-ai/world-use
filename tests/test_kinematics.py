@@ -1,7 +1,7 @@
 """Kinematics against numbers measured on the physical reBot, and against finite differences."""
 import numpy as np
-
 from conftest import Q_REST
+
 from world_use import motion
 from world_use.bodies.rebot import MANIFEST
 from world_use.geometry import pose_error
@@ -51,12 +51,12 @@ def test_ik_round_trip():
     for _ in range(10):
         q = rng.uniform(CHAIN.lower * 0.5, CHAIN.upper * 0.5)
         seed = q + rng.normal(0, 0.05, 6)
-        q_ik, res = CHAIN.ik(CHAIN.fk(q), seed)
+        _, res = CHAIN.ik(CHAIN.fk(q), seed)
         assert res < 1e-6
 
 
 def test_reach_reproduces_the_joint_motion_validated_on_hardware():
-    path, duration, res = motion.line(CHAIN, Q_REST, _work(Q_REST, 0.08, 0.06), motion.Timing(), duration=6.0)
+    path, _, res = motion.line(CHAIN, Q_REST, _work(Q_REST, 0.08, 0.06), motion.Timing(), duration=6.0)
     assert res < 1e-5 and len(path) == 600
     assert np.allclose(np.degrees(path[-1] - Q_REST), [0, 45.8, 19.4, 26.4, 0, 0], atol=0.15)
     assert np.abs(np.diff(path, axis=0)).max() * 100 < 0.27                   # hardware peak: 0.262 rad/s

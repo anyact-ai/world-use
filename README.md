@@ -8,40 +8,52 @@ Run frontier models as robot policies.
 
 A model like Claude or GPT decides what the robot should do. world-use keeps the robot safe while it does,
 wastes as little powered time as possible waiting for the model, and hands the model short, checkable facts
-instead of raw sensor streams. It runs on a laptop with a low-cost arm, or in simulation with no hardware.
+and pictures instead of raw sensor streams. It runs on a laptop with a low-cost arm, or in simulation with no
+hardware.
 
 Computer use gave models a screen and a mouse. This gives them an arm.
 
-> Early (v0.1). Tested in simulation and against a faked motor driver. The reBot hardware adapter is ported
+> Early (v0.2). Tested in simulation and against a faked motor driver. The reBot hardware adapter is ported
 > from a toolkit that has run on the physical arm, but has not yet run on hardware through world-use.
 
 ## Try it in simulation
 
 ```sh
-pip install "git+https://github.com/anyact-ai/world-use"      # or: uv tool install ...
-wu up --body sim --enable            # a daemon that owns the (simulated) robot
+uv tool install "git+https://github.com/anyact-ai/world-use"    # or pip install; Python 3.11+
+wu up --workcell block --enable      # a daemon that owns a simulated arm, a block on a tray in front of it
 wu card                              # what this robot is and can do
-wu check '[{"do": "line", "forward": 0.08, "up": 0.06}, {"do": "hold", "seconds": 1}]'
-wu run   '[{"do": "line", "forward": 0.08, "up": 0.06}, {"do": "hold", "seconds": 1}]'
-wu status
+wu look side                         # a picture with the tool and the known boxes drawn on it; prints its path
+wu run '[{"do": "line", "up": 0.06}, {"do": "gripper", "aperture_mm": 60}]'
 wu home-route '[]' && wu home        # fold back along a route you have checked
 wu down                              # release at rest, write the flight record
 ```
 
-`wu check` rehearses on a twin from the robot's measured state and reports refusals, contacts, time and heat
-before anything moves. `wu run` prints the outcome and one state line:
+`wu run` rehearses the plan on a twin first. If the kernel would refuse any step, nothing moves, and the
+model gets every problem at once with the numbers that would pass:
 
 ```
-job 1 done: line(forward=0.08, up=0.06)
-t+8s | idle, holding | tool F+0.382 L+0.000 U+0.278 | grip 0.05rad (0mm) +0.0 | tau +0.0 -1.4 +7.1 +2.0 -0.0 -0.0 | hottest j3 26C (7.5 min to 80C, j3)
+$ wu run '[{"do": "line", "up": 0.03}, {"do": "line", "left": 0.05}]'
+refused in rehearsal, so nothing moved:
+check FAILED: 1 limit would be broken, so the kernel would refuse this plan and nothing would move
+  step 2/2: line(left=0.05): this turns j1/j5/j6 with the tool at U+0.247; turning needs U+0.267 or higher (5 cm above the start height), or the gripper sweeps across the table (hint: lift at least 2 cm more first)
+  rehearsed past them: 4.5 s simulated, 4.5 s of it moving
+  ends with the tool at F+0.302 L+0.063 U+0.247 (work)
+  heat: j3 +0.6 C, to about 26 C
+from here a 3 cm line can go up, forward; not down or back (out of reach with the gripper at this angle); left or right (turning needs the tool at U+0.267).
 ```
 
 ## Let a model drive
 
 Point your agent (Claude Code, Codex, anything with a shell) at [POLICY.md](POLICY.md). It explains the loop:
-read the card, plan a phase, check it, run it, answer checkpoints, and handle surprises. The daemon holds the
-robot between the agent's tool calls, so a slow, interrupted or restarted agent leaves the robot holding
-still.
+read the card, look, plan a phase, run it, answer checkpoints, and handle surprises. The daemon holds the
+robot between the agent's tool calls, so a slow, interrupted or restarted agent leaves the robot holding still.
+
+Agents that speak MCP get the same verbs as tools, and pictures inline:
+
+```sh
+uv tool install "world-use[mcp] @ git+https://github.com/anyact-ai/world-use"
+claude mcp add world-use -- wu mcp
+```
 
 The same thing from Python:
 
@@ -60,18 +72,21 @@ print(k.run(p.spec()))      # then run it
 
 ## What the kernel does for you
 
-- **Checks the whole motion before it starts**: joint limits, speed, acceleration, reach, how far each joint
-  strays from where the session started, gravity load, keep-out zones, known surfaces. A refused command
-  moves nothing and says which limit and what would pass.
+- **Checks the whole plan before it starts**: joint limits, speed, acceleration, reach, how far each joint
+  strays from where the session started, gravity load, keep-out zones, known surfaces. A refused plan moves
+  nothing and names every limit it would break, with what would pass.
+- **Tells the model what it can do**: the card says which way the gripper points and opens, where known things
+  are in the frame moves use, and which short moves are possible from the current pose.
+- **Shows what it knows**: `wu look` draws the tool point, the known boxes and a planned path onto camera
+  images, so a mismatch between the world model and the scene is visible at a glance.
 - **Stops on contact**: guarded moves (`touchdown`, `guarded`) stop the moment the joints feel something;
   every other move stops on unexpected contact; `fragile` zones use tighter thresholds.
 - **Holds on surprise**: when what happened differs from what a step expected, the arm holds where it
   really is, queued steps are cancelled, and the model gets an incident report.
 - **Never moves on its own**: no idle motion. The only automatic move is going home along a route the policy
   set when a motor overheats, and only if nothing has been touched since the route was set.
-- **Tracks heat**: minutes until the hottest motor reaches its limit, in every state line.
-- **Records everything**: tape at the control rate, events, world, and a summary with how much of the
-  powered time the robot actually moved.
+- **Tracks heat and records everything**: minutes until the hottest motor reaches its limit, in every state
+  line; tape at the control rate, events, pictures, world, and how much of the powered time the robot moved.
 
 It is a helper, not a certified safety system. Keep a person at the power switch.
 
@@ -79,11 +94,12 @@ It is a helper, not a certified safety system. Keep a person at the power switch
 
 | body | status |
 |---|---|
-| `sim` | kinematic twin of any manifest: gravity torques, servo stiffness, surfaces that push back, objects that stop the gripper, motor heating |
+| `sim` | kinematic twin of any manifest: gravity torques, servo stiffness, surfaces that push back, objects that stop the gripper and ride along, motor heating, and cameras that render the scene |
 | `rebot` | Seeed reBot Arm B601-RS over CAN (`pip install "world-use[rebot]"`); ported from a toolkit that has run on the arm |
 
 A new arm needs a manifest (joints, limits, gripper, rest pose, what it senses) and an adapter with five
 methods. See [body.py](src/world_use/body.py) and [the reBot adapter](src/world_use/bodies/rebot/__init__.py).
+Cameras are any HTTP snapshot URL or a command that prints an image; see [cameras.py](src/world_use/cameras.py).
 
 ## Why it is built this way
 

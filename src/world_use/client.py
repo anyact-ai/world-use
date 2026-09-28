@@ -43,8 +43,9 @@ class Client:
     def card(self) -> str:
         return self._call("GET", "/card")["card"]
 
-    def run(self, spec, wait: float = 0.0) -> dict:
-        return self._call("POST", "/run", dict(spec=spec, wait=wait))
+    def run(self, spec, wait: float = 0.0, check: bool = True) -> dict:
+        """Rehearse (unless check=False), then run. A plan the kernel would refuse comes back refused, unmoved."""
+        return self._call("POST", "/run", dict(spec=spec, wait=wait, check=check))
 
     def job(self, job_id: int, wait: float = 0.0) -> dict:
         return self._call("GET", f"/jobs/{job_id}?wait={wait}")
@@ -78,6 +79,20 @@ class Client:
 
     def world(self, **change) -> dict:
         return self._call("POST", "/world", change) if change else self._call("GET", "/world")
+
+    def box(self, name: str, kind: str, center, size, **extra) -> dict:
+        """Tell the world model about a box (work frame by default): a surface, an object or a zone."""
+        return self.world(box=dict(name=name, kind=kind, center=list(center), size=list(size), **extra))
+
+    def remove(self, name: str) -> dict:
+        return self.world(remove=name)
+
+    def look(self, camera: str | None = None, spec=None) -> dict:
+        """Save a picture from a camera (with the plan's path drawn on it, given a spec); returns its path."""
+        return self._call("POST", "/look", dict(camera=camera, spec=spec))
+
+    def help(self) -> dict:
+        return self._call("GET", "/help")["steps"]
 
     def shutdown(self) -> dict:
         return self._call("POST", "/shutdown", {})

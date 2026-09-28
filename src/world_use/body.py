@@ -6,9 +6,10 @@ logging live in the kernel, so a new arm needs a manifest and five methods.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 
@@ -37,6 +38,9 @@ class GripperSpec:
     v_max: float = 4.5
     track_tol: float = 0.6
     tau_max: float = 4.0
+    approach: tuple[float, float, float] = (0.0, 0.0, 1.0)     # tool-frame direction the fingers point
+    opens_along: tuple[float, float, float] = (0.0, 1.0, 0.0)  # tool-frame axis the jaws open along
+    tool_point: str = "between the fingertips"                  # where the tool link sits, in words
 
     def aperture(self, position: float | None) -> float | None:
         """Opening between the fingers in metres, if the mapping is known."""
@@ -82,6 +86,7 @@ class Manifest:
     max_excursion: float | None = None    # rad any joint may travel from the session's start pose
     turn_clearance: tuple[tuple[int, ...], float] | None = None   # (joints, m): only turn these above start height + m
     notes: tuple[str, ...] = ()       # quirks worth telling the policy about (the embodiment card)
+    hardware_notes: tuple[str, ...] = ()  # quirks of the physical robot that a simulation does not reproduce
     frames: Callable | None = None    # (chain, q at session start) -> {name: 4x4}, e.g. a "work" frame
     thermal: dict = field(default_factory=dict)   # optional per-joint heating model for the simulator
 

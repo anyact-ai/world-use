@@ -1,0 +1,20 @@
+# A tall block on a low tray in front of a simulated reBot, which starts from the physical arm's folded rest
+# (measured on 2026-09-16), so the work frame is turned about 22 degrees from the base frame, as on hardware.
+#
+#   wu up --workcell block
+body = "sim"
+
+[body_options]
+start_deg = [21.669, 0.086, -0.029, -0.063, 3.581, 0.292]
+
+[[box]]
+name = "tray"
+kind = "surface"
+center = [0.32, 0.0, 0.14]
+size = [0.30, 0.40, 0.02]
+
+[[box]]
+name = "block"
+kind = "object"
+center = [0.34, 0.03, 0.20]
+size = [0.04, 0.04, 0.10]

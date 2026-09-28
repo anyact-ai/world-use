@@ -38,3 +38,31 @@ def test_check_reports_a_refusal_with_the_step_that_failed(lifted):
 def test_check_forecasts_heat(lifted):
     report = check(Plan().hold(seconds=60), lifted)
     assert report.ok and report.temp_rise["joint"] == 3 and report.temp_rise["rise_c"] > 3
+
+
+def test_one_check_names_every_limit_a_plan_would_break(k):
+    report = check([{"do": "line", "up": 0.03}, {"do": "line", "left": 0.05}, {"do": "line", "up": 0.05},
+                    {"do": "hold", "seconds": 1}, {"do": "joints", "delta_deg": {"1": 130}}], k)
+    assert not report.ok and report.refused
+    steps = [p["step"] for p in report.problems]
+    assert steps[0].startswith("step 2/5") and any(s.startswith("step 5/5") for s in steps)
+    turn = report.problems[0]
+    assert turn["rule"] == "turn_clearance" and "U+0.267" in turn["message"] and "lift at least" in turn["hint"]
+    assert report.problems[-1]["rule"] == "excursion"
+    text = str(report)
+    assert "nothing would move" in text and "step 2/5" in text and "step 5/5" in text
+
+
+def test_an_unreachable_line_says_how_much_of_it_is_reachable(k):
+    report = check([{"do": "line", "up": 0.06}, {"do": "line", "up": -0.14}], k)
+    assert report.outcome.status == "refused"
+    assert "only the first" in report.outcome.message and "of this 14.0 cm" in report.outcome.message
+    assert "joints move" in report.outcome.hint
+
+
+def test_reach_from_here_names_what_passes_and_why_the_rest_does_not(k):
+    from world_use.plan import reach
+    r = reach(k)
+    assert r["up"] is None and r["forward"] is None
+    assert r["left"] is not None and r["left"].rule == "turn_clearance"
+    assert r["down"] is not None
