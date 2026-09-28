@@ -1,6 +1,6 @@
 [project]
 name = "world-use"
-version = "0.2.0.dev0"
+version = "0.2.0"
 description = "Run frontier models as robot policies: a safety kernel, checked plans and compact context for LLM-operated robots."
 readme = "README.md"
 license = "Apache-2.0"

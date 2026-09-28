@@ -76,7 +76,7 @@ MANIFEST = Manifest(
     turn_clearance=((0, 4, 5), 0.05),
     frames=lambda chain, q: {"work": work_frame(chain, q)},
     notes=(
-        "With torque on, the elbow carries about 7 Nm, its continuous rating, even folded at rest (the adapter "
+        "With torque on, the elbow (j3) carries about 7 Nm, its continuous rating, even folded at rest (the adapter "
         "supports the arm's weight in every pose): it heats about 8 C per minute from cold and cools only with "
         "torque off. Decide with torque off; act in bursts.",
         "Gripper opening is roughly 20 mm per rad (approximate); holding shows as -1.4..-2.2 Nm of gripper effort.",

@@ -50,11 +50,13 @@ def build(url: str = DEFAULT_URL):
         return call(lambda: c.status()["line"])
 
     @server.tool()
-    def run(plan: list[dict] | dict, wait_s: float = 60.0, rehearse: bool = True) -> str:
+    def run(plan: list[dict] | dict | None = None, wait_s: float = 60.0, rehearse: bool = True,
+            checked: bool = False) -> str:
         """Run a plan: a list of steps, e.g. [{"do": "line", "up": 0.05}, {"do": "grip", "expect_mm": [35, 45]}].
         Rehearsed on a twin first; if any step would break a limit nothing moves and every problem is listed.
-        Returns the outcome and the state line, or the question a checkpoint is waiting on."""
-        return call(lambda: job_text(c.run(plan, wait=wait_s, check=rehearse)))
+        checked=true runs the plan the last `check` rehearsed. Returns the outcome and the state line, or the
+        question a checkpoint is waiting on."""
+        return call(lambda: job_text(c.run(plan, wait=wait_s, check=rehearse, checked=checked)))
 
     @server.tool()
     def check(plan: list[dict] | dict) -> str:

@@ -43,6 +43,7 @@ class Daemon:
         self.cameras = dict(cams or {})
         kernel.cameras = self.cameras                    # the card lists them
         self.shots = 0
+        self.checked = None                              # the last plan `check` rehearsed: `run --checked` runs it
         self.stop_loop = threading.Event()
         self.done = threading.Event()                    # set once the shutdown reply has gone out
         self.http = ThreadingHTTPServer((host, port), _handler(self))
@@ -88,11 +89,16 @@ class Daemon:
         if method != "POST":
             return 404, dict(error=f"no route {method} /{path.strip('/')}")
         if route == ["run"]:
+            if body.get("checked"):
+                if self.checked is None:
+                    raise Refused("no plan has been checked yet", "spec", "check one first, or give the plan")
+                return self._run(self.checked, wait, bool(body.get("check", True)))
             return self._run(body["spec"], wait, bool(body.get("check", True)))
         if route == ["look"]:
             return 200, self.look(body.get("camera"), body.get("spec"))
         if route == ["check"]:
             report = check(body["spec"], k)          # snapshots the kernel under its lock, then runs unlocked
+            self.checked = body["spec"]
             return 200, dict(report.to_dict(), text=str(report))
         if route == ["answer"]:
             k.answer(int(body["job"]), body["answer"])
@@ -166,8 +172,9 @@ class Daemon:
         img = cam.snap(k)
         tool = k.world.from_base("work", k.chain.fk(k.state.q)[:3, 3])
         drawn = ("magenta cross = tool point; green outlines = the boxes the kernel knows; F/L/U = work axes"
-                 + ("; blue = the plan's tool path" if report is not None else "")) if cam.view is not None else \
-            "no calibration for this camera, so nothing is drawn on it"
+                 + ("; blue = the plan's tool path" if report is not None else "")
+                 + ("; floor grid: 10 cm squares" if isinstance(cam, cameras.SimCamera) else "")) \
+            if cam.view is not None else "no calibration for this camera, so nothing is drawn on it"
         caption = f"{name} | t+{k.clock.now() - k.t0:.0f}s | tool F{tool[0]:+.3f} L{tool[1]:+.3f} U{tool[2]:+.3f}"
         img = cameras.overlay(img, cam.view, k, None if report is None else report.tool_path, caption)
         self.shots += 1

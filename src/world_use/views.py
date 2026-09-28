@@ -180,6 +180,7 @@ def box_line(k, b, frame: str = "work") -> str:
     if b.kind == "surface":
         parts.append(f"top at U{f['top']:+.3f}")
     if b.kind == "object":
+        parts.append(f"from U{2 * c[2] - f['top']:+.3f} to U{f['top']:+.3f}")
         parts.append(f"{1000 * b.grip_width:.0f} mm across the jaws")
     parts += [f"{key}={v}" for key, v in b.params.items() if key != "grip_width"]
     if b.source not in ("workcell", "config"):
@@ -219,8 +220,11 @@ def card(k) -> str:
         lines.append(f"gripper: {g.closed}..{g.open} {g.unit} (closed..open){span}.{mm}")
         lines.append(tool_line(k) or "")
     reach_m = np.linalg.norm(c.fk(np.zeros(c.n))[:3, 3] - c.points(np.zeros(c.n))[1])
-    lines.append(f"reach about {reach_m:.2f} m from the shoulder; one Cartesian move at most "
-                 f"{100 * m.max_segment_m:.0f} cm.")
+    shoulder = c.points(k.cmd.q)[1]
+    s = k.world.from_base("work", shoulder) + 0.0
+    now = np.linalg.norm(c.fk(k.cmd.q)[:3, 3] - shoulder)
+    lines.append(f"reach about {reach_m:.2f} m from the shoulder at F{s[0]:+.3f} L{s[1]:+.3f} U{s[2]:+.3f} "
+                 f"(the tool is {now:.2f} m from it now); one Cartesian move at most {100 * m.max_segment_m:.0f} cm.")
     lines.append(f"default peak joint speed {m.speed} rad/s; motors warn at {m.temp_warn_c:.0f} C, "
                  f"stop at {m.temp_limit_c:.0f} C.")
     if m.rest:
@@ -232,8 +236,9 @@ def card(k) -> str:
     if need is not None:
         joints, above = m.turn_clearance
         names = ", ".join(f"j{j + 1}" for j in joints)
+        sideways = "; every left or right move turns j1, so lift first, then move sideways" if 0 in joints else ""
         lines.append(f"turning {names} needs the tool at U{need:+.3f} or higher ({100 * above:.0f} cm above where it "
-                     "started): lift first, then turn.")
+                     f"started){sideways}.")
     others = [f for f in k.world.frames if f not in ("base", "work")]
     lines.append("frames: work = forward, left, up from the base, pointing where the arm pointed at the session start"
                  + (f"; also {', '.join(others)}" if others else "") + ". Positions here are work-frame metres; "

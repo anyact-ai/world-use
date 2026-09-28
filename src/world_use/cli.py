@@ -6,6 +6,7 @@ every line ends up in a model's context.
     wu status                   one line: job, tool position, gripper, torques, heat
     wu look [CAMERA]            save a picture, with the tool and the known boxes drawn on it; prints its path
     wu run '<spec>'|file        rehearse, then run; waits up to --wait seconds, then prints the outcome
+    wu run --checked            run the plan the last `wu check` rehearsed, without pasting it again
     wu check '<spec>'|file      rehearse only: the forecast, nothing real moves
     wu answer JOB yes|no|...    answer a checkpoint question
     wu world | wu box ...       what the kernel knows about the scene; tell it about a surface or object
@@ -89,10 +90,11 @@ def main(argv=None) -> int:
     sub.add_parser("card")
     for name in ("run", "check"):
         p = sub.add_parser(name)
-        p.add_argument("spec", help="JSON spec or a file containing one")
+        p.add_argument("spec", nargs="?" if name == "run" else None, help="JSON spec or a file containing one")
         if name == "run":
             p.add_argument("--wait", type=float, default=60.0, help="seconds to wait for the outcome")
             p.add_argument("--no-check", action="store_true", help="skip the rehearsal")
+            p.add_argument("--checked", action="store_true", help="run the plan the last `wu check` rehearsed")
     p = sub.add_parser("look", help="save a picture from a camera and print its path")
     p.add_argument("camera", nargs="?")
     p.add_argument("--plan", help="draw this plan's tool path on the picture (JSON spec or file)")
@@ -184,7 +186,9 @@ def _dispatch(a, c: Client):
     if a.cmd == "card":
         return c.card()
     if a.cmd == "run":
-        return c.run(_spec(a.spec), wait=a.wait, check=not a.no_check)
+        if a.spec is None and not a.checked:
+            raise SystemExit("wu run '<plan>' (or wu run --checked, for the plan the last wu check rehearsed)")
+        return c.run(None if a.checked else _spec(a.spec), wait=a.wait, check=not a.no_check, checked=a.checked)
     if a.cmd == "look":
         r = c.look(a.camera, None if a.plan is None else _spec(a.plan))
         return f"{r['path']}\n{r['camera']} camera, {r['size'][0]}x{r['size'][1]}: {r['drawn']}" + (

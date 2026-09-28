@@ -1,10 +1,9 @@
-# Publishes to PyPI when a version tag is pushed (git tag v0.2.0 && git push --tags). It needs a trusted
-# publisher on PyPI first: project world-use, repository anyact-ai/world-use, workflow release.yml,
-# environment pypi. No token is stored anywhere.
+# Publishes a tagged version to PyPI: gh workflow run release.yml --ref v0.2.0
+# It needs a trusted publisher on PyPI first (project world-use, owner anyact-ai, repository world-use,
+# workflow release.yml, environment pypi), so no token is stored anywhere.
 name: release
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
 jobs:
   pypi:
     runs-on: ubuntu-latest

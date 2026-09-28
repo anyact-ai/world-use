@@ -96,14 +96,19 @@ class Job:
 
 
 class Heat:
-    """Temperature trend per joint from the last minute of readings: how long until the limit at this rate."""
+    """Temperature trend per joint from the readings since the torque last came on (at most the last minute):
+    how long until the limit at this rate. Readings from before a switch would dilute the trend."""
 
     def __init__(self, n: int):
         self.samples: deque[tuple[float, np.ndarray]] = deque(maxlen=60)
         self.last_t = -np.inf
         self.n = n
+        self.on = False
 
-    def update(self, t: float, temp):
+    def update(self, t: float, temp, on: bool = True):
+        if on != self.on:
+            self.samples.clear()
+            self.on = on
         if temp is not None and t - self.last_t >= 1.0:
             self.samples.append((t, np.asarray(temp, float)))
             self.last_t = t
@@ -389,7 +394,7 @@ class Kernel:
         st = self.body.read()
         self.state = st
         now = self.clock.now()
-        self.heat.update(now, st.temp)
+        self.heat.update(now, st.temp, self.enabled)
         with self.lock:
             self._track_held()
             if self.enabled:

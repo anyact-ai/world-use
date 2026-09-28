@@ -12,15 +12,16 @@ compared to the robot, so decide in phases, not in single small steps.
 1. `wu card` tells you what this robot is: joints, gripper, which way the gripper points and opens, the frames,
    the surfaces and objects the kernel knows (in the work frame, the frame your moves use), its cameras, which
    short moves are possible from where it is, and its quirks. Read it once.
-2. `wu look [CAMERA]` saves a picture and prints its path: read the image. The tool point (magenta cross), the
-   work axes (F, L, U) and the boxes the kernel knows (green outlines) are drawn on it, so you can see whether
-   its world matches the scene. `wu look side --plan '<plan>'` also draws the plan's tool path in blue.
+2. `wu look [CAMERA]` saves a picture (from the first camera on the card if you name none) and prints its path:
+   read the image. The tool point (magenta cross), the work axes (F, L, U) and the boxes the kernel knows
+   (green outlines) are drawn on it, so you can see whether its world matches the scene.
+   `wu look side --plan '<plan>'` also draws the plan's tool path in blue.
 3. `wu status` is one line: what is running, where the tool is, the gripper, joint torques, the hottest motor.
 4. Think with the torque off. With torque on, motors heat even while holding still (on the reBot the elbow
    gains about 8 C per minute, folded or raised), so work out the whole next phase before `wu enable`.
 5. If the task involves contact you have not seen work before, describe your strategy to the human in two
    lines and ask for a sanity check. Physical intuition about friction, magnets and compliance is where a
-   person helps most.
+   person helps most. If nobody is there to ask, take the most conservative version of the plan.
 
 ## The loop
 
@@ -29,7 +30,8 @@ compared to the robot, so decide in phases, not in single small steps.
 2. **Run it**: `wu run '<plan>'`. It first rehearses the plan on a twin from the measured state. If the kernel
    would refuse any step, nothing moves and you get every problem at once, each with the numbers that would
    pass, plus which short moves are possible from here. Otherwise it runs, waits up to 60 s, and prints the
-   outcome and the state line. (`wu check '<plan>'` rehearses without running: time, contacts, heat.)
+   outcome and the state line. (`wu check '<plan>'` rehearses without running: time, contacts, heat. After a
+   check, `wu run --checked` runs that same plan without pasting it again.)
 3. **At a checkpoint** the arm holds and the job waits: `wu look` at the named camera, then
    `wu answer JOB yes` (any other answer ends the plan so you can decide what to do instead). `wu answer`
    waits until the next checkpoint or the end of the plan.
@@ -96,8 +98,9 @@ A plain list is a sequence; the first step that does not end "done" ends the who
   fold". If the way back is not clear (a door you opened, an object in the way), give the moves that get
   clear first: `wu home-route '[{"do": "line", "up": 0.05}]'`.
 - Any contact makes the home route stale. Look again and set it again.
-- `wu home` runs it. `wu release` switches torque off, which is only allowed at the rest pose; `wu down` does
-  that and stops the daemon, printing how much of the powered time the robot moved.
+- `wu home` runs the home route, so it needs one set first (`[]` if the way back is clear). `wu release` switches
+  torque off, which is only allowed at the rest pose; `wu down` does that and stops the daemon, printing how much
+  of the powered time the robot moved.
 
 ## Limits you cannot change
 
