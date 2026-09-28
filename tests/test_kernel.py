@@ -473,3 +473,42 @@ def test_the_tape_keeps_every_tick_across_its_blocks(monkeypatch):
     a = tape.arrays()
     assert len(tape) == 12 and a["t"].tolist() == [i / 100 for i in range(12)]
     assert a["q"][:, 1].tolist() == [-i for i in range(12)] and np.isnan(a["tau"]).all() and a["grip"].sum() == 12
+
+
+def _pointing(k):
+    from world_use.world import along
+    W = k.world.frame("work").T[:3, :3]
+    R = k.chain.fk(k.state.q)[:3, :3]
+    g = k.manifest.gripper
+    return W.T @ R @ np.asarray(g.approach), along(W.T @ R @ np.asarray(g.opens_along))
+
+
+def test_move_to_can_point_the_gripper_down(k):
+    """Near its base a real reBot can point down only by tilting: turning the wrist or base that low is refused."""
+    L = float(k.world.from_base("work", k.chain.fk(k.state.q)[:3, 3])[1])
+    q0 = k.state.q.copy()
+    out = k.run({"do": "move_to", "to": [0.22, L, 0.10], "point": "down"})
+    assert out.ok and "now pointing straight down (3.6 deg off" in out.message, out.message
+    down, jaws = _pointing(k)
+    assert np.degrees(np.arccos(-down[2])) < 5 and jaws == "left and right"
+    assert np.degrees(np.abs(k.state.q - q0)[[0, 4, 5]]).max() < 1.0              # base and wrist held still
+    refused = make_kernel().run({"do": "move_to", "to": [0.22, L, 0.10], "point": "down", "within_deg": 1})
+    assert refused.status == "refused" and "let it only tilt: that ends 4 deg" in refused.hint
+
+
+def test_move_to_turns_in_place_and_says_when_it_cannot(k):
+    assert k.run([{"do": "line", "forward": 0.08, "up": 0.14}]).ok
+    p0 = k.chain.fk(k.state.q)[:3, 3].copy()
+    assert k.run({"do": "move_to", "jaws": "up"}).ok                               # a wrist roll, high up
+    assert np.linalg.norm(k.chain.fk(k.state.q)[:3, 3] - p0) < 1e-3 and _pointing(k)[1] == "up and down"
+    out = k.run({"do": "move_to", "point": "down"})
+    assert out.status == "refused" and "cannot turn to point straight down here" in out.message, out.message
+    for bad in ({"point": "sideways"}, {"point": "down", "jaws": "up"}):
+        assert k.run({"do": "move_to", **bad}).status == "refused"
+
+
+def test_a_check_says_where_the_gripper_ends_pointing(k):
+    from world_use import check
+    L = float(k.world.from_base("work", k.chain.fk(k.state.q)[:3, 3])[1])
+    report = check({"do": "move_to", "to": [0.22, L, 0.10], "point": "down"}, k)
+    assert "the gripper ends pointing straight down, jaws open left and right (turned 90 deg)" in str(report)

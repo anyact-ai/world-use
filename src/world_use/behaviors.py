@@ -15,8 +15,10 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from . import motion
+from . import geometry, motion
+from .envelope import TURN_EPS
 from .errors import Refused
+from .world import DIRECTIONS, along, heading
 
 if TYPE_CHECKING:
     from .kernel import Kernel
@@ -198,25 +200,131 @@ class Lines(PathBehavior):
         return path
 
 
-class MoveTo(PathBehavior):
-    """Tool point to an absolute position, in a straight line; the gripper keeps its angle.
+def _direction(value) -> np.ndarray:
+    """A direction from a word (down, forward, ...) or a vector, in the step's frame."""
+    if isinstance(value, str):
+        if value not in DIRECTIONS:
+            raise Refused(f"no direction {value!r}; say one of {', '.join(DIRECTIONS)}, or give [f, l, u]", "spec")
+        return np.asarray(DIRECTIONS[value], float)
+    v = np.asarray(value, float)
+    if v.shape != (3,) or np.linalg.norm(v) < 1e-9:
+        raise Refused(f"a direction is a word or three numbers [f, l, u], got {value!r}", "spec")
+    return v / np.linalg.norm(v)
 
-    to        [forward, left, up] metres in the frame (default: work)
+
+class MoveTo(PathBehavior):
+    """Tool point to an absolute position in a straight line; with point, the gripper turns on the way.
+
+    to          [forward, left, up] metres in the frame (default: work); leave it out to turn in place
+    point       which way the gripper should end up pointing: down, up, forward, back, left, right, or [f, l, u]
+    jaws        which way its jaws should open, the same way (default: as near to now as pointing allows)
+    within_deg  how far from point it may end so the wrist and base can stay still below the turn height
+                (default 5: near its base a real arm can seldom point exactly down without turning them)
     frame, duration, speed  as for line
     """
     kind = "move_to"
-    example = {"do": "move_to", "to": [0.35, -0.05, 0.30]}
+    example = {"do": "move_to", "to": [0.20, 0.0, 0.10], "point": "down"}
 
     def plan(self, k):
-        target = k.world.to_base(self.params.get("frame", "work"), self.params["to"])
-        here = k.chain.fk(k.cmd.q)[:3, 3]
-        d = target - here
+        p = self.params
+        frame = p.get("frame", "work")
+        F = k.world.frame(frame).T[:3, :3]
+        T0 = k.chain.fk(k.cmd.q)
+        if not {"to", "point", "jaws"} & set(p):
+            raise Refused("move_to needs to, point or jaws", "spec")
+        target = k.world.to_base(frame, p["to"]) if "to" in p else T0[:3, 3].copy()
+        d = target - T0[:3, 3]
         if np.linalg.norm(d) > k.manifest.max_segment_m:
             raise Refused(f"target is {100 * np.linalg.norm(d):.1f} cm away; one move may be at most "
                           f"{100 * k.manifest.max_segment_m:.0f} cm", "segment_length", "go in shorter moves (lines)")
-        path, _, _ = motion.line(k.chain, k.cmd.q, d, _speed_timing(k, self.params.get("speed")),
-                                 self.params.get("duration"), *k.envelope.bounds(k.cmd.q), weights=k.ik_weights)
-        return path
+        timing = _speed_timing(k, p.get("speed"))
+        self.aimed = None
+        if "point" not in p and "jaws" not in p:
+            path, _, _ = motion.line(k.chain, k.cmd.q, d, timing, p.get("duration"), *k.envelope.bounds(k.cmd.q),
+                                     weights=k.ik_weights)
+            return path
+        g = k.manifest.gripper
+        if g is None:
+            raise Refused("this robot has no gripper to point", "no_gripper")
+        want = F @ _direction(p["point"]) if "point" in p else T0[:3, :3] @ np.asarray(g.approach, float)
+        jaws = F @ _direction(p["jaws"]) if "jaws" in p else None
+        try:
+            R = geometry.aim(T0[:3, :3], g.approach, g.opens_along, want, jaws)
+        except ValueError as e:
+            raise Refused(str(e), "spec", "give jaws square to point") from None
+        T = np.eye(4)
+        T[:3, :3], T[:3, 3] = R, target
+        words = heading(F.T @ want)
+        exact, failed, turn = None, None, None
+        try:
+            lo, hi = k.envelope.bounds(k.cmd.q)
+            exact, _, _ = motion.cartesian(k.chain, k.cmd.q, T, timing, p.get("duration"), lo, hi,
+                                           weights=k.ik_weights, turning=words)
+            turn = k.envelope.turn_problem(np.vstack([k.cmd.q, exact]), k.manifest.rate_hz)
+        except Refused as e:
+            failed = e
+        if exact is not None and turn is None:
+            self.aimed = (want, False)
+            return exact
+        within = np.radians(float(p.get("within_deg", 5.0)))
+        tilt = self._tilt(k, T0, target, want, jaws, timing, words)
+        if tilt is not None and tilt[0] is not None and tilt[1] <= within:
+            self.aimed = (want, True)
+            return tilt[0]
+        if exact is not None and turn is not None:      # only the turn below the turn height is in the way
+            more = "" if tilt is None or tilt[0] is None else (
+                f", or let it only tilt: that ends {np.degrees(tilt[1]):.0f} deg from {words} "
+                f"(within_deg {np.ceil(np.degrees(tilt[1])):.0f})")
+            raise Refused(str(turn), "turn_clearance", turn.hint + more, **turn.data)
+        assert failed is not None
+        raise failed
+
+    def _tilt(self, k, T0, target, want, jaws, timing, words):
+        """Point as near to `want` as the pitch joints alone can, with the joints the turn-clearance rule guards
+        held still: (path, or None if unreachable; how far from want it ends, rad), or None where the arm has no
+        such rule or its other joints do not share one axis."""
+        rule = k.manifest.turn_clearance
+        if rule is None:
+            return None
+        held = list(rule[0])
+        free = [i for i in range(k.manifest.n) if i not in held]
+        axes = k.chain.axes(k.cmd.q)
+        n = axes[free[0]]
+        if any(np.linalg.norm(np.cross(axes[i], n)) > 1e-6 for i in free[1:]):
+            return None
+        g = k.manifest.gripper
+        a0 = T0[:3, :3] @ np.asarray(g.approach, float)
+        pa, pw = a0 - (a0 @ n) * n, want - (want @ n) * n
+        if np.linalg.norm(pa) < 1e-6 or np.linalg.norm(pw) < 1e-6:
+            return None
+        R = geometry.axis_angle(n, np.arctan2(n @ np.cross(pa, pw), pa @ pw)) @ T0[:3, :3]
+        off = geometry.angle(R @ g.approach, want)
+        if jaws is not None:
+            j = R @ np.asarray(g.opens_along, float)
+            off = max(off, min(geometry.angle(j, jaws), geometry.angle(-j, jaws)))
+        T = np.eye(4)
+        T[:3, :3], T[:3, 3] = R, target
+        q = np.asarray(k.cmd.q, float)
+        lo, hi = k.envelope.bounds(q)
+        for i in held:
+            lo[i], hi[i] = max(lo[i], q[i] - TURN_EPS / 2), min(hi[i], q[i] + TURN_EPS / 2)
+        try:
+            path, _, _ = motion.cartesian(k.chain, q, T, timing, self.params.get("duration"), lo, hi,
+                                          weights=k.ik_weights, turning=words)
+        except Refused:
+            return None, off
+        return path, off
+
+    def arrived(self, k) -> Outcome:
+        if self.aimed is None:
+            return super().arrived(k)
+        want, tilted = self.aimed
+        g, W = k.manifest.gripper, k.world.frame("work").T[:3, :3]
+        R = k.chain.fk(k.cmd.q)[:3, :3]
+        off = np.degrees(geometry.angle(R @ g.approach, want))
+        why = f" ({off:.1f} deg off: the wrist stays still below the turn height)" if tilted and off >= 0.5 else ""
+        return self.done(f"{self.describe()}: now pointing {heading(W.T @ R @ g.approach)}{why}, jaws open "
+                         f"{along(W.T @ R @ g.opens_along)}", seconds=self.info["seconds"], off_deg=round(off, 1))
 
 
 # -- contact ------------------------------------------------------------------------------------------

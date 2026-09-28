@@ -17,8 +17,9 @@ from . import motion
 from .behaviors import REGISTRY, Outcome
 from .body import Manifest
 from .errors import Refused
+from .geometry import rotation_log
 from .kernel import Kernel, VirtualClock
-from .world import DIRECTIONS, World
+from .world import DIRECTIONS, World, along, heading
 
 
 class Plan:
@@ -56,6 +57,7 @@ class Report:
     temp_rise: dict | None = None
     problems: list[dict] = field(default_factory=list)   # every limit the plan would break: step, message, hint, rule
     tool_path: list | None = None     # tool positions along the rehearsal (base frame), for drawing on images
+    gripper_end: dict | None = None   # where the gripper ends pointing, when the plan turned it more than 2 deg
 
     @property
     def ok(self) -> bool:
@@ -69,7 +71,8 @@ class Report:
     def to_dict(self) -> dict:
         return dict(ok=self.ok, refused=self.refused, outcome=self.outcome.to_dict(), problems=self.problems,
                     seconds=self.seconds, moving_s=self.moving_s, steps=self.steps, contacts=self.contacts,
-                    assumed=self.assumed, tool_end=self.tool_end, temp_rise=self.temp_rise)
+                    assumed=self.assumed, tool_end=self.tool_end, temp_rise=self.temp_rise,
+                    gripper_end=self.gripper_end)
 
     def __str__(self) -> str:
         n = len(self.problems)
@@ -93,6 +96,10 @@ class Report:
         if self.tool_end:
             f, left, u = self.tool_end
             lines.append(f"  ends with the tool at F{f:+.3f} L{left:+.3f} U{u:+.3f} (work)")
+        if self.gripper_end:
+            g = self.gripper_end
+            lines.append(f"  the gripper ends pointing {g['points']}, jaws open {g['jaws']} "
+                         f"(turned {g['turned_deg']} deg)")
         if self.temp_rise:
             r = self.temp_rise
             lines.append(f"  heat: j{r['joint']} +{r['rise_c']:.1f} C, to about {r['end_c']:.0f} C")
@@ -179,6 +186,7 @@ def rehearse(spec, t: Kernel, timeout_s: float = 900.0) -> Report:
     if isinstance(spec, Plan):
         spec = spec.spec()
     t.envelope.rehearsal = []
+    R0 = t.chain.fk(t.cmd.q)[:3, :3]
     temp0 = None if t.state.temp is None else np.asarray(t.state.temp, float).copy()
     seq0 = t.events.seq
     out = t.run(spec, timeout_s)
@@ -190,6 +198,14 @@ def rehearse(spec, t: Kernel, timeout_s: float = 900.0) -> Report:
         steps = [out.message]
     summary = t.tape.summary(t.manifest.rate_hz)
     tool = t.world.from_base("work", t.chain.fk(t.state.q)[:3, 3])
+    turned = None
+    g = t.manifest.gripper
+    R1 = t.chain.fk(t.state.q)[:3, :3]
+    deg = float(np.degrees(np.linalg.norm(rotation_log(R1 @ R0.T))))
+    if g is not None and deg > 2.0:
+        W = t.world.frame("work").T[:3, :3]
+        turned = dict(points=heading(W.T @ R1 @ np.asarray(g.approach, float)),
+                      jaws=along(W.T @ R1 @ np.asarray(g.opens_along, float)), turned_deg=round(deg))
     rise = None
     if temp0 is not None and t.state.temp is not None:
         d = np.asarray(t.state.temp, float) - temp0
@@ -203,7 +219,7 @@ def rehearse(spec, t: Kernel, timeout_s: float = 900.0) -> Report:
     return Report(out, round(float(t.clock.now() - t.t0), 2), summary.get("moving_s", 0.0), steps,
                   [e["message"] for e in events if e["kind"] in ("contact", "grip")],
                   [e["message"] for e in events if e["kind"] == "assumed"],
-                  np.round(tool, 3).tolist(), rise, problems, path)
+                  np.round(tool, 3).tolist(), rise, problems, path, turned)
 
 
 def reach(k: Kernel, step: float = 0.03) -> dict[str, Refused | None]:

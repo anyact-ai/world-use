@@ -81,6 +81,9 @@ MANIFEST = Manifest(
         "torque off. Decide with torque off; act in bursts.",
         "Gripper opening is roughly 20 mm per rad (approximate); holding shows as -1.4..-2.2 Nm of gripper effort.",
         "The work frame points where the arm points at rest: forward, left, up. It stays fixed for the session.",
+        "Nose-down (move_to with point \"down\") is reachable low and near: about U+0.04 to +0.12 with the tool "
+        "F+0.14 to +0.26 in front of the base. That is below the turn height, where the wrist and base may not turn, "
+        "so it ends a few degrees off straight down (3.6 from rest).",
     ),
     hardware_notes=(
         "Forward/up moves end 2-5 mm low (the elbow carries about 15% more than the URDF says).",

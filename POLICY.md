@@ -55,14 +55,15 @@ A surprise also marks remembered facts as stale (`wu status` shows them): re-che
 ## Vocabulary
 
 Distances in metres, angles in degrees unless noted. `forward`/`left`/`up` follow the axes of a frame, by
-default `work` (see the card). Moves keep the gripper's angle; only `joints` changes it. Every step takes an
+default `work` (see the card). `line` and `lines` keep the gripper's angle; `move_to` with `point` turns it (as do
+`joints` moves). Every step takes an
 optional `"label"`. `wu help STEP` lists a step's parameters.
 
 | step | example | notes |
 |---|---|---|
 | line | `{"do": "line", "forward": 0.05, "up": 0.02}` | straight tool line; at most one segment long (card) |
 | lines | `{"do": "lines", "legs": [[0.05, 0, 0], [0, 0.03, 0]], "blend": 0.02}` | several legs as one smooth motion |
-| move_to | `{"do": "move_to", "to": [0.35, -0.05, 0.30]}` | absolute position in a frame |
+| move_to | `{"do": "move_to", "to": [0.20, 0, 0.10], "point": "down"}` | absolute position in a frame; `point` (down, forward, ... or `[f, l, u]`) turns the gripper on the way, `jaws` says which way it opens; near the base it may only tilt, and says how far off it ended (`within_deg`, default 5) |
 | joints | `{"do": "joints", "delta_deg": {"6": -90}}` | joint numbers from 1; or `target_deg` |
 | touchdown | `{"do": "touchdown", "max": 0.06}` | slow move down that stops on contact; no contact is a surprise |
 | guarded | `{"do": "guarded", "forward": 0.03, "dtau": 0.6}` | the same in any direction; `expect_contact: false` to probe |

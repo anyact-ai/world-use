@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .errors import Refused
-from .geometry import interpolate_rotation
+from .geometry import interpolate_rotation, rotation_log
 from .kinematics import Chain
 
 KNOTS = 300                           # most IK knots per straight stretch (about one per millimetre)
@@ -75,8 +75,9 @@ def joint_move(q0, q1, timing: Timing, duration=None):
     return time_scale(knots, duration, timing)
 
 
-def _solve(chain: Chain, q, targets, lower, upper, timing: Timing, weights=None):
-    """IK along a list of 4x4 targets, each seeded by the last. Returns (knots incl. q, worst residual)."""
+def _solve(chain: Chain, q, targets, lower, upper, timing: Timing, weights=None, turning: str | None = None):
+    """IK along a list of 4x4 targets, each seeded by the last. Returns (knots incl. q, worst residual). With
+    `turning` (words for where the gripper is being turned to point), a refusal says how far the turn got."""
     q = np.asarray(q, float)
     p0 = chain.fk(q)[:3, 3]
     knots, worst, reached = [q.copy()], 0.0, None
@@ -91,13 +92,26 @@ def _solve(chain: Chain, q, targets, lower, upper, timing: Timing, weights=None)
     if worst > timing.ik_tol:
         total = float(np.linalg.norm(targets[-1][:3, 3] - p0))
         ok = 0.0 if not reached else float(np.linalg.norm(targets[reached - 1][:3, 3] - p0))
+        if turning is not None:
+            R0 = chain.fk(knots[0])[:3, :3]
+            whole = np.degrees(np.linalg.norm(rotation_log(targets[-1][:3, :3] @ R0.T)))
+            got = 0.0 if not reached else whole * reached / len(targets)
+            if total < 1e-4:
+                raise Refused(f"the gripper cannot turn to point {turning} here: it gets {got:.0f} of the "
+                              f"{whole:.0f} deg (IK residual {worst * 1000:.1f} mm)", "reach",
+                              "move the tool first: nose-down, for one, is reachable low and near the base",
+                              residual_mm=round(worst * 1000, 1))
+            raise Refused(f"only the first {100 * ok:.1f} of this {100 * total:.1f} cm move is reachable while the "
+                          f"gripper turns to point {turning} (it gets {got:.0f} of {whole:.0f} deg)", "reach",
+                          "turn where it can, then move, or the other way round", reachable_m=round(ok, 4),
+                          length_m=round(total, 4))
         if total < 1e-4:
             raise Refused(f"that orientation is not reachable from here (IK residual {worst * 1000:.1f} mm)", "reach",
                           "turn less, or move the tool first", residual_mm=round(worst * 1000, 1))
         raise Refused(f"only the first {100 * ok:.1f} cm of this {100 * total:.1f} cm straight line is reachable with "
                       f"the gripper held at its current angle", "reach",
-                      f"stop after {np.floor(100 * ok):.0f} cm, go another way, or first change the gripper's angle "
-                      "with a joints move", reachable_m=round(ok, 4), length_m=round(total, 4))
+                      f"stop after {np.floor(100 * ok):.0f} cm, go another way, or first turn the gripper "
+                      "(move_to with point, or a joints move)", reachable_m=round(ok, 4), length_m=round(total, 4))
     return np.array(knots), worst
 
 
@@ -109,7 +123,7 @@ def _bounds(chain: Chain, q0, lower=None, upper=None):
 
 
 def cartesian(chain: Chain, q0, T_goal, timing: Timing, duration=None, lower=None, upper=None, weights=None,
-              shape=minjerk, knots=None):
+              shape=minjerk, knots=None, turning: str | None = None):
     """Tool point along a straight line to T_goal; orientation turns along the shortest rotation. `knots` overrides
     the IK resolution (about one per millimetre), e.g. for a quick feasibility probe."""
     q0 = np.asarray(q0, float)
@@ -127,7 +141,7 @@ def cartesian(chain: Chain, q0, T_goal, timing: Timing, duration=None, lower=Non
         T[:3, 3] = T0[:3, 3] + delta * k / n
         targets.append(T)
     lo, hi = _bounds(chain, q0, lower, upper)
-    knots, worst = _solve(chain, q0, targets, lo, hi, timing, weights)
+    knots, worst = _solve(chain, q0, targets, lo, hi, timing, weights, turning)
     path, duration = time_scale(knots, duration, timing, shape)
     return path, duration, worst
 
