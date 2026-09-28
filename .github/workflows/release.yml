@@ -1,0 +1,18 @@
+# Publishes to PyPI when a version tag is pushed (git tag v0.2.0 && git push --tags). It needs a trusted
+# publisher on PyPI first: project world-use, repository anyact-ai/world-use, workflow release.yml,
+# environment pypi. No token is stored anywhere.
+name: release
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  pypi:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv build
+      - run: uv publish --trusted-publishing always
