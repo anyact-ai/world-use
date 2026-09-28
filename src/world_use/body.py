@@ -115,13 +115,16 @@ class JointState:
 
 @runtime_checkable
 class Body(Protocol):
+    """The I/O contract. The kernel calls it from one thread at a time: once its control loop runs, only that
+    thread (hardware drivers are rarely safe to call from two at once)."""
     manifest: Manifest
 
     def connect(self) -> JointState:
         """Open the connection read-only and return the measured state. Must not move or release anything."""
 
     def enable(self) -> None:
-        """Switch torque on at the measured pose, without a jump."""
+        """Switch torque on at the measured pose, without a jump. If it raises, every motor is off again, or the
+        error names those it could not confirm off: the kernel counts torque as off either way."""
 
     def read(self) -> JointState:
         """Latest measurement. Called once per control tick."""
@@ -130,7 +133,8 @@ class Body(Protocol):
         """Position setpoint for this tick, with velocity feedforward."""
 
     def disable(self) -> None:
-        """Switch torque off. The kernel only calls this where the manifest says it is safe."""
+        """Switch torque off. The kernel only calls this where the manifest says it is safe. If it raises, the
+        kernel counts torque as still on and keeps commanding."""
 
     def close(self) -> None:
         """Release the connection. Must not switch torque off: that is disable()'s job."""

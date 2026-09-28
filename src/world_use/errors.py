@@ -29,3 +29,8 @@ class Refused(ValueError):
         if len(self.problems) > 1:
             d["problems"] = [p.to_dict() for p in self.problems]
         return d
+
+
+def explain(e: BaseException) -> str:
+    """An exception as an operator reads it, notes included: "treat the arm as energised" must not get lost."""
+    return " ".join([f"{type(e).__name__}: {e}", *getattr(e, "__notes__", ())])

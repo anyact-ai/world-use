@@ -162,7 +162,9 @@ class ReBotBody:
         return self._last
 
     def enable(self):
-        """Torque on at the measured pose: gains and gravity support ramp in over a second, no jump."""
+        """Torque on at the measured pose: gains and gravity support ramp in over a second, no jump. If anything
+        fails on the way, every motor is switched off again before the error goes up: the arm is at rest, so that
+        moves nothing, while a motor left on with nothing commanding it holds its last frame indefinitely."""
         q0 = self._params_positions()
         if not REST.holds(q0[:6]):
             raise Refused(f"the arm is not folded at rest (joints deg {np.round(np.degrees(q0[:6]), 1).tolist()}); "
@@ -173,6 +175,16 @@ class ReBotBody:
                 self._awake = subprocess.Popen(["caffeinate", "-dims", "-w", str(os.getpid())])
             except OSError:
                 self._awake = None
+        self.enabled = True
+        try:
+            self._engage(q0)
+        except BaseException as e:
+            unconfirmed = self._switch_off()
+            if unconfirmed:
+                e.add_note(f"could not confirm torque-off on: {', '.join(unconfirmed)}. Treat the arm as energised.")
+            raise
+
+    def _engage(self, q0):
         for m in self.motors:
             m.ensure_mode(self._Mode.MIT, 1000)
             time.sleep(0.05)
@@ -180,7 +192,6 @@ class ReBotBody:
         for m in self.motors:
             m.enable()
             time.sleep(0.02)
-        self.enabled = True
         q = q0[:6].copy()
         grip = q0[6] - self.grip_offset
         n = int(ENGAGE_S * MANIFEST.rate_hz)
@@ -241,6 +252,13 @@ class ReBotBody:
         for k in range(n):
             self._send_all(q, np.zeros(6), grip, 0.0, scale=1.0 - (k + 1) / n)
             time.sleep(1.0 / MANIFEST.rate_hz)
+        unconfirmed = self._switch_off()
+        if unconfirmed:
+            raise RuntimeError(f"could not confirm torque-off on: {', '.join(unconfirmed)}. "
+                               "Treat the arm as energised.")
+
+    def _switch_off(self) -> list[str]:
+        """Disable each motor and check its acknowledgement. Returns the motors whose torque-off is unconfirmed."""
         unconfirmed = []
         for (name, *_), m in zip((*MOTORS, GRIPPER_MOTOR), self.motors, strict=True):
             off = False
@@ -259,9 +277,7 @@ class ReBotBody:
         if self._awake:
             self._awake.terminate()
             self._awake = None
-        if unconfirmed:
-            raise RuntimeError(f"could not confirm torque-off on: {', '.join(unconfirmed)}. "
-                               "Treat the arm as energised.")
+        return unconfirmed
 
     def close(self):
         """Release the adapter WITHOUT disable frames: if the arm is raised and holding, a disable drops it."""

@@ -26,7 +26,7 @@ import numpy as np
 
 from . import bodies, cameras, views
 from .behaviors import REGISTRY
-from .errors import Refused
+from .errors import Refused, explain
 from .kernel import Kernel
 from .plan import Report, check
 from .world import World
@@ -257,9 +257,9 @@ def _handler(d: Daemon):
             except Refused as e:
                 code, obj = 409, dict(refused=e.to_dict())
             except (KeyError, ValueError, TypeError) as e:
-                code, obj = 400, dict(error=f"{type(e).__name__}: {e}")
+                code, obj = 400, dict(error=explain(e))
             except (OSError, RuntimeError) as e:          # a camera that did not answer, for instance
-                code, obj = 502, dict(error=f"{type(e).__name__}: {e}")
+                code, obj = 502, dict(error=explain(e))
             self._reply(code, obj)
             if code == 200 and u.path.strip("/") == "shutdown":
                 d.done.set()

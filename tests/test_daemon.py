@@ -114,3 +114,17 @@ def test_help_lists_every_step_with_an_example(client):
     for kind, h in steps.items():
         assert h["summary"] and h["example"]["do"] == kind
         build(h["example"])
+
+
+def test_an_error_reaches_the_operator_with_its_notes(daemon):
+    d, c = daemon
+    c.release()
+
+    def fails():
+        e = ConnectionError("feedback disagrees with the start pose")
+        e.add_note("could not confirm torque-off on: joint5. Treat the arm as energised.")
+        raise e
+    d.k.body.enable = fails
+    with pytest.raises(DaemonError) as e:
+        c.enable()
+    assert e.value.code == 502 and "Treat the arm as energised" in str(e.value)
