@@ -13,8 +13,9 @@ hardware.
 
 Computer use gave models a screen and a mouse. This gives them an arm.
 
-> Early (v0.2). Tested in simulation and against a faked motor driver. The reBot hardware adapter is ported
-> from a toolkit that has run on the physical arm, but has not yet run on hardware through world-use.
+> Early (v0.2). Tested in simulation, against a faked motor driver, and on the physical reBot. Its first runs
+> there, a pick and place with camera checkpoints, and what they changed are in
+> [the record](docs/hardware-2026-09-27.md).
 
 ## Try it in simulation
 
@@ -95,11 +96,29 @@ It is a helper, not a certified safety system. Keep a person at the power switch
 | body | status |
 |---|---|
 | `sim` | kinematic twin of any manifest: gravity torques, servo stiffness, surfaces that push back, objects that stop the gripper and ride along, motor heating, and cameras that render the scene |
-| `rebot` | Seeed reBot Arm B601-RS over CAN (install the `rebot` extra, as with `mcp` above); ported from a toolkit that has run on the arm |
+| `rebot` | Seeed reBot Arm B601-RS over CAN (install the `rebot` extra, as with `mcp` above; on a Mac see [the driver note](#the-rebot-driver-on-a-mac)); has run on the arm |
 
 A new arm needs a manifest (joints, limits, gripper, rest pose, what it senses) and an adapter with five
 methods. See [body.py](src/world_use/body.py) and [the reBot adapter](src/world_use/bodies/rebot/__init__.py).
-Cameras are any HTTP snapshot URL or a command that prints an image; see [cameras.py](src/world_use/cameras.py).
+Cameras are an HTTP snapshot URL, a command that prints an image, or a file a capture app keeps writing (refused
+when stale); a 360 camera serves pinhole cuts. `wu calibrate CAMERA` finds where one is from the arm itself; see
+[cameras.py](src/world_use/cameras.py) and [calibrate.py](src/world_use/calibrate.py).
+
+### The reBot driver on a Mac
+
+Seeed's `motorbridge` 0.5.5 publishes no macOS wheel for Python 3.14, and its source build needs a prebuilt Rust
+library, so installing the `rebot` extra fails there. The library is loaded through ctypes and does not depend on
+the Python version: take it from the 3.13 wheel.
+
+```sh
+pip download motorbridge==0.5.5 --no-deps --python-version 3.13 --only-binary :all: -d /tmp/mb
+unzip -o -q /tmp/mb/motorbridge-*.whl -d /tmp/mb/x
+MOTORBRIDGE_LIB=/tmp/mb/x/motorbridge/lib/libmotor_abi.dylib \
+MOTORBRIDGE_WS_GATEWAY_BIN=/tmp/mb/x/motorbridge/bin/ws_gateway pip install motorbridge==0.5.5
+```
+
+The CAN adapter also needs the MacCAN PCBUSB runtime (`libPCBUSB.dylib`), which motorbridge looks for in
+`/usr/local/lib`, `/opt/homebrew/lib` or `~/.local/lib`.
 
 ## Why it is built this way
 
