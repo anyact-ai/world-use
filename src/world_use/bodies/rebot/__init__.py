@@ -22,10 +22,12 @@ from ...kinematics import Chain
 HERE = Path(__file__).resolve().parent
 
 # name, motor id, motor model, kp (Nm/rad), kd (Nm s/rad), track_tol (rad), tau_max (Nm), hold_max (Nm), contact (Nm)
-# Gains are Seeed's RS values; track_tol and tau_max sit about 2x above anything a healthy move produced on the
-# arm. The contact thresholds are first estimates (a healthy move reached ~1.6 Nm on the shoulder); calibrate them.
+# Gains are Seeed's RS values, except the base's: at Seeed's kp 50, kd 3 its turns stuck, lurched and stopped short
+# (friction), and doubling both halved that on the arm (2026-09-28). track_tol and tau_max sit about 2x above
+# anything a healthy move produced on the arm. The contact thresholds are first estimates (a healthy move reached
+# ~1.6 Nm on the shoulder); calibrate them.
 MOTORS = (
-    ("joint1", 1, "rs-06", 50.0, 3.0, 0.15, 10.0, 1.0, 2.5),
+    ("joint1", 1, "rs-06", 100.0, 6.0, 0.15, 10.0, 1.0, 2.5),
     ("joint2", 2, "rs-06", 150.0, 10.0, 0.15, 20.0, 14.0, 3.0),
     ("joint3", 3, "rs-06", 150.0, 10.0, 0.15, 20.0, 14.0, 3.0),
     ("joint4", 4, "rs-00", 50.0, 5.0, 0.20, 7.0, 5.0, 1.5),
@@ -87,7 +89,7 @@ MANIFEST = Manifest(
     ),
     hardware_notes=(
         "Forward/up moves end 2-5 mm low (the elbow carries about 15% more than the URDF says).",
-        "After base turns the tool can be 5-10 mm off sideways: the base gain is soft.",
+        "After base turns the tool can stop a few mm short sideways: the base sticks and slips (friction).",
         "Joint torque strays 1-3 Nm from the gravity model over a 10 cm move (friction and hysteresis, not mass), "
         "so a long guarded move can stop on nothing: line to about 2 cm short of the expected contact, then guard "
         "only the rest. Contact is found at a few newtons.",
