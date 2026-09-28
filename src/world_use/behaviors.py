@@ -366,15 +366,18 @@ class ContactSense:
     The bias (measured minus model) is the median of the kernel's last few tenths of a second, so the URDF's mass
     errors and cable loads cancel and one noisy reading does not shift every judgement after it. Their spread is
     the joint's noise, and no threshold is set below NOISE_K times it: a real reBot's loaded shoulder and elbow
-    read +-0.5-1 Nm from one tick to the next while holding still. A short median filter rejects single-tick
-    spikes. Without an explicit joint list it watches the joints with real leverage along the direction of
-    motion: a vertical push barely loads a vertical base axis, whose friction would only add noise.
+    read +-0.5-1 Nm from one tick to the next while holding still. Noise raises a threshold at most NOISE_CAP
+    times, so a joint gone noisy stops on nothing rather than going numb, and never above a fragile zone's limit:
+    that one is the operator's. A short median filter rejects single-tick spikes. Without an explicit joint list
+    it watches the joints with real leverage along the direction of motion: a vertical push barely loads a
+    vertical base axis, whose friction would only add noise.
 
     A joint resting on the stop it folds onto (the manifest's rest stops) is not judged, and is re-zeroed until it
     leaves: the stop takes part of its load, so arriving there or lifting off moved ~2 Nm between the reBot's
     elbow motor and its stop with nothing touched.
     """
     NOISE_K = 3.5                     # holds of up to 54 s on the reBot stayed within 3.3x (2026-09-27)
+    NOISE_CAP = 2.0                   # noise raises a joint's threshold at most this many times
     STOP_ZONE = 0.06                  # rad from a rest stop within which a joint is not judged
 
     def __init__(self, k: Kernel, joints=None, direction=None, window=5):
@@ -405,14 +408,31 @@ class ContactSense:
         self.bias[on] = med[on]
         return med - self.bias
 
-    def limits(self, limit) -> np.ndarray:
-        """Per-joint thresholds: the requested ones, but never inside the joint's measured noise."""
-        return np.maximum(np.broadcast_to(np.asarray(limit, float), self.floor.shape), self.floor)
+    def limits(self, limit, fragile: float | None = None) -> np.ndarray:
+        """Per-joint thresholds: the requested ones, raised clear of the joint's measured noise (at most NOISE_CAP
+        times), and never above a fragile zone's limit. There a noisy arm may stop on nothing: it must not press
+        harder than the zone allows. `doubt` says when."""
+        limit = np.broadcast_to(np.asarray(limit, float), self.floor.shape)
+        raised = np.clip(self.floor, limit, self.NOISE_CAP * limit)
+        return raised if fragile is None else np.minimum(raised, fragile)
 
-    def exceeded(self, k, dtau) -> tuple[bool, np.ndarray]:
+    def doubt(self, used, joints=None) -> str:
+        """Joints whose noise alone can cross the threshold used for them, in words: a stop there may be nothing."""
+        loud = [i for i in (self.joints if joints is None else joints) if self.floor[i] > used[i] + 1e-9]
+        return ("noise alone can cross the limit, so it may be nothing: "
+                + ", ".join(f"j{i + 1} {self.floor[i]:.1f} Nm" for i in loud)) if loud else ""
+
+    def exceeded(self, k, dtau, fragile: float | None = None) -> tuple[bool, np.ndarray]:
         dev = self.deviation(k)
-        over = np.abs(dev[self.joints]) > self.limits(dtau)[self.joints]
+        over = np.abs(dev[self.joints]) > self.limits(dtau, fragile)[self.joints]
         return bool(len(self.hist) == self.hist.maxlen and over.any()), dev
+
+
+def fragile_dtau(k: Kernel) -> float | None:
+    """The contact limit of the fragile zones the tool is in (the lowest), or None outside them."""
+    tool = k.chain.fk(k.state.q)[:3, 3]
+    limits = [float(b.params.get("dtau", 0.3)) for b in k.world.zones_at(tool) if b.kind == "fragile"]
+    return min(limits) if limits else None
 
 
 class Guarded(Line):
@@ -460,12 +480,6 @@ class Guarded(Line):
                                  weights=k.ik_weights, shape=motion.cruise)
         return path
 
-    def dtau(self, k) -> float:
-        base = float(self.params.get("dtau", 0.6))
-        tool = k.chain.fk(k.state.q)[:3, 3]
-        zones = [b for b in k.world.zones_at(tool) if b.kind == "fragile"]
-        return min([base] + [float(b.params.get("dtau", 0.3)) for b in zones])
-
     def tick(self, k):
         if self.sense is None:
             # straight after another move the recent torque is that move's slowing down, not this pose at rest
@@ -473,7 +487,7 @@ class Guarded(Line):
                 k.set(k.cmd.q)
                 return None
             self.sense = ContactSense(k, self.params.get("joints"), direction=self.d)
-        hit, dev = self.sense.exceeded(k, self.dtau(k))
+        hit, dev = self.sense.exceeded(k, float(self.params.get("dtau", 0.6)), fragile_dtau(k))
         if hit:
             k.hold_here()
             moved = float(np.linalg.norm(k.chain.fk(k.state.q)[:3, 3] - k.chain.fk(self.path[0])[:3, 3]))
@@ -483,14 +497,17 @@ class Guarded(Line):
         return super().tick(k)
 
     def _noisy(self, k) -> str:
-        """Say so when a joint's noise, not the request, set its threshold: it changes what counts as contact."""
+        """Say so when a joint's noise, not the request, set its threshold, or when its noise alone can cross the
+        threshold (a fragile zone's is never raised): either changes what counts as contact."""
         if self.sense is None:
             return ""
-        want = self.dtau(k)
-        used = self.sense.limits(want)
+        asked, fragile = float(self.params.get("dtau", 0.6)), fragile_dtau(k)
+        want = asked if fragile is None else min(asked, fragile)
+        used = self.sense.limits(asked, fragile)
         raised = [i for i in self.sense.joints if used[i] > want + 1e-9]
-        return (" (torque noise raised the threshold: " + ", ".join(f"j{i + 1} {used[i]:.1f} Nm" for i in raised) + ")"
-                if raised else "")
+        notes = ["torque noise raised the threshold: " + ", ".join(f"j{i + 1} {used[i]:.1f} Nm" for i in raised)
+                 if raised else "", self.sense.doubt(used)]
+        return f" ({'; '.join(n for n in notes if n)})" if any(notes) else ""
 
     def arrived(self, k):
         if self.params.get("expect_contact", True):

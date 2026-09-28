@@ -24,7 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .behaviors import STATUSES, Behavior, ContactSense, Outcome, Residuals, Sequence, build
+from .behaviors import STATUSES, Behavior, ContactSense, Outcome, Residuals, Sequence, build, fragile_dtau
 from .body import Body, JointState
 from .envelope import MARGIN, Envelope, Trip
 from .errors import Refused, explain
@@ -432,18 +432,14 @@ class Kernel:
         dev = self._sense.deviation(self)
         if len(self._sense.hist) < (self._sense.hist.maxlen or 0):
             return None
-        limit = np.array([j.contact_dtau for j in self.manifest.joints])
-        tool = self.chain.fk(self.state.q)[:3, 3]
-        for zone in self.world.zones_at(tool):
-            if zone.kind == "fragile":
-                limit = np.minimum(limit, float(zone.params.get("dtau", 0.3)))
-        limit = self._sense.limits(limit)
+        limit = self._sense.limits([j.contact_dtau for j in self.manifest.joints], fragile_dtau(self))
         over = np.abs(dev) > limit
         if over.any():
             i = int(np.argmax(np.abs(dev) - limit))
+            doubt = self._sense.doubt(limit, [i])
             return Trip("contact", f"unexpected contact: {self.manifest.joints[i].name} torque moved {dev[i]:+.1f} Nm "
-                        f"beyond what the arm's weight explains (limit {limit[i]:.1f})", i, float(dev[i]),
-                        float(limit[i]))
+                        f"beyond what the arm's weight explains (limit {limit[i]:.1f}"
+                        + (f"; {doubt}" if doubt else "") + ")", i, float(dev[i]), float(limit[i]))
         return None
 
     def touched(self, kind: str, message: str):

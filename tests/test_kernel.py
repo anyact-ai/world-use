@@ -372,6 +372,30 @@ def test_torque_noise_does_not_read_as_contact_and_real_contact_still_does():
     assert out.ok and "contact after" in out.message and "noise raised the threshold" in out.message, out.message
 
 
+def test_noise_never_raises_a_fragile_zones_threshold():
+    """A glass zone asking for 0.3 Nm was judged at 1.4-2.5 Nm on an arm this noisy, and nothing said so. It keeps
+    its 0.3: a noisy arm may stop on nothing there, and says so, rather than press harder than the zone allows."""
+    k = make_kernel(noise=0.5)
+    assert k.run({"do": "line", "forward": 0.08, "up": 0.06}).ok
+    p = k.chain.fk(k.state.q)[:3, 3]
+    k.world.add_box("glass", "fragile", center=p, size=[0.3, 0.3, 0.3], frame="base", dtau=0.3)
+    assert k.run({"do": "hold", "seconds": 0.5}).ok
+    out = k.run({"do": "line", "forward": 0.03, "duration": 3.0})
+    assert out.status == "surprise" and "(limit 0.3; noise alone can cross the limit" in out.message, out.message
+
+
+def test_noise_raises_a_threshold_at_most_twofold():
+    from world_use.behaviors import ContactSense
+
+    k = make_kernel(noise=3.0)                                   # a joint gone this noisy must not go numb
+    for _ in range(k.residuals.window):
+        k.tick()
+        k.clock.wait()
+    sense = ContactSense(k)
+    asked = np.array([j.contact_dtau for j in k.manifest.joints])
+    assert np.allclose(sense.limits(asked), 2 * asked) and np.allclose(sense.limits(asked, 0.3), 0.3)
+
+
 def test_a_job_waits_for_a_torque_baseline_after_switching_on():
     k = make_kernel(noise=0.5)                                  # just switched on: no readings yet
     job = k.submit({"do": "line", "up": 0.02})

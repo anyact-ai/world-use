@@ -109,7 +109,9 @@ A plain list is a sequence; the first step that does not end "done" ends the who
 - Guard only the last few centimetres: a line to about 2 cm short of where contact should be, then the guarded
   move. Over a long guarded move a real arm's torque drifts from its model, and a stop on nothing gets likely.
 - Contact is judged against the arm holding still where the guarded move starts (it waits a moment if needed), and
-  no threshold sits inside a joint's own noise. When noise raises one, the outcome says so.
+  noise raises a threshold, up to twice the one asked for, so that it sits outside the joint's own noise. A fragile
+  zone's threshold is never raised: on a noisy arm a stop there may be nothing. The outcome says when either
+  happens.
 - Something held in a two-finger pinch turns instead of pushing back when it lands. To set it down at a height you
   know, use `guarded` with `"expect_contact": false` down to that height, look, then open. A `touchdown` would end
   in "no contact", which cancels the steps after it, the opening included.
