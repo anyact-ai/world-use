@@ -403,7 +403,8 @@ class Kernel:
         job = self.active
         assert job is not None, "a question is asked by the running job"
         if self.auto_answer:
-            job.answer = question.get("expect", "yes")
+            expect = question.get("expect", "yes")
+            job.answer = "(any answer)" if expect is None else expect
             self.emit("assumed", f"assumed '{job.answer}' for: {question['ask']}", "warn", **question)
             return
         job.question, job.status = question, "waiting"

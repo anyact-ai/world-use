@@ -512,3 +512,25 @@ def test_a_check_says_where_the_gripper_ends_pointing(k):
     L = float(k.world.from_base("work", k.chain.fk(k.state.q)[:3, 3])[1])
     report = check({"do": "move_to", "to": [0.22, L, 0.10], "point": "down"}, k)
     assert "the gripper ends pointing straight down, jaws open left and right (turned 90 deg)" in str(report)
+
+
+def test_a_free_checkpoint_takes_any_answer_and_keeps_it_with_where_the_tool_was(k):
+    job = k.submit([{"do": "checkpoint", "ask": "where is the tool?", "expect": None}, {"do": "line", "up": 0.02},
+                    [{"do": "checkpoint", "ask": "and now?", "expect": None}]])
+    for answer in ("512,300", "unseen"):
+        while job.status != "waiting":
+            k.tick()
+            k.clock.wait()
+        k.answer(job.id, answer)
+    while not job.finished:
+        k.tick()
+        k.clock.wait()
+    first, second = job.outcome.data["answers"]
+    assert first["answer"] == "512,300" and second["answer"] == "unseen" and second["step"] == 3
+    assert abs(second["tool"][2] - first["tool"][2] - 0.02) < 2e-3                  # measured, 2 cm apart
+
+
+def test_a_rehearsal_assumes_any_answer_at_a_free_checkpoint(k):
+    from world_use import check
+    report = check([{"do": "checkpoint", "ask": "where is the tool?", "expect": None}], k)
+    assert report.ok and "(any answer)" in report.assumed[0]

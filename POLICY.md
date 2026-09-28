@@ -70,7 +70,7 @@ optional `"label"`. `wu help STEP` lists a step's parameters.
 | gripper | `{"do": "gripper", "aperture_mm": 60}` | or `to` in native units (card) |
 | grip | `{"do": "grip", "start_mm": 60, "expect_mm": [35, 45]}` | close until contact, check the width, squeeze, hold |
 | hold | `{"do": "hold", "seconds": 2}` | |
-| checkpoint | `{"do": "checkpoint", "ask": "is the block between the jaws?", "view": "side"}` | `expect` defaults to "yes" |
+| checkpoint | `{"do": "checkpoint", "ask": "is the block between the jaws?", "view": "side"}` | `expect` defaults to "yes"; `"expect": null` takes any answer and keeps it |
 
 A plain list is a sequence; the first step that does not end "done" ends the whole plan.
 

@@ -687,7 +687,8 @@ class Checkpoint(Behavior):
 
     ask     the question, e.g. "is the black loop between the jaws?"
     view    the camera that answers it best (`wu look VIEW`); roi = [x0, y0, x1, y1] in that image
-    expect  the answer that means carry on (default "yes"); any other answer ends the plan
+    expect  the answer that means carry on (default "yes"); any other answer ends the plan. null: any answer carries
+            on, and is kept in the outcome with where the tool was (a measurement, like "512,300" in a picture)
     """
     kind = "checkpoint"
     example = {"do": "checkpoint", "ask": "is the block between the jaws?", "view": "side"}
@@ -697,15 +698,20 @@ class Checkpoint(Behavior):
         self.asked = False
 
     def tick(self, k):
+        expect = self.params.get("expect", "yes")
+        expect = None if expect is None else str(expect)
         if not self.asked:
             k.ask(dict(ask=self.params["ask"], view=self.params.get("view"), roi=self.params.get("roi"),
-                       expect=str(self.params.get("expect", "yes"))))
+                       expect=expect))
             self.asked = True
         k.set(k.cmd.q, np.zeros(k.manifest.n))
         answer = k.take_answer()
         if answer is None:
             return None
-        expect = str(self.params.get("expect", "yes"))
+        if expect is None:
+            tool = k.world.from_base("work", k.chain.fk(k.state.q)[:3, 3])
+            return self.done(f"{self.params['ask']} -> {answer}", answer=answer, ask=self.params["ask"],
+                             tool=np.round(tool, 4).tolist())
         if answer.strip().lower() == expect.lower():
             return self.done(f"{self.params['ask']} -> {answer}", answer=answer)
         return self.surprise(f"{self.params['ask']} -> {answer}", expected=expect, observed=answer)
@@ -735,12 +741,14 @@ class Sequence(Behavior):
     def start(self, k):
         self.i, self.current = 0, None
         self.results: list[Outcome] = []
+        self.answers: list[dict] = []     # what free checkpoints were told, however deep, in order
 
     def tick(self, k):
         while True:
             if self.current is None:
                 if self.i >= len(self.steps):
-                    return self.done(f"{len(self.steps)} steps done", steps=[o.message for o in self.results])
+                    return self.done(f"{len(self.steps)} steps done", steps=[o.message for o in self.results],
+                                     **({"answers": self.answers} if self.answers else {}))
                 self.current = self.steps[self.i]
                 k.emit("step", f"step {self.i + 1}/{len(self.steps)}: {self.current.describe()}", step=self.i + 1)
                 k.rebias()
@@ -756,8 +764,13 @@ class Sequence(Behavior):
             self.results.append(out)
             self.current = None
             self.i += 1
+            if "tool" in out.data and "answer" in out.data:
+                self.answers.append(dict(step=self.i, ask=out.data["ask"], answer=out.data["answer"],
+                                         tool=out.data["tool"]))
+            self.answers += [{**a, "step": self.i} for a in out.data.get("answers", [])]     # this plan's step
             if not out.ok:
-                out.data = {**out.data, "step": self.i, "of": len(self.steps)}
+                out.data = {**out.data, "step": self.i, "of": len(self.steps),
+                            **({"answers": self.answers} if self.answers else {})}
                 out.message = f"step {self.i}/{len(self.steps)}: {out.message}"
                 return out
             k.emit("step_done", f"step {self.i}/{len(self.steps)}: {out.message}", step=self.i)
