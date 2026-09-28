@@ -138,3 +138,16 @@ def test_the_daemon_shuts_down_once(daemon):
     with pytest.raises(Refused, match="already shutting down"):
         d.shutdown()
 
+
+
+def test_the_cli_exit_status_says_how_the_job_ended(client, capsys):
+    """`wu run ... && wu home` carried on after a surprise on the real reBot and took a gripped roll of tape home."""
+    from world_use import cli
+    url = ["--url", client.url]
+    assert cli.main(url + ["run", '[{"do": "line", "up": 0.03, "duration": 1.0}]']) == 0
+    assert cli.main(url + ["run", '[{"do": "line", "forward": 0.40}]']) == 4                    # refused, unmoved
+    assert cli.main(url + ["check", '[{"do": "line", "forward": 0.40}]']) == 4                  # would be refused
+    assert cli.main(url + ["check", '[{"do": "line", "up": 0.02}]']) == 0
+    assert cli.main(url + ["run", '[{"do": "checkpoint", "ask": "go on?"}]', "--wait", "5"]) == 5   # waits
+    capsys.readouterr()
+    assert cli.main(url + ["status", "--json"]) == 0 and '"line"' in capsys.readouterr().out

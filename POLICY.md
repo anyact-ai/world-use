@@ -31,7 +31,9 @@ compared to the robot, so decide in phases, not in single small steps.
    would refuse any step, nothing moves and you get every problem at once, each with the numbers that would
    pass, plus which short moves are possible from here. Otherwise it runs, waits up to 60 s, and prints the
    outcome and the state line. (`wu check '<plan>'` rehearses without running: time, contacts, heat. After a
-   check, `wu run --checked` runs that same plan without pasting it again.)
+   check, `wu run --checked` runs that same plan without pasting it again.) The exit status is the outcome: 0
+   done, 4 refused or surprise (and so on), 5 waiting at a checkpoint. So `wu run '...' && wu home` stops where
+   the robot did instead of carrying on after a surprise.
 3. **At a checkpoint** the arm holds and the job waits: `wu look` at the named camera, then
    `wu answer JOB yes` (any other answer ends the plan so you can decide what to do instead). `wu answer`
    waits until the next checkpoint or the end of the plan.

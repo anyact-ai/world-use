@@ -15,6 +15,11 @@ every line ends up in a model's context.
     wu home-route '<steps>'     the way home from here ('[]' = fold straight back); wu home runs it
     wu stop | events | enable | release | down
     wu mcp                      the same verbs as MCP tools, over stdio
+
+The exit status says how it went, so a shell chain stops where the robot did: 0 done (a job) or passed (a
+check); 4 refused, surprise, stopped, faulted or cancelled, or a check that would not pass; 5 waiting at a
+checkpoint (`wu answer`); 6 still running when the wait ran out (`wu job ID --wait 60`); 2 the daemon refused the
+request; 3 no daemon. `--json` works before or after the command.
 """
 import argparse
 import json
@@ -50,6 +55,18 @@ def job_text(d: dict) -> str:
         more = f"; keep waiting with: wu job {d['id']} --wait 60" if d["status"] in ("queued", "running") else ""
         lines.append(f"job {d['id']} {d['status']}: {d['what']}{more}")
     return "\n".join(lines + [d["line"]])
+
+
+JOB_EXIT = {"done": 0, "waiting": 5, "queued": 6, "running": 6}
+
+
+def exit_status(a, r) -> int:
+    """How a command went, as a shell reads it: see the module docstring."""
+    if isinstance(r, dict) and "id" in r and "status" in r:
+        return JOB_EXIT.get(r["status"], 4)
+    if a.cmd == "check" and isinstance(r, dict):
+        return 0 if r.get("ok") else 4
+    return 0
 
 
 def cmd_up(a):
@@ -138,6 +155,8 @@ def main(argv=None) -> int:
     p.add_argument("--source", default="policy")
     for name in ("enable", "release", "reset"):
         sub.add_parser(name)
+    for p in sub.choices.values():                  # `wu status --json` as well as `wu --json status`
+        p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="print raw JSON")
     a = ap.parse_args(argv)
     c = Client(a.url)
     try:
@@ -171,7 +190,7 @@ def main(argv=None) -> int:
             print(r)
         else:
             print(json.dumps(r, indent=1))
-        return 0
+        return exit_status(a, r)
     except DaemonError as e:
         refused = e.body.get("refused")
         if refused:
