@@ -345,3 +345,29 @@ def test_a_body_that_raises_faults_the_kernel_but_the_loop_goes_on():
     stop.set()
     loop.join(2.0)
 
+
+
+def test_torque_noise_does_not_read_as_contact_and_real_contact_still_does():
+    """A real reBot's loaded joints read +-0.5-1 Nm from one tick to the next while holding still (2026-09-27): a
+    baseline taken from one reading was enough to end a guarded move 2 mm into free air."""
+    k = make_kernel(noise=0.5)
+    assert k.run({"do": "line", "forward": 0.08, "up": 0.06}).ok
+    for _ in range(3):
+        out = k.run({"do": "guarded", "up": -0.02, "dtau": 0.6, "expect_contact": False})
+        assert out.ok and "no contact" in out.message, out.message
+    p = k.chain.fk(k.state.q)[:3, 3]
+    k.world.add_box("table", "surface", center=[p[0], p[1], p[2] - 0.03], size=[0.4, 0.4, 0.02], frame="base")
+    out = k.run({"do": "touchdown", "max": 0.05, "dtau": 0.6})
+    assert out.ok and "contact after" in out.message and "noise raised the threshold" in out.message, out.message
+
+
+def test_a_job_waits_for_a_torque_baseline_after_switching_on():
+    k = make_kernel(noise=0.5)                                  # just switched on: no readings yet
+    job = k.submit({"do": "line", "up": 0.02})
+    for _ in range(k.residuals.need - 1):
+        k.tick()
+        k.clock.wait()
+    assert job.status == "queued"
+    k.tick()
+    k.clock.wait()
+    assert job.status == "running" and (k._sense.floor > 0).all()   # judged against a baseline, noise included

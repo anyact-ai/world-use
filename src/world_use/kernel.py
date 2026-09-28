@@ -24,7 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .behaviors import STATUSES, Behavior, ContactSense, Outcome, build
+from .behaviors import STATUSES, Behavior, ContactSense, Outcome, Residuals, build
 from .body import Body, JointState
 from .envelope import Envelope, Trip
 from .errors import Refused, explain
@@ -177,6 +177,9 @@ class Kernel:
         self._warned: set[int] = set()
         self._sense: ContactSense | None = None    # collision check for every move (guarded moves add their own)
         self._held_at: float | None = None         # gripper position where the held object stopped the fingers
+        self.residuals = Residuals(m.rate_hz)      # torque the model does not explain: contact checks judge against it
+        self.still = 0                             # ticks the command has not changed for
+        self._last_q_cmd = np.zeros(0)
         self._loop_thread: threading.Thread | None = None     # set by loop(): from then on the body's only caller
         self._posted: queue.SimpleQueue[tuple[Callable[[], object], Future]] = queue.SimpleQueue()
 
@@ -221,6 +224,7 @@ class Kernel:
         with self.lock:
             self.state = st
             self.cmd = Command(np.asarray(st.q, float).copy(), np.zeros(self.manifest.n), st.gripper)
+            self.residuals.clear()                 # readings from before a release say nothing about now
             self.enabled = True
         self.emit("enabled", "torque on")
 
@@ -403,6 +407,7 @@ class Kernel:
         for zone in self.world.zones_at(tool):
             if zone.kind == "fragile":
                 limit = np.minimum(limit, float(zone.params.get("dtau", 0.3)))
+        limit = self._sense.limits(limit)
         over = np.abs(dev) > limit
         if over.any():
             i = int(np.argmax(np.abs(dev) - limit))
@@ -449,6 +454,8 @@ class Kernel:
     def tick(self):
         st = self.body.read()
         self.state = st
+        if self.enabled and st.tau is not None:
+            self.residuals.push(np.asarray(st.tau, float) - self.chain.gravity(st.q))
         now = self.clock.now()
         self.heat.update(now, st.temp, self.enabled)
         with self.lock:
@@ -468,7 +475,8 @@ class Kernel:
                     self._end(self.active, self.active.behavior.stop(self, reason))
                 elif self.enabled:
                     self.hold_here()
-            if self.active is None and self.queue and self.enabled:
+            # a job starts once there is a torque baseline to judge contact against (0.1 s after switching on)
+            if self.active is None and self.queue and self.enabled and (st.tau is None or self.residuals.ready):
                 self._start(self.queue.popleft(), now)
             job = self.active
         if job is not None and job.status in ("running", "waiting"):
@@ -484,6 +492,8 @@ class Kernel:
                     self._end(job, out)
         if self.enabled:
             self.body.command(self.cmd.q, self.cmd.dq, self.cmd.gripper, self.cmd.gripper_v)
+        self.still = self.still + 1 if np.array_equal(self.cmd.q, self._last_q_cmd) else 0
+        self._last_q_cmd = self.cmd.q.copy()
         moving = bool(job is not None and not job.finished and job.status == "running" and job.behavior.moves)
         self.tape.add(now - self.t0, self.enabled, moving, job.id if job else 0, self.cmd.q, st.q, st.tau, st.temp,
                       self.cmd.gripper, st.gripper, st.gripper_tau)

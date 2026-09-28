@@ -82,6 +82,9 @@ MANIFEST = Manifest(
     hardware_notes=(
         "Forward/up moves end 2-5 mm low (the elbow carries about 15% more than the URDF says).",
         "After base turns the tool can be 5-10 mm off sideways: the base gain is soft.",
+        "Joint torque strays 1-3 Nm from the gravity model over a 10 cm move (friction and hysteresis, not mass), "
+        "so a long guarded move can stop on nothing: line to about 2 cm short of the expected contact, then guard "
+        "only the rest. Contact is found at a few newtons.",
     ),
 )
 

@@ -89,6 +89,13 @@ A plain list is a sequence; the first step that does not end "done" ends the who
 - Inside a `fragile` zone (glass, for example) both thresholds drop sharply.
 - If the world knows a surface is there, a guarded move plans only 2 cm past it. Reaching the end without
   contact then means the world model is wrong: look, then correct it.
+- Guard only the last few centimetres: a line to about 2 cm short of where contact should be, then the guarded
+  move. Over a long guarded move a real arm's torque drifts from its model, and a stop on nothing gets likely.
+- Contact is judged against the arm holding still where the guarded move starts (it waits a moment if needed), and
+  no threshold sits inside a joint's own noise. When noise raises one, the outcome says so.
+- Something held in a two-finger pinch turns instead of pushing back when it lands. To set it down at a height you
+  know, use `guarded` with `"expect_contact": false` down to that height, look, then open. A `touchdown` would end
+  in "no contact", which cancels the steps after it, the opening included.
 
 ## Going home and letting go
 

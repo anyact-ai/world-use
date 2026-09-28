@@ -112,6 +112,7 @@ def twin(k: Kernel) -> Kernel:
     t.envelope.q_start = env.q_start
     t.envelope.max_excursion, t.envelope.overrides = env.max_excursion, dict(env.overrides)
     t.home_route, t.last_touch = route, 0
+    t.residuals.need = 1              # noise-free, and the robot's own baseline is warm by the time a plan runs
     t.enable()
     if grip_cmd is not None:
         t.cmd.gripper = grip_cmd

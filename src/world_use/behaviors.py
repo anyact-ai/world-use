@@ -221,14 +221,48 @@ class MoveTo(PathBehavior):
 
 # -- contact ------------------------------------------------------------------------------------------
 
+class Residuals:
+    """Joint torque the arm's own weight does not explain (measured minus the gravity model), over the last few
+    tenths of a second: the baseline a contact check judges against, and how noisy each joint is right now."""
+
+    def __init__(self, rate_hz: float, window_s: float = 0.3, need_s: float = 0.1):
+        self.samples: deque[np.ndarray] = deque(maxlen=max(1, int(window_s * rate_hz)))
+        self.need = max(1, int(need_s * rate_hz))
+
+    def push(self, r):
+        self.samples.append(np.asarray(r, float))
+
+    def clear(self):
+        self.samples.clear()
+
+    @property
+    def ready(self) -> bool:
+        return len(self.samples) >= self.need
+
+    @property
+    def window(self) -> int:
+        return self.samples.maxlen or 1
+
+    def baseline(self) -> tuple[np.ndarray, np.ndarray]:
+        """(median, robust noise) per joint. Refuses when empty: a NaN bias would make every check pass."""
+        if not self.samples:
+            raise RuntimeError("no torque readings since the torque came on")
+        s = np.array(self.samples)
+        bias = np.median(s, axis=0)
+        return bias, 1.4826 * np.median(np.abs(s - bias), axis=0)
+
+
 class ContactSense:
     """Torque change that the arm's own weight does not explain.
 
-    The bias (measured minus model) is captured while holding still before the move, so the URDF's mass errors
-    and cable loads cancel. A short median filter rejects single-tick spikes. Without an explicit joint list it
-    watches the joints with real leverage along the direction of motion: a vertical push barely loads a vertical
-    base axis, whose friction would only add noise.
+    The bias (measured minus model) is the median of the kernel's last few tenths of a second, so the URDF's mass
+    errors and cable loads cancel and one noisy reading does not shift every judgement after it. Their spread is
+    the joint's noise, and no threshold is set below NOISE_K times it: a real reBot's loaded shoulder and elbow
+    read +-0.5-1 Nm from one tick to the next while holding still. A short median filter rejects single-tick
+    spikes. Without an explicit joint list it watches the joints with real leverage along the direction of
+    motion: a vertical push barely loads a vertical base axis, whose friction would only add noise.
     """
+    NOISE_K = 3.5                     # holds of up to 54 s on the reBot stayed within 3.3x (2026-09-27)
 
     def __init__(self, k: Kernel, joints=None, direction=None, window=5):
         st = k.state
@@ -241,23 +275,32 @@ class ContactSense:
             self.joints = [int(i) for i in np.where(lever >= 0.3 * lever.max())[0]]
         else:
             self.joints = list(range(k.manifest.n))
-        self.bias = np.asarray(st.tau, float) - k.chain.gravity(st.q)
+        if k.residuals.samples:
+            self.bias, noise = k.residuals.baseline()
+        else:                         # a heat emergency may start home before any reading: judge from this one
+            self.bias, noise = np.asarray(st.tau, float) - k.chain.gravity(st.q), np.zeros(k.manifest.n)
+        self.floor = self.NOISE_K * noise
         self.hist = deque(maxlen=window)
 
     def deviation(self, k: Kernel) -> np.ndarray:
         st = k.state
-        dev = np.asarray(st.tau, float) - k.chain.gravity(st.q) - self.bias
-        self.hist.append(dev)
-        return np.median(np.array(self.hist), axis=0)
+        self.hist.append(np.asarray(st.tau, float) - k.chain.gravity(st.q))
+        return np.median(np.array(self.hist), axis=0) - self.bias
+
+    def limits(self, limit) -> np.ndarray:
+        """Per-joint thresholds: the requested ones, but never inside the joint's measured noise."""
+        return np.maximum(np.broadcast_to(np.asarray(limit, float), self.floor.shape), self.floor)
 
     def exceeded(self, k, dtau) -> tuple[bool, np.ndarray]:
         dev = self.deviation(k)
-        sel = np.abs(dev[self.joints])
-        return bool(len(self.hist) == self.hist.maxlen and sel.max() > dtau), dev
+        over = np.abs(dev[self.joints]) > self.limits(dtau)[self.joints]
+        return bool(len(self.hist) == self.hist.maxlen and over.any()), dev
 
 
 class Guarded(Line):
     """Slow straight line that stops the moment something pushes back; no contact by the end is a surprise.
+    It first makes sure the arm has held still for a moment where it starts: that stillness is what contact is
+    judged against.
 
     forward, left, up  metres along the frame's axes: the furthest it may go
     dtau               joint torque change that counts as contact, Nm (default 0.6; fragile zones use less)
@@ -274,9 +317,9 @@ class Guarded(Line):
 
     def start(self, k):
         self.d, self.cut = self._clip_to_surfaces(k, self.delta(k))
-        self.sense = ContactSense(k, self.params.get("joints"), direction=self.d)
         self.seconds = max(1.0, float(np.linalg.norm(self.d)) / float(self.params.get("speed_mps", 0.02)) / 0.8)
         super().start(k)
+        self.sense: ContactSense | None = None     # taken once the arm has held still for a whole baseline window
 
     def _clip_to_surfaces(self, k, d):
         """A known surface ends the search: no need to plan (or be able to reach) beyond it."""
@@ -306,22 +349,40 @@ class Guarded(Line):
         return min([base] + [float(b.params.get("dtau", 0.3)) for b in zones])
 
     def tick(self, k):
+        if self.sense is None:
+            # straight after another move the recent torque is that move's slowing down, not this pose at rest
+            if k.still < k.residuals.window:
+                k.set(k.cmd.q)
+                return None
+            self.sense = ContactSense(k, self.params.get("joints"), direction=self.d)
         hit, dev = self.sense.exceeded(k, self.dtau(k))
         if hit:
             k.hold_here()
             moved = float(np.linalg.norm(k.chain.fk(k.state.q)[:3, 3] - k.chain.fk(self.path[0])[:3, 3]))
             k.touched("contact", f"contact after {100 * moved:.1f} cm")
-            return self.done(f"contact after {100 * moved:.1f} cm", moved_m=round(moved, 4),
+            return self.done(f"contact after {100 * moved:.1f} cm{self._noisy(k)}", moved_m=round(moved, 4),
                              torque_change=np.round(dev, 2).tolist())
         return super().tick(k)
+
+    def _noisy(self, k) -> str:
+        """Say so when a joint's noise, not the request, set its threshold: it changes what counts as contact."""
+        if self.sense is None:
+            return ""
+        want = self.dtau(k)
+        used = self.sense.limits(want)
+        raised = [i for i in self.sense.joints if used[i] > want + 1e-9]
+        return (" (torque noise raised the threshold: " + ", ".join(f"j{i + 1} {used[i]:.1f} Nm" for i in raised) + ")"
+                if raised else "")
 
     def arrived(self, k):
         if self.params.get("expect_contact", True):
             where = f", {100 * self.OVERSHOOT:.0f} cm past where {self.cut!r} should be" if self.cut else ""
-            return self.surprise(f"reached the end of the guarded move without contact{where}", expected="contact",
-                                 observed="no contact",
+            return self.surprise(f"reached the end of the guarded move without contact{where}{self._noisy(k)}",
+                                 expected="contact", observed="no contact",
                                  hint="the world model is off here: look, then correct it" if self.cut else
-                                 "the surface is further than planned: look first, then go further")
+                                 "the surface is further than planned, or something held turned in the grip instead "
+                                 "of pushing back: look first. To set a held thing down at a known height, use "
+                                 "guarded with expect_contact false")
         return self.done("no contact, as expected")
 
 
