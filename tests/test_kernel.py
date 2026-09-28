@@ -398,3 +398,15 @@ def test_a_joint_on_its_rest_stop_is_not_judged_and_is_re_zeroed_until_it_leaves
     assert abs(feel(lifted, stop_load)[2]) < 1e-9                # off it: judged from where it let go
     assert feel(lifted, stop_load + [0, 0, 3.5, 0, 0, 0])[2] > 3.0
 
+
+
+def test_a_gripper_trip_ends_the_gripper_step_inside_a_plan_too(lifted):
+    """Alone, a gripper step closing on something too wide ended at the first trip; inside a plan it tripped on
+    every tick and still ended "done"."""
+    k = lifted
+    assert k.run({"do": "gripper", "to": 3.0}).ok
+    p = k.chain.fk(k.state.q)[:3, 3]
+    k.world.add_box("block", "object", center=p, size=[0.04, 0.04, 0.06], frame="base")
+    out = k.run([{"do": "hold", "seconds": 0.1}, {"do": "gripper", "to": 1.0}])
+    assert out.status == "surprise" and out.message.startswith("step 2/2: gripper")
+    assert sum(e["kind"] == "gripper_trip" for e in k.events.since(0)) == 1

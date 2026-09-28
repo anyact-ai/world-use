@@ -24,7 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .behaviors import STATUSES, Behavior, ContactSense, Outcome, Residuals, build
+from .behaviors import STATUSES, Behavior, ContactSense, Outcome, Residuals, Sequence, build
 from .body import Body, JointState
 from .envelope import MARGIN, Envelope, Trip
 from .errors import Refused, explain
@@ -544,9 +544,14 @@ class Kernel:
         if trip.isolate:                             # gripper only: freeze it where it is, the arm carries on
             self.cmd.gripper, self.cmd.gripper_v = self.state.gripper, 0.0
             self.emit("gripper_trip", trip.message, "warn")
-            if self.active is not None and self.active.behavior.kind in ("gripper", "grip"):
-                self._end(self.active, Outcome("surprise", self.active.behavior.kind, trip.message,
-                                               hint="look at the gripper"))
+            job = self.active
+            step = job.behavior if job is not None else None
+            while isinstance(step, Sequence) and step.current is not None:     # the step a plan is on
+                step = step.current
+            if job is not None and step is not None and step.kind in ("gripper", "grip"):
+                seq = job.behavior
+                where = f"step {seq.i + 1}/{len(seq.steps)}: " if isinstance(seq, Sequence) else ""
+                self._end(job, Outcome("surprise", step.kind, where + trip.message, hint="look at the gripper"))
             return
         if trip.kind == "hot":
             self._on_hot(trip, now)
