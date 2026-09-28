@@ -8,6 +8,7 @@ import numpy as np
 
 from .errors import Refused
 from .plan import reach
+from .world import along, heading
 
 
 def _xyz(k, p, frame="work") -> str:
@@ -143,32 +144,14 @@ def _why(k, refusal: Refused) -> str:
     return " and ".join(dict.fromkeys(reasons))
 
 
-def _heading(v) -> str:
-    """A direction in the work frame, in words: 'forward, level', 'straight down', 'left, tilted 30 deg down'."""
-    v = np.asarray(v, float) / np.linalg.norm(v)
-    elev = float(np.degrees(np.arcsin(np.clip(v[2], -1.0, 1.0))))
-    if abs(elev) > 80:
-        return "straight up" if elev > 0 else "straight down"
-    names = ("forward", "forward-left", "left", "back-left", "back", "back-right", "right", "forward-right")
-    name = names[int(np.round(np.degrees(np.arctan2(v[1], v[0])) / 45.0)) % 8]
-    return f"{name}, " + ("level" if abs(elev) < 5 else f"tilted {abs(elev):.0f} deg {'up' if elev > 0 else 'down'}")
-
-
-def _axis(v) -> str:
-    v = np.abs(np.asarray(v, float)) / np.linalg.norm(v)
-    i = int(v.argmax())
-    name = ("forward and back", "left and right", "up and down")[i]
-    return name if v[i] > 0.94 else f"roughly {name}"
-
-
 def tool_line(k) -> str | None:
     """Which way the gripper points and opens, in the work frame: what a policy needs to plan an approach."""
     g = k.manifest.gripper
     if g is None:
         return None
     R = k.world.frame("work").T[:3, :3].T @ k.chain.fk(k.cmd.q)[:3, :3]
-    return (f"tool: the gripper points {_heading(R @ np.asarray(g.approach))}; its jaws open "
-            f"{_axis(R @ np.asarray(g.opens_along))}; the tool point (the position the state line reports) is "
+    return (f"tool: the gripper points {heading(R @ np.asarray(g.approach))}; its jaws open "
+            f"{along(R @ np.asarray(g.opens_along))}; the tool point (the position the state line reports) is "
             f"{g.tool_point}. line, lines and move_to keep this angle; only joints moves change it.")
 
 

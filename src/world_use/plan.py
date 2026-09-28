@@ -18,7 +18,7 @@ from .behaviors import REGISTRY, Outcome
 from .body import Manifest
 from .errors import Refused
 from .kernel import Kernel, VirtualClock
-from .world import World
+from .world import DIRECTIONS, World
 
 
 class Plan:
@@ -204,9 +204,6 @@ def rehearse(spec, t: Kernel, timeout_s: float = 900.0) -> Report:
                   [e["message"] for e in events if e["kind"] in ("contact", "grip")],
                   [e["message"] for e in events if e["kind"] == "assumed"],
                   np.round(tool, 3).tolist(), rise, problems, path)
-
-
-DIRECTIONS = dict(up=(0, 0, 1), down=(0, 0, -1), forward=(1, 0, 0), back=(-1, 0, 0), left=(0, 1, 0), right=(0, -1, 0))
 
 
 def reach(k: Kernel, step: float = 0.03) -> dict[str, Refused | None]:
