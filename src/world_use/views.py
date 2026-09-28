@@ -2,8 +2,6 @@
 
 The state line is what a policy reads after every step, so every character in it has to earn its place.
 """
-from __future__ import annotations
-
 import time
 
 import numpy as np

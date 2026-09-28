@@ -1,6 +1,4 @@
 """Events: one stream of everything that happened, numbered, so a policy can ask "what changed since N?"."""
-from __future__ import annotations
-
 import json
 import threading
 import time

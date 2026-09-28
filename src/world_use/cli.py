@@ -12,8 +12,6 @@ every line ends up in a model's context.
     wu help [STEP]              the steps a plan can use, from the running daemon
     wu stop | wu home | wu events | wu down
 """
-from __future__ import annotations
-
 import argparse
 import json
 import os

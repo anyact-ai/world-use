@@ -19,7 +19,7 @@ Computer use gave models a screen and a mouse. This gives them an arm.
 ## Try it in simulation
 
 ```sh
-uv tool install "git+https://github.com/anyact-ai/world-use"    # or pip install; Python 3.11+
+uv tool install "git+https://github.com/anyact-ai/world-use"    # or pip install; Python 3.14
 wu up --workcell block --enable      # a daemon that owns a simulated arm, a block on a tray in front of it
 wu card                              # what this robot is and can do
 wu look side                         # a picture with the tool and the known boxes drawn on it; prints its path

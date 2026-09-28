@@ -4,7 +4,7 @@ version = "0.2.0.dev0"
 description = "Run frontier models as robot policies: a safety kernel, checked plans and compact context for LLM-operated robots."
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 authors = [{ name = "Dmytro Hrybov" }]
 keywords = ["robotics", "llm", "agents", "policy", "robot-arm", "mcp"]
 classifiers = [
@@ -12,9 +12,6 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -42,7 +39,7 @@ packages = ["src/world_use"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py311"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]

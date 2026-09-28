@@ -1,5 +1,4 @@
 """The one exception a policy needs to understand: a refused command. Nothing moved."""
-from __future__ import annotations
 
 
 class Refused(ValueError):

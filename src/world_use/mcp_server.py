@@ -6,8 +6,6 @@
 It is a thin layer on the daemon's client, like the CLI, and returns the same short text; `look` returns the
 picture itself.
 """
-from __future__ import annotations
-
 import json
 from collections.abc import Callable
 

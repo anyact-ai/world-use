@@ -9,8 +9,6 @@ Its rules are the lessons of running a slow policy on real hardware:
 - A refused command moves nothing.
 - The policy may be slow, crash or restart: the kernel keeps holding until it is told something new.
 """
-from __future__ import annotations
-
 import itertools
 import json
 import threading

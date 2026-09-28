@@ -5,8 +5,6 @@ times tracking error, so pressing on something looks like it does on a real posi
 in the world push the tool back. Objects stop the gripper at their width and ride along once gripped. Motors
 heat while they carry load. It is not a physics engine: nothing tips, slides or bounces.
 """
-from __future__ import annotations
-
 import numpy as np
 
 from ..body import JointState, Manifest

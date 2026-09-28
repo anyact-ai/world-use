@@ -8,8 +8,6 @@ Every behavior can carry an expectation. When what happens is not what was expec
 
 A spec is plain JSON: {"do": "line", "up": 0.05}. A list is a sequence. `build(spec)` makes the behavior.
 """
-from __future__ import annotations
-
 import inspect
 from collections import deque
 from dataclasses import dataclass, field

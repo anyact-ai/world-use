@@ -3,8 +3,6 @@
 Every fact carries its source and time, and becomes stale when the world may have changed under it (a contact,
 a human touching the scene). Policies read the world instead of re-deriving it from images every step.
 """
-from __future__ import annotations
-
 import time
 from dataclasses import dataclass, field
 

@@ -9,8 +9,6 @@
 
 Any registered behavior is a method (p.grip(...), p.checkpoint(...)); plugins' behaviors appear automatically.
 """
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 
 import numpy as np

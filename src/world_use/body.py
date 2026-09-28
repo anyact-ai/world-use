@@ -3,8 +3,6 @@
 An adapter only moves joints and reports what it measures. Planning, limits, watchdogs, behaviors and
 logging live in the kernel, so a new arm needs a manifest and five methods.
 """
-from __future__ import annotations
-
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field

@@ -9,8 +9,6 @@ server all use. It also owns the cameras.
 With a simulated body the daemon keeps two worlds: the simulator's truth, and the kernel's model of it. A workcell
 box is in both unless it says `known = false`; what a policy adds (`wu box`) goes into the model only.
 """
-from __future__ import annotations
-
 import argparse
 import json
 import signal
