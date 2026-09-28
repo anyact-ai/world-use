@@ -85,6 +85,20 @@ A plain list is a sequence; the first step that does not end "done" ends the who
   after a surprise. Record what you measured, not what you assume.
 - In a simulation the cameras show the simulator's scene, which may hold things the kernel does not know yet.
 
+## Cameras
+
+- `wu look` draws what the kernel believes only on a calibrated camera. A camera that was never calibrated draws
+  nothing; one that has moved since draws in the wrong place, which is worse, so calibrate it again.
+- Calibrate a camera from the arm: put the tool in open space the camera sees well, above the turn height, then
+  `wu calibrate CAMERA`. The arm visits the corners of a box, and at each a question asks where the tool point
+  (between the fingertips) is: `wu look CAMERA --grid`, then `wu answer JOB x,y` in that picture's pixels (or
+  `unseen`). The last answer brings the fit, installed if it is good, with the workcell lines that keep it. It takes
+  two or three minutes with the torque on: calibrate early, while the motors are cool.
+- If the box leaves the picture, answers come back `unseen` and the fit may refuse: move the tool so the camera
+  sees more around it and calibrate again. A camera on the arm moves with the tool and cannot be calibrated this way.
+- A 360 camera serves pinhole cuts (`projection = "equirect"`); once calibrated, a cut is aimed at a point with
+  `look_at` and drawn on like any other camera.
+
 ## Contact
 
 - Intended contact uses `touchdown` or `guarded`: slow, and stopped the moment the joints feel it.

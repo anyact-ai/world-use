@@ -151,6 +151,13 @@ def build(url: str = DEFAULT_URL):
         return call(recent)
 
     @server.tool()
+    def calibrate(camera: str, points: int = 8, wait_s: float = 60.0) -> str:
+        """Find where a camera is from the arm: the tool visits the corners of a box, and at each a question asks
+        where the tool point is in `look(camera, grid=True)`; answer x,y pixels (or unseen) with `answer`. The
+        reply to the last answer has the fit, installed if it is good, and the workcell lines to keep it."""
+        return call(lambda: job_text(c.calibrate(camera, points, None, wait_s)))
+
+    @server.tool()
     def record() -> str:
         """Write the flight record so far (tape, summary, world) without stopping anything; returns where."""
         def saved():

@@ -14,6 +14,7 @@ every line ends up in a model's context.
     wu fact KEY VALUE           record a measurement with its source
     wu home-route '<steps>'     the way home from here ('[]' = fold straight back); wu home runs it
     wu record                   write the flight record so far (tape, summary, world), without stopping
+    wu calibrate CAMERA         find where a camera is from the arm: say where you see the tool point, 6-8 times
     wu stop | events | enable | release | down
     wu mcp                      the same verbs as MCP tools, over stdio
 
@@ -43,6 +44,8 @@ def _spec(text: str):
 def job_text(d: dict) -> str:
     """A job as a policy reads it: the outcome (or the question it waits on) and the state line."""
     lines = [f"warning: {d['warning']}"] if d.get("warning") else []
+    if d.get("calibration"):
+        lines.append(d["calibration"]["text"])
     if d.get("incident"):
         return "\n".join(lines + [d["incident"]])
     out = d.get("outcome")
@@ -108,6 +111,11 @@ def main(argv=None) -> int:
     up.add_argument("--enable", action="store_true")
     sub.add_parser("down", help="release at rest and stop the daemon")
     sub.add_parser("record", help="write the flight record so far, without stopping")
+    p = sub.add_parser("calibrate", help="find where a camera is from the arm: answer where it sees the tool point")
+    p.add_argument("camera")
+    p.add_argument("--points", type=int, default=8, help="corners of the box to visit (6-8)")
+    p.add_argument("--spread", type=float, help="half-width of the box, m (default: the largest that passes)")
+    p.add_argument("--wait", type=float, default=60.0)
     sub.add_parser("status")
     sub.add_parser("card")
     for name in ("run", "check"):
@@ -219,6 +227,8 @@ def _dispatch(a, c: Client):
         if a.spec is None and not a.checked:
             raise SystemExit("wu run '<plan>' (or wu run --checked, for the plan the last wu check rehearsed)")
         return c.run(None if a.checked else _spec(a.spec), wait=a.wait, check=not a.no_check, checked=a.checked)
+    if a.cmd == "calibrate":
+        return c.calibrate(a.camera, a.points, a.spread, a.wait)
     if a.cmd == "look":
         r = c.look(a.camera, None if a.plan is None else _spec(a.plan), a.grid)
         return f"{r['path']}\n{r['camera']} camera, {r['size'][0]}x{r['size'][1]}: {r['drawn']}" + (

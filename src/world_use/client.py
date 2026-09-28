@@ -94,6 +94,10 @@ class Client:
     def help(self) -> dict:
         return self._call("GET", "/help")["steps"]
 
+    def calibrate(self, camera: str, points: int = 8, spread: float | None = None, wait: float = 0.0) -> dict:
+        """Start calibrating a camera from the arm: a job whose checkpoints ask where the tool point is."""
+        return self._call("POST", "/calibrate", dict(camera=camera, points=points, spread=spread, wait=wait))
+
     def record(self) -> dict:
         """Write the flight record so far, without stopping anything."""
         return self._call("POST", "/record", {})

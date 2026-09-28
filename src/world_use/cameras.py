@@ -98,6 +98,8 @@ ROTATE = {90: Image.Transpose.ROTATE_270, 180: Image.Transpose.ROTATE_180, 270: 
 
 
 class Camera:
+    fov_deg: float | None = None      # the field of view it is said to have: a calibration's prior
+
     def __init__(self, name: str, view: View | None = None, rotate: int = 0):
         if rotate not in (0, *ROTATE):
             raise ValueError(f"camera {name!r}: rotate is 0, 90, 180 or 270 (degrees clockwise), not {rotate!r}")
@@ -163,18 +165,18 @@ class FileCamera(Camera):
 
 
 class SimCamera(Camera):
-    """Renders the simulator's scene (its truth) from a fixed viewpoint."""
-    view: View
+    """Renders the simulator's scene (its truth) through `lens`. Its `view` starts as the lens, and is what the
+    kernel believes: a calibration replaces the view, never the lens."""
 
-    def __init__(self, name: str, view: View, body):
-        super().__init__(name, view)
-        self.body = body
+    def __init__(self, name: str, lens: View, body):
+        super().__init__(name, lens)
+        self.lens, self.body = lens, body
 
     def snap(self, k) -> Image.Image:
         b = self.body
         g = b.manifest.gripper
         opening = None if g is None or b.grip is None else g.aperture(b.grip)
-        return render(self.view, b.world, b.chain, b.q, g, opening)
+        return render(self.lens, b.world, b.chain, b.q, g, opening)
 
 
 def equirect_dirs(u, v) -> np.ndarray:
@@ -230,10 +232,15 @@ class EquirectCut(Camera):
             forward = np.array([-np.cos(p) * np.cos(y), np.cos(p) * np.sin(y), np.sin(p)])
         self.R = _axes(forward, [0.0, 0.0, 1.0])       # the cut's axes in the 360's frame: its up is the 360's up
         if self.pose is not None:
-            T = np.eye(4)
-            T[:3, :3], T[:3, 3] = self.pose[:3, :3] @ self.R, self.pose[:3, 3]
-            w, h = self.size
-            self.view = View(T, self.f, self.f, w / 2, h / 2, w, h)
+            self.install(self.pose)
+
+    def install(self, pose):
+        """The 360's pose (its own frame in the base frame): from then on the cut has a view to draw on."""
+        self.pose = np.asarray(pose, float)
+        T = np.eye(4)
+        T[:3, :3], T[:3, 3] = self.pose[:3, :3] @ self.R, self.pose[:3, 3]
+        w, h = self.size
+        self.view = View(T, self.f, self.f, w / 2, h / 2, w, h)
 
     def _table(self, h: int, w: int) -> tuple[np.ndarray, np.ndarray]:
         if (h, w) not in self._tables:
@@ -276,12 +283,15 @@ def from_config(cfg: dict, world) -> Camera:
         return equirect_from_config(cfg, world)
     view, rotate = view_from_config(cfg, world), int(cfg.get("rotate", 0))
     if "path" in cfg:
-        return FileCamera(cfg["name"], cfg["path"], view, float(cfg.get("max_age_s", 3.0)), rotate)
-    if "url" in cfg:
-        return HttpCamera(cfg["name"], cfg["url"], view, rotate=rotate)
-    if "command" in cfg:
-        return CommandCamera(cfg["name"], cfg["command"], view, rotate=rotate)
-    raise ValueError(f"camera {cfg.get('name')!r} needs a path, a url or a command")
+        cam: Camera = FileCamera(cfg["name"], cfg["path"], view, float(cfg.get("max_age_s", 3.0)), rotate)
+    elif "url" in cfg:
+        cam = HttpCamera(cfg["name"], cfg["url"], view, rotate=rotate)
+    elif "command" in cfg:
+        cam = CommandCamera(cfg["name"], cfg["command"], view, rotate=rotate)
+    else:
+        raise ValueError(f"camera {cfg.get('name')!r} needs a path, a url or a command")
+    cam.fov_deg = float(cfg["fov_deg"]) if "fov_deg" in cfg else None
+    return cam
 
 
 def equirect_from_config(cfg: dict, world) -> EquirectCut:
