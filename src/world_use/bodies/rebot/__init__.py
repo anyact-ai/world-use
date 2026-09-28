@@ -1,7 +1,7 @@
 """Seeed Studio reBot Arm B601-RS: six RobStride motors plus a gripper on CAN, 48 V, no brakes.
 
 The manifest is what the kernel needs to know. ReBotBody is the hardware adapter: it talks MIT-mode position
-control to the motors through Seeed's motorbridge driver (`pip install world-use[rebot]`).
+control to the motors through Seeed's motorbridge driver (the `rebot` extra).
 
 Everything here was learned on the arm: the soft engage, the refusal to switch on or off away from the folded
 rest pose, never sending a disable frame from a read-only connection, and the numbers in the notes.
@@ -33,7 +33,6 @@ MOTORS = (
     ("joint6", 6, "rs-00", 50.0, 4.0, 0.20, 4.0, 2.0, 1.2),
 )
 GRIPPER_MOTOR = ("gripper", 7, "rs-00", 50.0, 4.0)
-STALL_CONTINUOUS = {"rs-06": 8.0, "rs-00": 3.6}        # RobStride manuals: continuous stall torque, Nm
 URDF_LIMITS = ((-2.8, 2.8), (0.0, 3.14), (0.0, 3.14), (-1.57, 1.57), (-1.57, 1.57), (-3.14, 3.14))
 
 def work_frame(chain: Chain, q) -> np.ndarray:
@@ -56,11 +55,9 @@ MANIFEST = Manifest(
     name="reBot Arm B601-RS",
     urdf=HERE / "ReBot_Arm_RS.urdf",
     tool_link="gripper_end",
-    joints=tuple(JointSpec(name, lo, hi, v_max=0.8, a_max=6.0, track_tol=tol, tau_max=tmax,
-                           tau_cont=STALL_CONTINUOUS[model], tau_hold_max=hold, excursion_exempt=(name == "joint6"),
-                           contact_dtau=contact)
-                 for (name, _, model, _, _, tol, tmax, hold, contact), (lo, hi)
-                 in zip(MOTORS, URDF_LIMITS, strict=True)),
+    joints=tuple(JointSpec(name, lo, hi, v_max=0.8, a_max=6.0, track_tol=tol, tau_max=tmax, tau_hold_max=hold,
+                           excursion_exempt=(name == "joint6"), contact_dtau=contact)
+                 for (name, _, _, _, _, tol, tmax, hold, contact), (lo, hi) in zip(MOTORS, URDF_LIMITS, strict=True)),
     rate_hz=100.0,
     gripper=GripperSpec(closed=0.05, open=4.5, unit="rad", m_per_unit=0.020, v_max=4.5, track_tol=0.6, tau_max=4.0,
                         approach=(1.0, 0.0, 0.0), opens_along=(0.0, 1.0, 0.0)),
@@ -92,7 +89,7 @@ MANIFEST = Manifest(
 # full-scale negative position, velocity and torque, so every value is checked before it is sent.
 MIT_RANGE = {"rs-00": dict(pos=4 * np.pi, vel=33.0, kp=500.0, kd=5.0, tau=14.0),
              "rs-06": dict(pos=4 * np.pi, vel=50.0, kp=5000.0, kd=100.0, tau=36.0)}
-P_RUN_MODE, P_MECH_POS, P_VBUS, P_ZERO_STA = 0x7005, 0x7019, 0x701C, 0x7029
+P_MECH_POS, P_VBUS, P_ZERO_STA = 0x7019, 0x701C, 0x7029
 MODE_RUN = 2                          # bits 23:22 of the feedback frame id: 0 disabled, 1 calibrating, 2 running
 HOST_ID = 0xFD
 ENGAGE_S, RELEASE_S = 1.0, 1.0
@@ -132,7 +129,8 @@ class ReBotBody:
             from motorbridge.errors import CallError  # ty: ignore[unresolved-import]
             from motorbridge.models import Mode  # ty: ignore[unresolved-import]
         except ImportError as e:
-            raise ImportError("the reBot adapter needs Seeed's driver: pip install 'world-use[rebot]'") from e
+            raise ImportError("the reBot adapter needs Seeed's driver, the rebot extra: "
+                              "uv tool install 'world-use[rebot] @ git+https://github.com/anyact-ai/world-use'") from e
         self._Mode = Mode
         try:
             self.ctrl = Controller(self.channel)

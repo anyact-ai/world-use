@@ -19,7 +19,7 @@ Computer use gave models a screen and a mouse. This gives them an arm.
 ## Try it in simulation
 
 ```sh
-uv tool install "git+https://github.com/anyact-ai/world-use"    # or pip install; Python 3.14
+uv tool install "git+https://github.com/anyact-ai/world-use"    # Python 3.14; uv fetches it if needed
 wu up --workcell block --enable      # a daemon that owns a simulated arm, a block on a tray in front of it
 wu card                              # what this robot is and can do
 wu look side                         # a picture with the tool and the known boxes drawn on it; prints its path
@@ -95,7 +95,7 @@ It is a helper, not a certified safety system. Keep a person at the power switch
 | body | status |
 |---|---|
 | `sim` | kinematic twin of any manifest: gravity torques, servo stiffness, surfaces that push back, objects that stop the gripper and ride along, motor heating, and cameras that render the scene |
-| `rebot` | Seeed reBot Arm B601-RS over CAN (`pip install "world-use[rebot]"`); ported from a toolkit that has run on the arm |
+| `rebot` | Seeed reBot Arm B601-RS over CAN (install the `rebot` extra, as with `mcp` above); ported from a toolkit that has run on the arm |
 
 A new arm needs a manifest (joints, limits, gripper, rest pose, what it senses) and an adapter with five
 methods. See [body.py](src/world_use/body.py) and [the reBot adapter](src/world_use/bodies/rebot/__init__.py).

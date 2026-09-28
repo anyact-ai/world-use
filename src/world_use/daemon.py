@@ -55,7 +55,7 @@ class Daemon:
         threading.Thread(target=self.http.serve_forever, name="http", daemon=True).start()
         self.k.emit("daemon", f"serving on http://{self.host}:{self.port}")
 
-    def shutdown(self, force: bool = False) -> dict:
+    def shutdown(self) -> dict:
         """Stop serving. Refuses while torque is on away from rest: an arm without brakes would drop."""
         k = self.k
         if k.enabled:

@@ -2,10 +2,10 @@
 
 The model decides; the kernel keeps the robot safe, fast and legible while it does:
 
-    from world_use import Kernel, Plan, World, bodies, check
+    from world_use import Kernel, Plan, VirtualClock, World, bodies, check
 
     world = World()
-    k = Kernel(bodies.make("sim", world), world)
+    k = Kernel(bodies.make("sim", world), world, VirtualClock(100))    # simulated time: runs as fast as it can
     k.connect(); k.enable()
     print(check(Plan().line(up=0.05).spec(), k))   # rehearse on a twin first
     k.run({"do": "line", "up": 0.05})

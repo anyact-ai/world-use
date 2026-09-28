@@ -22,15 +22,6 @@ def rot_z(angle: float) -> np.ndarray:
     return axis_angle((0, 0, 1), angle)
 
 
-def transform(R=None, p=None) -> np.ndarray:
-    T = np.eye(4)
-    if R is not None:
-        T[:3, :3] = R
-    if p is not None:
-        T[:3, 3] = p
-    return T
-
-
 def pose_error(T: np.ndarray, T_des: np.ndarray) -> np.ndarray:
     """6-vector (position error, orientation error) that takes T towards T_des, both in the base frame."""
     ep = T_des[:3, 3] - T[:3, 3]

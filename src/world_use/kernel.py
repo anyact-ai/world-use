@@ -19,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .behaviors import Behavior, ContactSense, Outcome, build
+from .behaviors import STATUSES, Behavior, ContactSense, Outcome, build
 from .body import Body, JointState
 from .envelope import Envelope, Trip
 from .errors import Refused
@@ -29,7 +29,7 @@ from .motion import Timing
 from .recorder import Tape, save_summary
 from .world import World
 
-TERMINAL = ("done", "refused", "surprise", "stopped", "faulted", "cancelled")
+TERMINAL = (*STATUSES, "cancelled")            # a queued job that never started ends "cancelled"
 
 
 class RealClock:
@@ -75,7 +75,6 @@ class Job:
     outcome: Outcome | None = None
     question: dict | None = None
     answer: str | None = None
-    t_submit: float = field(default_factory=time.time)
     t_start: float | None = None
     t_end: float | None = None
     attention: threading.Event = field(default_factory=threading.Event)   # set on waiting or finished
@@ -99,10 +98,9 @@ class Heat:
     """Temperature trend per joint from the readings since the torque last came on (at most the last minute):
     how long until the limit at this rate. Readings from before a switch would dilute the trend."""
 
-    def __init__(self, n: int):
+    def __init__(self):
         self.samples: deque[tuple[float, np.ndarray]] = deque(maxlen=60)
         self.last_t = -np.inf
-        self.n = n
         self.on = False
 
     def update(self, t: float, temp, on: bool = True):
@@ -159,7 +157,7 @@ class Kernel:
             self.run_dir.mkdir(parents=True, exist_ok=True)
         self.events = EventLog(self.run_dir / "events.jsonl" if self.run_dir else None)
         self.tape = Tape(m.n)
-        self.heat = Heat(m.n)
+        self.heat = Heat()
         self.lock = threading.RLock()
         self.jobs: dict[int, Job] = {}
         self.queue: deque[Job] = deque()

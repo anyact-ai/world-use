@@ -21,7 +21,7 @@ from .errors import Refused
 if TYPE_CHECKING:
     from .kernel import Kernel
 
-STATUSES = ("done", "refused", "surprise", "stopped", "faulted")
+STATUSES = ("done", "refused", "surprise", "stopped", "faulted")    # how a behavior can end
 
 
 @dataclass
@@ -48,7 +48,7 @@ class Outcome:
 
 
 class Behavior:
-    """The docstring is the help a policy reads (`wu help KIND`): a summary line, then one line per parameter."""
+    """The docstring is the help a policy reads (`wu help STEP`): a summary line, then one line per parameter."""
     kind = "behavior"
     example: dict | None = None       # one spec that shows the typical use
     moves = True                      # counts as motion time (holding, waiting and asking do not)
@@ -349,7 +349,6 @@ class Gripper(Behavior):
     """
     kind = "gripper"
     example = {"do": "gripper", "aperture_mm": 60}
-    moves = True
 
     def start(self, k):
         g = k.manifest.gripper
@@ -408,6 +407,9 @@ class Grip(Behavior):
     start_mm   open to this first (or start, native units)
     squeeze    how much further to close after contact, native units (default 0.1)
     effort     gripper effort that counts as contact (default 0.6)
+    lag        how far the gripper may fall behind its command before that counts as contact (default 0.1)
+    speed      closing speed, native units per second (default 0.3)
+    min        close no further than this, native units (default: fully closed)
     """
     kind = "grip"
     example = {"do": "grip", "start_mm": 60, "expect_mm": [35, 45]}
@@ -458,19 +460,19 @@ class Grip(Behavior):
         k.touched("grip", f"grip contact at {contact:.2f} {g.unit}")
         data = dict(contact_at=round(contact, 3),
                     holding_effort=None if st.gripper_tau is None else round(st.gripper_tau, 2))
-        a = g.aperture(self.contact)
+        a = g.aperture(contact)
         if a is not None:
             data["aperture_mm"] = round(1000 * a, 1)
-        if self.expect is not None and not self.expect[0] <= self.contact <= self.expect[1]:
+        if self.expect is not None and not self.expect[0] <= contact <= self.expect[1]:
             lo, hi = self.expect
             mm = p.get("expect_mm")
             want = f"{mm[0]}..{mm[1]} mm" if mm else f"{lo:.2f}..{hi:.2f} {g.unit}"
-            return self.surprise(f"fingers met something at {self.contact:.2f} {g.unit}{_mm(g, self.contact)}, "
-                                 f"outside the expected {want}", expected=[lo, hi], observed=self.contact,
+            return self.surprise(f"fingers met something at {contact:.2f} {g.unit}{_mm(g, contact)}, "
+                                 f"outside the expected {want}", expected=[lo, hi], observed=contact,
                                  hint="the object is not where, or not the size, planned: open and look", **data)
-        name = k.gripped(self.contact)
+        name = k.gripped(contact)
         what = f"holding {name!r}" if name else "holding"
-        return self.done(f"{what} at {self.contact:.2f} {g.unit}" + _mm(g, self.contact), **data)
+        return self.done(f"{what} at {contact:.2f} {g.unit}" + _mm(g, contact), **data)
 
     def _no_contact(self, k):
         return self.surprise("the gripper closed on nothing", expected="contact", observed="no contact",

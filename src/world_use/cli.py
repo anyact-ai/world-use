@@ -11,7 +11,10 @@ every line ends up in a model's context.
     wu answer JOB yes|no|...    answer a checkpoint question
     wu world | wu box ...       what the kernel knows about the scene; tell it about a surface or object
     wu help [STEP]              the steps a plan can use, from the running daemon
-    wu stop | wu home | wu events | wu down
+    wu fact KEY VALUE           record a measurement with its source
+    wu home-route '<steps>'     the way home from here ('[]' = fold straight back); wu home runs it
+    wu stop | events | enable | release | down
+    wu mcp                      the same verbs as MCP tools, over stdio
 """
 import argparse
 import json
@@ -144,7 +147,8 @@ def main(argv=None) -> int:
             try:
                 from .mcp_server import serve
             except ImportError:
-                print("the MCP server needs the mcp package: pip install 'world-use[mcp]'", file=sys.stderr)
+                print("the MCP server needs the mcp extra: uv tool install 'world-use[mcp] @ git+https://github.com/anyact-ai/world-use'",
+                      file=sys.stderr)
                 return 1
             serve(a.url)
             return 0
@@ -194,7 +198,7 @@ def _dispatch(a, c: Client):
         return f"{r['path']}\n{r['camera']} camera, {r['size'][0]}x{r['size'][1]}: {r['drawn']}" + (
             f"\n{r['check']}" if r.get("check") else "")
     if a.cmd == "help":
-        return _help(c, a.step)
+        return help_text(c, a.step)
     if a.cmd == "world":
         return c.world()["text"]
     if a.cmd == "box":
@@ -244,10 +248,7 @@ def _vec(text: str) -> list[float]:
 
 
 def help_text(c: Client, step: str | None = None) -> str:
-    return _help(c, step)
-
-
-def _help(c: Client, step: str | None) -> str:
+    """The steps a plan can use, from the running daemon (so plugins show up), else from this installation."""
     try:
         steps = c.help()
     except OSError:                                     # no daemon: the steps this installation knows

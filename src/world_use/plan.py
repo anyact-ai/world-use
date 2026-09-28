@@ -3,7 +3,7 @@
     p = Plan("put it down")
     p.line(up=0.05)
     p.touchdown(max=0.07)
-    p.gripper(to=3.0)
+    p.gripper(aperture_mm=60)
     report = check(p, kernel)        # the same kernel code, run on a twin from the robot's measured state
     print(report)                    # durations, contacts, refusals, heat - before anything real moves
 
@@ -52,7 +52,7 @@ class Report:
     assumed: list[str] = field(default_factory=list)
     tool_end: list | None = None
     temp_rise: dict | None = None
-    problems: list[dict] = field(default_factory=list)   # every limit the plan would break: {step, message, hint}
+    problems: list[dict] = field(default_factory=list)   # every limit the plan would break: step, message, hint, rule
     tool_path: list | None = None     # tool positions along the rehearsal (base frame), for drawing on images
 
     @property
@@ -134,7 +134,7 @@ def check(spec, k: Kernel, timeout_s: float = 900.0) -> Report:
     events = t.events.since(seq0)
     problems = [dict(step=where, message=str(p), hint=p.hint, rule=p.rule, **p.data)
                 for where, found in t.envelope.rehearsal for p in found]
-    steps = [e["message"] for e in events if e["kind"] in ("step_done",)]
+    steps = [e["message"] for e in events if e["kind"] == "step_done"]
     if not steps and out.ok:
         steps = [out.message]
     summary = t.tape.summary(t.manifest.rate_hz)

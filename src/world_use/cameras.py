@@ -92,9 +92,6 @@ class Camera:
     def snap(self, k) -> Image.Image:
         raise NotImplementedError
 
-    def describe(self) -> str:
-        return self.name
-
 
 class HttpCamera(Camera):
     """Any camera that serves a still image over HTTP (an IP camera, a phone app, a small snapshot server)."""

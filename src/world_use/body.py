@@ -21,7 +21,6 @@ class JointSpec:
     a_max: float = 6.0                # plan gate: peak planned acceleration
     track_tol: float = 0.15           # watchdog: |measured - commanded| that means "something is in the way"
     tau_max: float = math.inf         # watchdog: |measured torque| that stops everything
-    tau_cont: float = math.inf        # continuous rating: holding above this heats the motor quickly
     tau_hold_max: float = math.inf    # plan gate: refuse poses whose gravity load exceeds this
     excursion_exempt: bool = False    # e.g. wrist roll: turning it swings nothing, so no excursion limit
     contact_dtau: float = 3.0         # any move stops when torque departs this far from the gravity model
