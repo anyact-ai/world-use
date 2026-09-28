@@ -61,8 +61,12 @@ class View:
         return cls(T, f, f, w / 2, h / 2, int(w), int(h))
 
     def scaled(self, width: int, height: int) -> View:
-        sx, sy = width / self.width, height / self.height
-        return View(self.T, self.fx * sx, self.fy * sy, self.cx * sx, self.cy * sy, width, height)
+        """The same camera on a picture of another size. Pixels stay square and the horizontal field of view (what
+        fov_deg means) is kept, with the optical centre as far from the middle as it was: a 16:9 camera described
+        at the default 800x600 used to come out squashed, with fx and fy different."""
+        s = width / self.width
+        return View(self.T, self.fx * s, self.fy * s, width / 2 + (self.cx - self.width / 2) * s,
+                    height / 2 + (self.cy - self.height / 2) * s, width, height)
 
     def project(self, pts) -> tuple[np.ndarray, np.ndarray]:
         """Pixels of base-frame points, and each point's depth along the view (<= 0 means behind the camera)."""

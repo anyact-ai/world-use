@@ -37,3 +37,13 @@ def test_no_heat_forecast_with_torque_off():
     assert "min to 80C" in state_line(k)
     k.release()
     assert "min to 80C" not in state_line(k)
+
+
+def test_a_view_drawn_on_a_picture_of_another_shape_keeps_square_pixels():
+    """A 1920x1080 webcam described with the default 800x600 came out with fx != fy: boxes drawn squashed."""
+    from world_use.cameras import View
+    eye, at = [0.9, -0.4, 0.5], [0.3, 0.0, 0.1]
+    moved = View.look_at(eye, at, 70.0, (800, 600)).scaled(1024, 576)
+    native = View.look_at(eye, at, 70.0, (1024, 576))
+    pts = np.array([[0.3, 0.0, 0.1], [0.25, 0.1, 0.0], [0.4, -0.1, 0.2]])
+    assert moved.fx == moved.fy and np.allclose(moved.project(pts)[0], native.project(pts)[0], atol=1e-6)
