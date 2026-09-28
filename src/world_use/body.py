@@ -35,6 +35,7 @@ class GripperSpec:
     v_max: float = 4.5
     track_tol: float = 0.6
     tau_max: float = 4.0
+    squeeze: float = 0.1              # a grip closes this much past contact; kp times it must stay under tau_max
     approach: tuple[float, float, float] = (0.0, 0.0, 1.0)     # tool-frame direction the fingers point
     opens_along: tuple[float, float, float] = (0.0, 1.0, 0.0)  # tool-frame axis the jaws open along
     tool_point: str = "between the fingertips"                  # where the tool link sits, in words

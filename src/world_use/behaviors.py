@@ -476,7 +476,7 @@ class Grip(Behavior):
     expect_mm  [lo, hi] opening where the fingers should meet the object; outside it, or nothing, is a surprise
     expect     the same in the gripper's native units
     start_mm   open to this first (or start, native units)
-    squeeze    how much further to close after contact, native units (default 0.1)
+    squeeze    how much further to close after contact, native units (default: the gripper's, on the card)
     effort     gripper effort that counts as contact (default 0.6)
     lag        how far the gripper may fall behind its command before that counts as contact (default 0.1)
     speed      closing speed, native units per second (default 0.3)
@@ -513,7 +513,7 @@ class Grip(Behavior):
             behind = abs(st.gripper - k.cmd.gripper)
             if effort > self.effort or behind > self.lag:
                 self.contact = float(st.gripper)
-                squeeze = float(p.get("squeeze", 0.1)) * np.sign(g.closed - g.open)
+                squeeze = float(p.get("squeeze", g.squeeze)) * np.sign(g.closed - g.open)
                 k.set_gripper(self.contact + squeeze)
                 self.phase, self.wait = "squeeze", int(0.3 * k.manifest.rate_hz)
                 return None

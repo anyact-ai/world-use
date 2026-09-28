@@ -439,3 +439,16 @@ def test_a_grip_of_the_wrong_width_still_holds_and_home_does_not_let_go():
     assert all(step["do"] != "gripper" for step in k.home_plan())
     assert views.status(k)["holding"] == "something the world has no box for"
     assert k.run({"do": "gripper", "to": 3.0}).ok and k.held_at is None     # opened past it: let go
+
+
+def test_grip_squeezes_by_the_grippers_own_amount(lifted):
+    """0.1 rad at the reBot gripper's kp of 50 is 5 Nm on anything rigid, past its 4 Nm watchdog."""
+    from world_use import views
+
+    k = lifted
+    assert k.manifest.gripper.squeeze == 0.05 and "grip squeezes 0.05 rad past contact" in views.card(k)
+    assert k.run({"do": "gripper", "to": 3.0}).ok
+    p = k.chain.fk(k.state.q)[:3, 3]
+    k.world.add_box("block", "object", center=p, size=[0.04, 0.04, 0.06], frame="base")
+    out = k.run({"do": "grip"})
+    assert out.ok and abs(k.cmd.gripper - (out.data["contact_at"] - 0.05)) < 2e-3

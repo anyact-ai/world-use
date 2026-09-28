@@ -61,8 +61,9 @@ MANIFEST = Manifest(
                            excursion_exempt=(name == "joint6"), contact_dtau=contact)
                  for (name, _, _, _, _, tol, tmax, hold, contact), (lo, hi) in zip(MOTORS, URDF_LIMITS, strict=True)),
     rate_hz=100.0,
+    # squeeze: at the gripper's kp of 50 Nm/rad, 0.05 rad on something rigid is 2.5 Nm; 0.1 would pass tau_max
     gripper=GripperSpec(closed=0.05, open=4.5, unit="rad", m_per_unit=0.020, v_max=4.5, track_tol=0.6, tau_max=4.0,
-                        approach=(1.0, 0.0, 0.0), opens_along=(0.0, 1.0, 0.0)),
+                        squeeze=0.05, approach=(1.0, 0.0, 0.0), opens_along=(0.0, 1.0, 0.0)),
     rest=REST,
     temp_warn_c=70.0,
     temp_limit_c=80.0,

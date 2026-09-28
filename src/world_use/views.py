@@ -219,7 +219,8 @@ def card(k) -> str:
         g = m.gripper
         span = "" if g.m_per_unit is None else f" = 0..{1000 * abs(g.aperture(g.open) or 0):.0f} mm opening"
         mm = " gripper and grip also take millimetres (aperture_mm, start_mm, expect_mm)." if g.m_per_unit else ""
-        lines.append(f"gripper: {g.closed}..{g.open} {g.unit} (closed..open){span}.{mm}")
+        lines.append(f"gripper: {g.closed}..{g.open} {g.unit} (closed..open){span}.{mm} grip squeezes "
+                     f"{g.squeeze} {g.unit} past contact.")
         lines.append(tool_line(k) or "")
     reach_m = np.linalg.norm(c.fk(np.zeros(c.n))[:3, 3] - c.points(np.zeros(c.n))[1])
     shoulder = c.points(k.cmd.q)[1]
