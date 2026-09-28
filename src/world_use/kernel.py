@@ -8,12 +8,17 @@ Its rules are the lessons of running a slow policy on real hardware:
 - A surprise holds where the arm really is, cancels anything queued behind it, and waits for the policy.
 - A refused command moves nothing.
 - The policy may be slow, crash or restart: the kernel keeps holding until it is told something new.
+- Once the control loop runs, only its thread talks to the body. Requests from other threads (switching torque
+  on or off) are handed to it and waited for, so a driver is never called from two threads at once.
 """
 import itertools
 import json
+import queue
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
+from concurrent.futures import CancelledError, Future
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,7 +27,7 @@ import numpy as np
 from .behaviors import STATUSES, Behavior, ContactSense, Outcome, build
 from .body import Body, JointState
 from .envelope import Envelope, Trip
-from .errors import Refused
+from .errors import Refused, explain
 from .events import EventLog
 from .kinematics import Chain
 from .motion import Timing
@@ -172,6 +177,8 @@ class Kernel:
         self._warned: set[int] = set()
         self._sense: ContactSense | None = None    # collision check for every move (guarded moves add their own)
         self._held_at: float | None = None         # gripper position where the held object stopped the fingers
+        self._loop_thread: threading.Thread | None = None     # set by loop(): from then on the body's only caller
+        self._posted: queue.SimpleQueue[tuple[Callable[[], object], Future]] = queue.SimpleQueue()
 
     # -- lifecycle -------------------------------------------------------------------------------
     def connect(self) -> JointState:
@@ -192,26 +199,77 @@ class Kernel:
         return st
 
     def enable(self):
-        with self.lock:
-            self.body.enable()
-            self.state = self.body.read()
-            self.cmd = Command(np.asarray(self.state.q, float).copy(), np.zeros(self.manifest.n), self.state.gripper)
-            self.enabled = True
-        self.emit("enabled", "torque on")
+        """Torque on at the measured pose. Nothing if it is on already."""
+        self._on_loop(self._enable)
 
     def release(self):
         """Torque off. Only where that moves nothing (the manifest's rest pose), and only when idle."""
+        self._on_loop(self._release)
+
+    def _enable(self):
+        if self._loop_thread is not None and not self._loop_thread.is_alive():
+            raise Refused("the control loop has stopped, so nothing would command the motors", "no_loop",
+                          "restart the daemon")
+        if self.enabled:
+            return
+        try:                          # not under the lock: an engage takes a second or two, and status must answer
+            self.body.enable()
+        except Exception as e:
+            self.emit("enable_failed", explain(e), "warn" if isinstance(e, Refused) else "alarm")
+            raise
+        st = self.body.read()
         with self.lock:
+            self.state = st
+            self.cmd = Command(np.asarray(st.q, float).copy(), np.zeros(self.manifest.n), st.gripper)
+            self.enabled = True
+        self.emit("enabled", "torque on")
+
+    def _release(self):
+        with self.lock:
+            if not self.enabled:
+                return
             if self.active is not None:
                 raise Refused("a job is running; stop it first", "busy")
             rest = self.manifest.rest
-            if self.enabled and rest is not None and not rest.holds(self.state.q):
+            if rest is not None and not rest.holds(self.state.q):
                 raise Refused("the arm is not at its rest pose: releasing torque here would drop it", "not_at_rest",
                               "go home first")
-            if self.enabled:
-                self.body.disable()
-                self.enabled = False
+            self.body.disable()
+            self.enabled = False
         self.emit("released", "torque off")
+
+    def _on_loop(self, fn: Callable[[], object]):
+        """Run fn where the body may be called: on the control thread while the loop runs (this thread waits for
+        it), else right here. Never call it holding self.lock: fn may need the lock on the control thread."""
+        loop = self._loop_thread
+        if loop is None or loop is threading.current_thread() or not loop.is_alive():
+            return fn()
+        f: Future = Future()
+        self._posted.put((fn, f))
+        while True:
+            try:
+                return f.result(timeout=0.5)
+            except TimeoutError:
+                if not loop.is_alive() and f.cancel():       # the loop ended before taking it: nothing was done
+                    raise RuntimeError("the control loop stopped before it could do this") from None
+            except CancelledError:
+                raise RuntimeError("the control loop stopped before it could do this") from None
+
+    def _run_posted(self, run: bool = True):
+        """Do what other threads handed over; with run=False (the loop has stopped) refuse it instead: switching
+        torque on now would leave nothing to command the motors."""
+        while True:
+            try:
+                fn, f = self._posted.get_nowait()
+            except queue.Empty:
+                return
+            if not run:
+                f.cancel()
+            elif f.set_running_or_notify_cancel():
+                try:
+                    f.set_result(fn())
+                except Exception as e:
+                    f.set_exception(e)
 
     def close(self) -> dict:
         """Close the connection (never switches torque off by itself) and write the flight record."""
@@ -531,6 +589,8 @@ class Kernel:
     # -- convenience -------------------------------------------------------------------------------
     def run(self, spec, timeout_s: float = 600.0) -> Outcome:
         """Submit and tick until it ends (scripts, tests, twin checks). Not for use while a loop thread runs."""
+        if self._loop_thread is not None and self._loop_thread.is_alive():
+            raise RuntimeError("the control loop is running: submit() the job and wait for it instead")
         job = self.submit(spec)
         deadline = self.clock.now() + timeout_s
         while not job.finished:
@@ -544,10 +604,33 @@ class Kernel:
         return job.outcome
 
     def loop(self, stop: threading.Event):
-        """The control loop for a daemon thread."""
+        """The control loop for a daemon thread. From here on this thread is the only one that calls the body."""
+        if self._loop_thread is not None and self._loop_thread.is_alive():
+            raise RuntimeError("a control loop is already running for this kernel")
+        self._loop_thread = threading.current_thread()
         while not stop.is_set():
-            self.tick()
+            self._run_posted()
+            try:
+                self.tick()
+            except Exception as e:
+                self._survive(e)
             self.clock.wait()
+        self._run_posted(run=False)
+
+    def _survive(self, e: Exception):
+        """The body raised (an adapter unplugged, a value out of range): fault and say so, but keep the loop and
+        the daemon alive, so the flight record survives and an operator sees why. The motors keep their last
+        command until something works again or someone switches them off."""
+        with self.lock:
+            first = not self.faulted
+            self.faulted = True
+            self.hold_here()
+            self._cancel_queue("the kernel faulted")
+            if self.active is not None:
+                self._end(self.active, Outcome("faulted", self.active.behavior.kind, explain(e),
+                                               hint="check the hardware, then reset"))
+        if first:
+            self.emit("fault", f"control tick failed: {explain(e)}", "alarm")
 
     @property
     def tool(self) -> np.ndarray:

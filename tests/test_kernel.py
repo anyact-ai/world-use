@@ -1,9 +1,12 @@
 """Kernel semantics on a simulated reBot: refusals, surprises, contact, grip, checkpoints, stop, heat, home."""
+import threading
+import time
+
 import numpy as np
 import pytest
 from conftest import Q_REST, make_kernel
 
-from world_use import Refused, World
+from world_use import Kernel, RealClock, Refused, World, bodies
 
 
 def test_line_moves_the_tool_by_the_request_in_the_work_frame(k):
@@ -268,3 +271,77 @@ def test_a_gripped_object_moves_with_the_tool_in_the_model_and_lands_where_it_is
     assert k.world.held is None
     assert abs(k.world.boxes["block"].pose[2, 3] - (top + 0.04)) < 1e-6           # standing on the tray
     assert any(e["kind"] == "let_go" for e in k.events.since(0))
+
+
+def _looping(body_hooks=None):
+    """A kernel on a simulated reBot with its control loop running in a thread, as in the daemon."""
+    world = World()
+    body = bodies.make("sim", world, q=Q_REST, gripper=1.0)
+    for name, hook in (body_hooks or {}).items():
+        setattr(body, name, hook(getattr(body, name)))
+    k = Kernel(body, world, RealClock(100.0))
+    k.connect()
+    stop = threading.Event()
+    loop = threading.Thread(target=k.loop, args=(stop,), daemon=True)
+    loop.start()
+    return k, stop, loop
+
+
+def _until(condition, timeout=10.0):
+    end = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < end, "timed out"
+        time.sleep(0.01)
+
+
+def test_once_the_loop_runs_only_its_thread_calls_the_body():
+    """The daemon switches torque on and off from request threads; on the real reBot that meant a lock-free CAN
+    driver called from two threads at once. Now the control thread does it, and the caller waits."""
+    callers = []
+
+    def spy(fn):
+        def call(*a, **kw):
+            callers.append(threading.current_thread())
+            return fn(*a, **kw)
+        return call
+    k, stop, loop = _looping({name: spy for name in ("enable", "read", "command", "disable")})
+    k.enable()
+    job = k.submit({"do": "hold", "seconds": 30})
+    _until(lambda: job.status == "running")
+    with pytest.raises(Refused, match="job is running"):
+        k.release()                                    # refused on the control thread, raised here
+    with pytest.raises(RuntimeError, match="control loop is running"):
+        k.run({"do": "hold", "seconds": 0.1})
+    k.stop("test")
+    _until(lambda: job.finished)
+    stop.set()
+    loop.join(2.0)
+    assert k.enabled and callers and all(t is loop for t in callers)
+    with pytest.raises(Refused, match="control loop has stopped"):
+        k.enable()                                     # nothing would be left to command the motors
+    k.release()                                        # at rest, torque off from here, inline
+    assert not k.enabled and callers[-1] is threading.current_thread()
+
+
+def test_a_body_that_raises_faults_the_kernel_but_the_loop_goes_on():
+    fail = threading.Event()
+
+    def flaky(fn):
+        def read():
+            if fail.is_set():
+                fail.clear()
+                raise OSError("the CAN adapter went away")
+            return fn()
+        return read
+    k, stop, loop = _looping({"read": flaky})
+    k.enable()
+    job = k.submit({"do": "hold", "seconds": 30})
+    _until(lambda: job.status == "running")
+    fail.set()
+    _until(lambda: job.finished)
+    assert job.outcome.status == "faulted" and "adapter went away" in job.outcome.message
+    assert loop.is_alive() and k.faulted
+    assert any(e["kind"] == "fault" and e["level"] == "alarm" for e in k.events.since(0))
+    stop.set()
+    loop.join(2.0)
+

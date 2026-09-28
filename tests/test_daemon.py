@@ -7,6 +7,7 @@ import pytest
 from conftest import serve
 from PIL import Image
 
+from world_use import Refused
 from world_use.client import DaemonError
 
 
@@ -128,3 +129,12 @@ def test_an_error_reaches_the_operator_with_its_notes(daemon):
     with pytest.raises(DaemonError) as e:
         c.enable()
     assert e.value.code == 502 and "Treat the arm as energised" in str(e.value)
+
+
+def test_the_daemon_shuts_down_once(daemon):
+    """A second Ctrl+C during the release ramp must not start another release."""
+    d, c = daemon
+    c.shutdown()
+    with pytest.raises(Refused, match="already shutting down"):
+        d.shutdown()
+

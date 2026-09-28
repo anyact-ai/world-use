@@ -46,6 +46,7 @@ class Daemon:
         self.checked = None                              # the last plan `check` rehearsed: `run --checked` runs it
         self.stop_loop = threading.Event()
         self.done = threading.Event()                    # set once the shutdown reply has gone out
+        self._closing = threading.Lock()                 # held once a shutdown has begun
         self.http = ThreadingHTTPServer((host, port), _handler(self))
         self.http.daemon_threads = True
         self.control = threading.Thread(target=self.k.loop, args=(self.stop_loop,), name="control", daemon=True)
@@ -56,13 +57,19 @@ class Daemon:
         self.k.emit("daemon", f"serving on http://{self.host}:{self.port}")
 
     def shutdown(self) -> dict:
-        """Stop serving. Refuses while torque is on away from rest: an arm without brakes would drop."""
-        k = self.k
-        if k.enabled:
-            k.release()                       # raises Refused unless idle at rest
-        self.stop_loop.set()
-        self.control.join(timeout=2.0)
-        summary = k.close()
+        """Stop serving. Refuses while torque is on away from rest: an arm without brakes would drop. Runs once:
+        a second Ctrl+C during the release ramp must not start another."""
+        if not self._closing.acquire(blocking=False):
+            raise Refused("already shutting down", "busy")
+        try:
+            k = self.k
+            k.release()                       # on the control thread; raises Refused unless idle at rest
+            self.stop_loop.set()
+            self.control.join(timeout=2.0)
+            summary = k.close()
+        except BaseException:
+            self._closing.release()           # not down after all: a later shutdown may try again
+            raise
         threading.Thread(target=self.http.shutdown, daemon=True).start()
         return summary
 
