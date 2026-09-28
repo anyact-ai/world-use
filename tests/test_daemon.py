@@ -7,6 +7,7 @@ import pytest
 from conftest import serve
 from PIL import Image
 
+from world_use import Refused
 from world_use.client import DaemonError
 
 
@@ -97,9 +98,9 @@ def test_a_box_the_policy_adds_goes_into_the_model_not_into_the_simulation(daemo
     assert c.remove("tray")["line"] == "removed 'tray'"
 
 
-def test_a_workcell_box_marked_unknown_is_only_in_the_simulation(tmp_path):
+def test_a_workcell_box_marked_unknown_is_only_in_the_simulation(tmp_path, rehearser):
     cell = {"box": [dict(name="shelf", kind="surface", center=[0.3, 0, 0.1], size=[0.2, 0.2, 0.02], known=False)]}
-    d, _ = serve(tmp_path, cell)
+    d, _ = serve(tmp_path, cell, rehearser)
     try:
         assert "shelf" in d.k.body.world.boxes and "shelf" not in d.k.world.boxes
     finally:
@@ -114,3 +115,59 @@ def test_help_lists_every_step_with_an_example(client):
     for kind, h in steps.items():
         assert h["summary"] and h["example"]["do"] == kind
         build(h["example"])
+
+
+def test_an_error_reaches_the_operator_with_its_notes(daemon):
+    d, c = daemon
+    c.release()
+
+    def fails():
+        e = ConnectionError("feedback disagrees with the start pose")
+        e.add_note("could not confirm torque-off on: joint5. Treat the arm as energised.")
+        raise e
+    d.k.body.enable = fails
+    with pytest.raises(DaemonError) as e:
+        c.enable()
+    assert e.value.code == 502 and "Treat the arm as energised" in str(e.value)
+
+
+def test_the_daemon_shuts_down_once(daemon):
+    """A second Ctrl+C during the release ramp must not start another release."""
+    d, c = daemon
+    c.shutdown()
+    with pytest.raises(Refused, match="already shutting down"):
+        d.shutdown()
+
+
+
+def test_the_cli_exit_status_says_how_the_job_ended(client, capsys):
+    """`wu run ... && wu home` carried on after a surprise on the real reBot and took a gripped roll of tape home."""
+    from world_use import cli
+    url = ["--url", client.url]
+    assert cli.main(url + ["run", '[{"do": "line", "up": 0.03, "duration": 1.0}]']) == 0
+    assert cli.main(url + ["run", '[{"do": "line", "forward": 0.40}]']) == 4                    # refused, unmoved
+    assert cli.main(url + ["check", '[{"do": "line", "forward": 0.40}]']) == 4                  # would be refused
+    assert cli.main(url + ["check", '[{"do": "line", "up": 0.02}]']) == 0
+    assert cli.main(url + ["run", '[{"do": "checkpoint", "ask": "go on?"}]', "--wait", "5"]) == 5   # waits
+    capsys.readouterr()
+    assert cli.main(url + ["status", "--json"]) == 0 and '"line"' in capsys.readouterr().out
+
+
+def test_the_flight_record_can_be_written_without_stopping(client):
+    c = client
+    c.run({"do": "line", "up": 0.02, "duration": 0.5}, wait=10)
+    r = c.record()
+    run = Path(r["run"])
+    assert {"tape.npz", "summary.json", "world.json"} <= {f.name for f in run.iterdir()}
+    assert r["summary"]["moving_s"] > 0 and "idle" in c.status()["line"]          # still serving
+
+
+def test_look_with_a_grid_draws_a_ruler_and_nothing_the_kernel_believes(client):
+    from world_use import cli
+    r = client.look("side", grid=True)
+    assert "pixel grid every 100 px" in r["drawn"] and "magenta" not in r["drawn"]
+    img = np.asarray(Image.open(r["path"]).convert("RGB")).astype(int)
+    believed = client.look("side")
+    assert "magenta" in believed["drawn"]
+    assert (np.abs(img[:, 99:102] - img[:, 95:98]).sum() > 0)                   # a grid line at x = 100
+    assert cli.main(["--url", client.url, "look", "side", "--grid"]) == 0

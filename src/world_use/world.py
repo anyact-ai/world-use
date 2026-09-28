@@ -11,6 +11,27 @@ import numpy as np
 from .geometry import rot_z
 
 KINDS = ("surface", "object", "keep_out", "fragile", "slow")
+DIRECTIONS = dict(up=(0, 0, 1), down=(0, 0, -1), forward=(1, 0, 0), back=(-1, 0, 0), left=(0, 1, 0), right=(0, -1, 0))
+
+
+def heading(v) -> str:
+    """A direction in words, in the frame it is given in: 'forward, level', 'straight down', 'left, tilted 30 deg
+    down'."""
+    v = np.asarray(v, float) / np.linalg.norm(v)
+    elev = float(np.degrees(np.arcsin(np.clip(v[2], -1.0, 1.0))))
+    if abs(elev) > 80:
+        return "straight up" if elev > 0 else "straight down"
+    names = ("forward", "forward-left", "left", "back-left", "back", "back-right", "right", "forward-right")
+    name = names[int(np.round(np.degrees(np.arctan2(v[1], v[0])) / 45.0)) % 8]
+    return f"{name}, " + ("level" if abs(elev) < 5 else f"tilted {abs(elev):.0f} deg {'up' if elev > 0 else 'down'}")
+
+
+def along(v) -> str:
+    """The axis a direction lies along, in words: 'left and right', 'roughly up and down'."""
+    v = np.abs(np.asarray(v, float)) / np.linalg.norm(v)
+    i = int(v.argmax())
+    name = ("forward and back", "left and right", "up and down")[i]
+    return name if v[i] > 0.94 else f"roughly {name}"
 
 
 @dataclass

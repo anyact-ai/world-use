@@ -113,8 +113,9 @@ Near term, in order:
 4. **Evidence packages.** Every incident bundled with its tape window, events, camera clip and plan node, and
    every run recording what the policy was given: tools, views, twin, and human interventions.
 5. **Cameras and pointing.** `wu look` already draws the tool, the known boxes and a plan's path onto
-   calibrated pictures, and a simulator renders its scene. Next: calibration checked at every session start,
-   and clicks in a calibrated image turned into positions.
+   calibrated pictures, a simulator renders its scene, and `wu calibrate` finds where a camera is from the arm and
+   the policy's answers (a 360 camera's pose too, through its cuts). Next: calibration checked at every session
+   start, and clicks in a calibrated image turned into positions.
 6. **More ways in.** The MCP server ships beside the CLI (`wu mcp`). Next: a console where a person can stop,
    nudge and approve, and skills compatible with the open robot-skill libraries growing around this work.
 

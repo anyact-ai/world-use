@@ -24,11 +24,12 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from . import bodies, cameras, views
+from . import bodies, calibrate, cameras, views
 from .behaviors import REGISTRY
-from .errors import Refused
+from .errors import Refused, explain
 from .kernel import Kernel
-from .plan import Report, check
+from .plan import Report
+from .worker import Rehearser
 from .world import World
 
 DEFAULT_PORT = 7431
@@ -37,17 +38,23 @@ MAX_WAIT_S = 120.0
 
 class Daemon:
     def __init__(self, kernel: Kernel, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
-                 cams: dict[str, cameras.Camera] | None = None):
+                 cams: dict[str, cameras.Camera] | None = None, rehearser: Rehearser | None = None):
         self.k = kernel
         self.host, self.port = host, port
         self.cameras = dict(cams or {})
         kernel.cameras = self.cameras                    # the card lists them
         self.shots = 0
+        self.calibrations: dict[int, dict] = {}         # job id -> camera, picture size and, once solved, the result
+        self._solving = threading.Lock()
         self.checked = None                              # the last plan `check` rehearsed: `run --checked` runs it
         self.stop_loop = threading.Event()
         self.done = threading.Event()                    # set once the shutdown reply has gone out
+        self._closing = threading.Lock()                 # held once a shutdown has begun
         self.http = ThreadingHTTPServer((host, port), _handler(self))
         self.http.daemon_threads = True
+        # rehearsals and reach probes run in a worker process: in this one they took the control loop's ticks
+        self.rehearser = rehearser if rehearser is not None else Rehearser()
+        self._own_rehearser = rehearser is None
         self.control = threading.Thread(target=self.k.loop, args=(self.stop_loop,), name="control", daemon=True)
 
     def start(self):
@@ -56,13 +63,21 @@ class Daemon:
         self.k.emit("daemon", f"serving on http://{self.host}:{self.port}")
 
     def shutdown(self) -> dict:
-        """Stop serving. Refuses while torque is on away from rest: an arm without brakes would drop."""
-        k = self.k
-        if k.enabled:
-            k.release()                       # raises Refused unless idle at rest
-        self.stop_loop.set()
-        self.control.join(timeout=2.0)
-        summary = k.close()
+        """Stop serving. Refuses while torque is on away from rest: an arm without brakes would drop. Runs once:
+        a second Ctrl+C during the release ramp must not start another."""
+        if not self._closing.acquire(blocking=False):
+            raise Refused("already shutting down", "busy")
+        try:
+            k = self.k
+            k.release()                       # on the control thread; raises Refused unless idle at rest
+            self.stop_loop.set()
+            self.control.join(timeout=2.0)
+            summary = k.close()
+            if self._own_rehearser:
+                self.rehearser.close()
+        except BaseException:
+            self._closing.release()           # not down after all: a later shutdown may try again
+            raise
         threading.Thread(target=self.http.shutdown, daemon=True).start()
         return summary
 
@@ -75,7 +90,7 @@ class Daemon:
             with k.lock:
                 return 200, views.status(k)
         if method == "GET" and route == ["card"]:
-            return 200, dict(card=views.card(k))
+            return 200, dict(card=views.card(k, reach=self.rehearser.reach_line))
         if method == "GET" and route == ["help"]:
             return 200, dict(steps={kind: cls.help() for kind, cls in REGISTRY.items()})
         if method == "GET" and route == ["events"]:
@@ -95,9 +110,9 @@ class Daemon:
                 return self._run(self.checked, wait, bool(body.get("check", True)))
             return self._run(body["spec"], wait, bool(body.get("check", True)))
         if route == ["look"]:
-            return 200, self.look(body.get("camera"), body.get("spec"))
+            return 200, self.look(body.get("camera"), body.get("spec"), bool(body.get("grid")))
         if route == ["check"]:
-            report = check(body["spec"], k)          # snapshots the kernel under its lock, then runs unlocked
+            report = self.rehearser.check(body["spec"], k)
             self.checked = body["spec"]
             return 200, dict(report.to_dict(), text=str(report))
         if route == ["answer"]:
@@ -126,6 +141,10 @@ class Daemon:
             return self._job(job.id, wait)
         if route == ["world"]:
             return self._world(body)
+        if route == ["calibrate"]:
+            return self.calibrate(body["camera"], int(body.get("points", 8)), body.get("spread"), wait)
+        if route == ["record"]:
+            return 200, dict(summary=k.save_record(), run=str(k.run_dir) if k.run_dir else None)
         if route == ["shutdown"]:
             return 200, dict(summary=self.shutdown())
         return 404, dict(error=f"no route POST /{path.strip('/')}")
@@ -142,9 +161,10 @@ class Daemon:
             if busy:
                 note = "not rehearsed: another job is running or queued"
             else:
-                report = check(spec, k)
+                report = self.rehearser.check(spec, k)
                 if report.refused:
-                    text = "refused in rehearsal, so nothing moved:\n" + str(report) + "\n" + views.reach_line(k)
+                    text = ("refused in rehearsal, so nothing moved:\n" + str(report) + "\n"
+                            + self.rehearser.reach_line(k))
                     return 200, dict(id=None, status="refused", incident=text, rehearsal=report.to_dict(),
                                      line=views.state_line(k))
         job = k.submit(spec)
@@ -158,9 +178,10 @@ class Daemon:
             d["rehearsal"] = note
         return code, d
 
-    def look(self, camera: str | None = None, spec=None) -> dict:
+    def look(self, camera: str | None = None, spec=None, grid: bool = False) -> dict:
         """One picture from a camera, with the tool, the known boxes and (given a plan) its path drawn on it, saved
-        to the flight record. Returns the file's path: a model reads the image from there."""
+        to the flight record. Returns the file's path: a model reads the image from there. With grid, a pixel ruler
+        and nothing the kernel believes: for reading off where something is, e.g. while calibrating."""
         k = self.k
         if not self.cameras:
             raise Refused("no cameras: add [[camera]] entries to the workcell", "no_camera")
@@ -168,8 +189,12 @@ class Daemon:
         cam = self.cameras.get(name)
         if cam is None:
             raise Refused(f"no camera {name!r}; cameras: {', '.join(self.cameras)}", "no_camera")
-        report = check(spec, k) if spec is not None else None
-        img = cam.snap(k)
+        if grid or self._calibrating(name):            # what the kernel believes must not anchor an answer
+            return self._save(k, name, cam, cameras.ruler(cam.picture(k)),
+                              "a pixel grid every 100 px (x across, y down, from the top left); nothing else drawn"
+                              + ("" if grid else ", because this camera is being calibrated"))
+        report = self.rehearser.check(spec, k) if spec is not None else None
+        img = cam.picture(k)
         tool = k.world.from_base("work", k.chain.fk(k.state.q)[:3, 3])
         drawn = ("magenta cross = tool point; green outlines = the boxes the kernel knows; F/L/U = work axes"
                  + ("; blue = the plan's tool path" if report is not None else "")
@@ -177,20 +202,82 @@ class Daemon:
             if cam.view is not None else "no calibration for this camera, so nothing is drawn on it"
         caption = f"{name} | t+{k.clock.now() - k.t0:.0f}s | tool F{tool[0]:+.3f} L{tool[1]:+.3f} U{tool[2]:+.3f}"
         img = cameras.overlay(img, cam.view, k, None if report is None else report.tool_path, caption)
+        out = self._save(k, name, cam, img, drawn)
+        if report is not None:
+            out["check"] = str(report)
+        return out
+
+    def _save(self, k, name: str, cam, img, drawn: str) -> dict:
         self.shots += 1
         folder = (k.run_dir or Path(tempfile.gettempdir()) / "world-use") / "views"
         folder.mkdir(parents=True, exist_ok=True)
         path = (folder / f"{self.shots:04d}-{name}.{'png' if isinstance(cam, cameras.SimCamera) else 'jpg'}").resolve()
         img.save(path, quality=88) if path.suffix == ".jpg" else img.save(path)
         k.emit("look", f"{name}: {path.name}", camera=name)
-        out = dict(path=str(path), camera=name, size=list(img.size), drawn=drawn)
-        if report is not None:
-            out["check"] = str(report)
-        return out
+        return dict(path=str(path), camera=name, size=list(img.size), drawn=drawn)
 
     def _settle(self):
         """Let the control loop read the body once or twice, so the reply shows the new state."""
         time.sleep(3 * getattr(self.k.clock, "dt", 0.01))
+
+    def calibrate(self, camera: str, points: int = 8, spread: float | None = None, wait: float = 0.0):
+        """Start a calibration tour for a camera (see calibrate.py). The reply to its last answer carries the fit."""
+        k = self.k
+        if not k.enabled:
+            raise Refused("torque is off: enable first", "off", "enable")
+        with k.lock:
+            busy = k.active is not None or bool(k.queue)
+        if busy:
+            raise Refused("a job is running: calibrate while the arm is idle", "busy")
+        cam = self.cameras.get(camera)
+        if cam is None:
+            raise Refused(f"no camera {camera!r}; cameras: {', '.join(self.cameras)}", "no_camera")
+        w, h = cam.picture(k).size                       # fails early on a dead camera
+        s = min(1.0, cameras.MAX_SIDE / max(w, h))        # the answers count pixels of the picture `wu look` saves
+        size = (round(w * s), round(h * s))
+        steps, a = calibrate.tour(k, camera, size, points, (float(spread),) if spread else (0.12, 0.09, 0.06),
+                                  check=self.rehearser.check)
+        job = k.submit({"do": "seq", "steps": steps, "label": f"calibrate {camera} ({2 * a * 100:.0f} cm box)"})
+        self.calibrations[job.id] = dict(camera=camera, size=size)
+        return self._job(job.id, wait)
+
+    def _calibrating(self, name: str) -> bool:
+        return any(c["camera"] == name and not self.k.jobs[i].finished for i, c in self.calibrations.items())
+
+    def _calibrated(self, job) -> dict:
+        c = self.calibrations[job.id]
+        with self._solving:
+            if "result" not in c:
+                c["result"] = self._fit(job, c["camera"], c["size"])
+        return c["result"]
+
+    def _fit(self, job, name: str, size) -> dict:
+        k, cam = self.k, self.cameras[name]
+        answers = (job.outcome.data if job.outcome else {}).get("answers", [])
+        pixels = [calibrate.parse(a["answer"], size) for a in answers]
+        seen = [i for i, px in enumerate(pixels) if px is not None]
+        points = np.array([k.world.to_base("work", answers[i]["tool"]) for i in seen]).reshape(-1, 3)
+        cut = cam if isinstance(cam, cameras.EquirectCut) else None
+        try:
+            fit = calibrate.solve(points, [pixels[i] for i in seen], size, fov_deg=cam.fov_deg or 60.0,
+                                  focal=None if cut is None else cut.f)
+        except Refused as e:
+            return dict(installed=False, text=f"calibration of {name!r} from {len(answers)} answers: not installed: "
+                        f"{e}" + (f" ({e.hint})" if e.hint else ""))
+        why = calibrate.installable(fit, points, size)
+        lines = calibrate.keep(fit, points, cut)
+        if why is None:
+            if cut is None:
+                cam.view = fit.view
+            else:
+                pose = np.eye(4)
+                pose[:3, :3], pose[:3, 3] = fit.R.T @ cut.R.T, fit.C
+                cut.install(pose)
+            k.world.assert_fact(f"camera.{name}", lines.replace("\n", "; "),
+                                f"wu calibrate, job {job.id}: {len(fit.used)} points, fit {fit.rms:.0f} px")
+            k.emit("calibrated", f"{name}: fit {fit.rms:.0f} px, {fit.loo_rms:.0f} px each from the others; installed")
+        return dict(installed=why is None, lines=lines,
+                    text=calibrate.describe(name, fit, answers, pixels, size, why, lines, cut is not None))
 
     def _job(self, job_id: int, wait: float) -> tuple[int, dict]:
         job = self.k.jobs.get(job_id)
@@ -201,7 +288,9 @@ class Daemon:
         d = job.to_dict()
         d["line"] = views.state_line(self.k)
         if job.outcome is not None and not job.outcome.ok:
-            d["incident"] = views.incident(self.k, job)
+            d["incident"] = views.incident(self.k, job, reach=self.rehearser.reach_line)
+        if job.finished and job_id in self.calibrations:
+            d["calibration"] = self._calibrated(job)
         return 200, d
 
     def _world(self, body: dict) -> tuple[int, dict]:
@@ -257,9 +346,9 @@ def _handler(d: Daemon):
             except Refused as e:
                 code, obj = 409, dict(refused=e.to_dict())
             except (KeyError, ValueError, TypeError) as e:
-                code, obj = 400, dict(error=f"{type(e).__name__}: {e}")
+                code, obj = 400, dict(error=explain(e))
             except (OSError, RuntimeError) as e:          # a camera that did not answer, for instance
-                code, obj = 502, dict(error=f"{type(e).__name__}: {e}")
+                code, obj = 502, dict(error=explain(e))
             self._reply(code, obj)
             if code == 200 and u.path.strip("/") == "shutdown":
                 d.done.set()
@@ -326,12 +415,13 @@ def make_cameras(cell: dict, k: Kernel, body, truth: World | None) -> dict[str, 
     eye/look_at; with no entries at all, a simulator gets three views (side, front, top)."""
     cams: dict[str, cameras.Camera] = {}
     for c in cell.get("camera", []):
-        if "url" in c or "command" in c:
+        if "path" in c or "url" in c or "command" in c:
             cams[c["name"]] = cameras.from_config(c, k.world)
         elif truth is not None and (view := cameras.view_from_config(c, k.world)) is not None:
             cams[c["name"]] = cameras.SimCamera(c["name"], view, body)
         else:
-            raise ValueError(f"camera {c.get('name')!r} needs a url or a command (or, on a simulator, eye and look_at)")
+            raise ValueError(f"camera {c.get('name')!r} needs a path, a url or a command "
+                             "(or, on a simulator, eye and look_at)")
     if not cams and truth is not None:
         cams = cameras.sim_cameras(body, truth)
     return cams

@@ -49,3 +49,37 @@ def interpolate_rotation(R0: np.ndarray, R1: np.ndarray, s: float) -> np.ndarray
     w = rotation_log(R1 @ R0.T)
     n = np.linalg.norm(w)
     return R0 if n < 1e-12 else axis_angle(w / n, n * s) @ R0
+
+
+def angle(a, b) -> float:
+    """The angle between two directions, rad."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    return float(np.arccos(np.clip(a @ b / (np.linalg.norm(a) * np.linalg.norm(b)), -1.0, 1.0)))
+
+
+def aim(R: np.ndarray, approach, opens, point, jaws=None) -> np.ndarray:
+    """The tool rotation nearest R whose `approach` axis (tool frame) points along `point` (base frame) and whose
+    `opens` axis lies along `jaws` (sign-free: whichever sign turns least), or else as close to its current
+    direction as pointing that way allows."""
+    approach, opens = np.asarray(approach, float), np.asarray(opens, float)
+    p = np.asarray(point, float) / np.linalg.norm(point)
+    now = R @ opens
+    if jaws is None:
+        j = now - (now @ p) * p
+        if np.linalg.norm(j) < 0.2:                    # the jaws lay nearly along it: carry them round the turn
+            a0 = R @ approach
+            w = np.cross(a0, p)
+            turn = axis_angle(w, np.arctan2(np.linalg.norm(w), a0 @ p)) if np.linalg.norm(w) > 1e-9 else \
+                axis_angle(now, np.pi)
+            j = turn @ now
+            j = j - (j @ p) * p
+    else:
+        j = np.asarray(jaws, float)
+        j = j - (j @ p) * p
+        if np.linalg.norm(j) < np.sin(np.radians(15)):
+            raise ValueError("the jaws cannot open along the way the gripper points")
+    j /= np.linalg.norm(j)
+    if j @ now < 0:
+        j = -j
+    tool = np.column_stack([approach, opens, np.cross(approach, opens)])
+    return np.column_stack([p, j, np.cross(p, j)]) @ tool.T

@@ -1,9 +1,14 @@
 """Kernel semantics on a simulated reBot: refusals, surprises, contact, grip, checkpoints, stop, heat, home."""
+import threading
+import time
+
 import numpy as np
 import pytest
 from conftest import Q_REST, make_kernel
 
-from world_use import Refused, World
+from world_use import Kernel, RealClock, Refused, World, bodies
+
+HOME = np.maximum(Q_REST, [-np.inf, 0.02, 0.02, -np.inf, -np.inf, -np.inf])   # folded just off the stops
 
 
 def test_line_moves_the_tool_by_the_request_in_the_work_frame(k):
@@ -162,7 +167,7 @@ def test_home_folds_back_to_the_session_start_and_release_is_then_allowed(lifted
     k.set_home_route([])
     out = k.run({"do": "seq", "steps": k.home_plan()})
     assert out.ok, out.message
-    assert np.allclose(k.cmd.q, Q_REST, atol=1e-4)
+    assert np.allclose(k.cmd.q, HOME, atol=1e-4)
     k.release()
     assert not k.enabled
 
@@ -189,14 +194,22 @@ def test_hot_motor_goes_home_along_a_valid_route_and_otherwise_holds_and_alarms(
     for _ in range(6000):
         k2.tick()
         k2.clock.wait()
-        if k2.active is None and np.allclose(k2.cmd.q, Q_REST, atol=1e-4):
+        if k2.active is None and np.allclose(k2.cmd.q, HOME, atol=1e-4):
             break
-    assert np.allclose(k2.cmd.q, Q_REST, atol=1e-4)
+    assert np.allclose(k2.cmd.q, HOME, atol=1e-4)
+
+
+def test_no_heat_forecast_until_the_switch_on_transient_has_passed(lifted):
+    k = lifted
+    for _ in range(1500):
+        k.tick()
+        k.clock.wait()
+    assert k.heat.minutes_left(k.manifest.temp_limit_c) is None             # 15-18 s after switching on
 
 
 def test_heat_budget_is_reported(lifted):
     k = lifted
-    for _ in range(1500):
+    for _ in range(3000):
         k.tick()
         k.clock.wait()
     left = k.heat.minutes_left(k.manifest.temp_limit_c)
@@ -208,6 +221,7 @@ def test_motion_time_is_measured(k):
     k.run({"do": "hold", "seconds": 3.0})
     s = k.tape.summary(k.manifest.rate_hz)
     assert abs(s["moving_s"] - 3.0) < 0.1 and abs(s["moving_share"] - 0.5) < 0.05
+    assert s["tick_ms"] == dict(median=10.0, p99=10.0, max=10.0)
 
 
 def test_after_touching_down_the_arm_can_lift_off_even_if_it_rests_a_hair_inside_the_modelled_table(lifted):
@@ -268,3 +282,279 @@ def test_a_gripped_object_moves_with_the_tool_in_the_model_and_lands_where_it_is
     assert k.world.held is None
     assert abs(k.world.boxes["block"].pose[2, 3] - (top + 0.04)) < 1e-6           # standing on the tray
     assert any(e["kind"] == "let_go" for e in k.events.since(0))
+
+
+def _looping(body_hooks=None):
+    """A kernel on a simulated reBot with its control loop running in a thread, as in the daemon."""
+    world = World()
+    body = bodies.make("sim", world, q=Q_REST, gripper=1.0)
+    for name, hook in (body_hooks or {}).items():
+        setattr(body, name, hook(getattr(body, name)))
+    k = Kernel(body, world, RealClock(100.0))
+    k.connect()
+    stop = threading.Event()
+    loop = threading.Thread(target=k.loop, args=(stop,), daemon=True)
+    loop.start()
+    return k, stop, loop
+
+
+def _until(condition, timeout=10.0):
+    end = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < end, "timed out"
+        time.sleep(0.01)
+
+
+def test_once_the_loop_runs_only_its_thread_calls_the_body():
+    """The daemon switches torque on and off from request threads; on the real reBot that meant a lock-free CAN
+    driver called from two threads at once. Now the control thread does it, and the caller waits."""
+    callers = []
+
+    def spy(fn):
+        def call(*a, **kw):
+            callers.append(threading.current_thread())
+            return fn(*a, **kw)
+        return call
+    k, stop, loop = _looping({name: spy for name in ("enable", "read", "command", "disable")})
+    k.enable()
+    job = k.submit({"do": "hold", "seconds": 30})
+    _until(lambda: job.status == "running")
+    with pytest.raises(Refused, match="job is running"):
+        k.release()                                    # refused on the control thread, raised here
+    with pytest.raises(RuntimeError, match="control loop is running"):
+        k.run({"do": "hold", "seconds": 0.1})
+    k.stop("test")
+    _until(lambda: job.finished)
+    stop.set()
+    loop.join(2.0)
+    assert k.enabled and callers and all(t is loop for t in callers)
+    with pytest.raises(Refused, match="control loop has stopped"):
+        k.enable()                                     # nothing would be left to command the motors
+    k.release()                                        # at rest, torque off from here, inline
+    assert not k.enabled and callers[-1] is threading.current_thread()
+
+
+def test_a_body_that_raises_faults_the_kernel_but_the_loop_goes_on():
+    fail = threading.Event()
+
+    def flaky(fn):
+        def read():
+            if fail.is_set():
+                fail.clear()
+                raise OSError("the CAN adapter went away")
+            return fn()
+        return read
+    k, stop, loop = _looping({"read": flaky})
+    k.enable()
+    job = k.submit({"do": "hold", "seconds": 30})
+    _until(lambda: job.status == "running")
+    fail.set()
+    _until(lambda: job.finished)
+    assert job.outcome.status == "faulted" and "adapter went away" in job.outcome.message
+    assert loop.is_alive() and k.faulted
+    assert any(e["kind"] == "fault" and e["level"] == "alarm" for e in k.events.since(0))
+    stop.set()
+    loop.join(2.0)
+
+
+
+def test_torque_noise_does_not_read_as_contact_and_real_contact_still_does():
+    """A real reBot's loaded joints read +-0.5-1 Nm from one tick to the next while holding still (2026-09-27): a
+    baseline taken from one reading was enough to end a guarded move 2 mm into free air."""
+    k = make_kernel(noise=0.5)
+    assert k.run({"do": "line", "forward": 0.08, "up": 0.06}).ok
+    for _ in range(3):
+        out = k.run({"do": "guarded", "up": -0.02, "dtau": 0.6, "expect_contact": False})
+        assert out.ok and "no contact" in out.message, out.message
+    p = k.chain.fk(k.state.q)[:3, 3]
+    k.world.add_box("table", "surface", center=[p[0], p[1], p[2] - 0.03], size=[0.4, 0.4, 0.02], frame="base")
+    out = k.run({"do": "touchdown", "max": 0.05, "dtau": 0.6})
+    assert out.ok and "contact after" in out.message and "noise raised the threshold" in out.message, out.message
+
+
+def test_noise_never_raises_a_fragile_zones_threshold():
+    """A glass zone asking for 0.3 Nm was judged at 1.4-2.5 Nm on an arm this noisy, and nothing said so. It keeps
+    its 0.3: a noisy arm may stop on nothing there, and says so, rather than press harder than the zone allows."""
+    k = make_kernel(noise=0.5)
+    assert k.run({"do": "line", "forward": 0.08, "up": 0.06}).ok
+    p = k.chain.fk(k.state.q)[:3, 3]
+    k.world.add_box("glass", "fragile", center=p, size=[0.3, 0.3, 0.3], frame="base", dtau=0.3)
+    assert k.run({"do": "hold", "seconds": 0.5}).ok
+    out = k.run({"do": "line", "forward": 0.03, "duration": 3.0})
+    assert out.status == "surprise" and "(limit 0.3; noise alone can cross the limit" in out.message, out.message
+
+
+def test_noise_raises_a_threshold_at_most_twofold():
+    from world_use.behaviors import ContactSense
+
+    k = make_kernel(noise=3.0)                                   # a joint gone this noisy must not go numb
+    for _ in range(k.residuals.window):
+        k.tick()
+        k.clock.wait()
+    sense = ContactSense(k)
+    asked = np.array([j.contact_dtau for j in k.manifest.joints])
+    assert np.allclose(sense.limits(asked), 2 * asked) and np.allclose(sense.limits(asked, 0.3), 0.3)
+
+
+def test_a_job_waits_for_a_torque_baseline_after_switching_on():
+    k = make_kernel(noise=0.5)                                  # just switched on: no readings yet
+    job = k.submit({"do": "line", "up": 0.02})
+    for _ in range(k.residuals.need - 1):
+        k.tick()
+        k.clock.wait()
+    assert job.status == "queued"
+    k.tick()
+    k.clock.wait()
+    assert job.status == "running" and (k._sense.floor > 0).all()   # judged against a baseline, noise included
+
+
+def test_a_joint_on_its_rest_stop_is_not_judged_and_is_re_zeroed_until_it_leaves(k):
+    """Folded, the reBot's shoulder and elbow rest on hard stops that carry part of their load: arriving there or
+    lifting off moved ~2 Nm between motor and stop with nothing touched, and stopped folds home on hardware."""
+    from world_use.behaviors import ContactSense
+    from world_use.body import JointState
+
+    assert k.manifest.rest.stops == (1, 2)
+    for _ in range(k.residuals.need):
+        k.tick()
+        k.clock.wait()
+    sense = ContactSense(k)
+
+    def feel(q, extra):
+        k.state = JointState(k.state.t, np.asarray(q, float), None, k.chain.gravity(q) + extra, k.state.temp)
+        for _ in range(5):
+            dev = sense.deviation(k)
+        return dev
+    stop_load = np.array([0, 0, -2.0, 0, 0, 0])
+    assert abs(feel(Q_REST, stop_load)[2]) < 1e-9                # on the stop: not judged
+    lifted = Q_REST + [0, 0.1, 0.1, 0, 0, 0]
+    assert abs(feel(lifted, stop_load)[2]) < 1e-9                # off it: judged from where it let go
+    assert feel(lifted, stop_load + [0, 0, 3.5, 0, 0, 0])[2] > 3.0
+
+
+
+def test_a_gripper_trip_ends_the_gripper_step_inside_a_plan_too(lifted):
+    """Alone, a gripper step closing on something too wide ended at the first trip; inside a plan it tripped on
+    every tick and still ended "done"."""
+    k = lifted
+    assert k.run({"do": "gripper", "to": 3.0}).ok
+    p = k.chain.fk(k.state.q)[:3, 3]
+    k.world.add_box("block", "object", center=p, size=[0.04, 0.04, 0.06], frame="base")
+    out = k.run([{"do": "hold", "seconds": 0.1}, {"do": "gripper", "to": 1.0}])
+    assert out.status == "surprise" and out.message.startswith("step 2/2: gripper")
+    assert sum(e["kind"] == "gripper_trip" for e in k.events.since(0)) == 1
+
+
+def test_home_puts_the_gripper_back_as_it_was_found(lifted):
+    """The session ended with the reBot's gripper open at 4.39 rad: past pi, it comes back a turn low after a power
+    cycle. Home now closes it to where the session found it."""
+    k = lifted
+    assert k.run({"do": "gripper", "to": 3.0}).ok
+    k.set_home_route([])
+    plan = k.home_plan()
+    assert plan[-1] == {"do": "gripper", "to": 1.0, "label": "gripper as it was found"}
+    assert k.run({"do": "seq", "steps": plan}).ok and abs(k.cmd.gripper - 1.0) < 1e-9
+
+
+def test_a_grip_of_the_wrong_width_still_holds_and_home_does_not_let_go():
+    """A grip that found an unexpected width ended in a surprise without counting as holding, so home would have
+    closed the gripper on the object, or opened it at rest."""
+    from world_use import views
+
+    truth = World()                                           # the simulator knows the block, the kernel does not
+    k = make_kernel(sim_world=truth)
+    assert k.run([{"do": "line", "forward": 0.08, "up": 0.06}, {"do": "gripper", "to": 3.0}]).ok
+    p = k.chain.fk(k.state.q)[:3, 3]
+    truth.add_box("block", "object", center=p, size=[0.04, 0.04, 0.06], frame="base")
+    out = k.run({"do": "grip", "expect_mm": [10, 20]})
+    assert out.status == "surprise" and k.held_at is not None and k.world.held is None
+    k.set_home_route([])
+    assert all(step["do"] != "gripper" for step in k.home_plan())
+    assert views.status(k)["holding"] == "something the world has no box for"
+    assert k.run({"do": "gripper", "to": 3.0}).ok and k.held_at is None     # opened past it: let go
+
+
+def test_grip_squeezes_by_the_grippers_own_amount(lifted):
+    """0.1 rad at the reBot gripper's kp of 50 is 5 Nm on anything rigid, past its 4 Nm watchdog."""
+    from world_use import views
+
+    k = lifted
+    assert k.manifest.gripper.squeeze == 0.05 and "grip squeezes 0.05 rad past contact" in views.card(k)
+    assert k.run({"do": "gripper", "to": 3.0}).ok
+    p = k.chain.fk(k.state.q)[:3, 3]
+    k.world.add_box("block", "object", center=p, size=[0.04, 0.04, 0.06], frame="base")
+    out = k.run({"do": "grip"})
+    assert out.ok and abs(k.cmd.gripper - (out.data["contact_at"] - 0.05)) < 2e-3
+
+
+def test_the_tape_keeps_every_tick_across_its_blocks(monkeypatch):
+    from world_use.recorder import Tape
+
+    monkeypatch.setattr(Tape, "CHUNK", 5)
+    tape = Tape(2)
+    for i in range(12):
+        tape.add(i / 100, True, i % 2 == 0, 1, [i, i], [i, -i], None, [30.0, 31.0], None, 1.0, None)
+    a = tape.arrays()
+    assert len(tape) == 12 and a["t"].tolist() == [i / 100 for i in range(12)]
+    assert a["q"][:, 1].tolist() == [-i for i in range(12)] and np.isnan(a["tau"]).all() and a["grip"].sum() == 12
+
+
+def _pointing(k):
+    from world_use.world import along
+    W = k.world.frame("work").T[:3, :3]
+    R = k.chain.fk(k.state.q)[:3, :3]
+    g = k.manifest.gripper
+    return W.T @ R @ np.asarray(g.approach), along(W.T @ R @ np.asarray(g.opens_along))
+
+
+def test_move_to_can_point_the_gripper_down(k):
+    """Near its base a real reBot can point down only by tilting: turning the wrist or base that low is refused."""
+    L = float(k.world.from_base("work", k.chain.fk(k.state.q)[:3, 3])[1])
+    q0 = k.state.q.copy()
+    out = k.run({"do": "move_to", "to": [0.22, L, 0.10], "point": "down"})
+    assert out.ok and "now pointing straight down (3.6 deg off" in out.message, out.message
+    down, jaws = _pointing(k)
+    assert np.degrees(np.arccos(-down[2])) < 5 and jaws == "left and right"
+    assert np.degrees(np.abs(k.state.q - q0)[[0, 4, 5]]).max() < 1.0              # base and wrist held still
+    refused = make_kernel().run({"do": "move_to", "to": [0.22, L, 0.10], "point": "down", "within_deg": 1})
+    assert refused.status == "refused" and "let it only tilt: that ends 4 deg" in refused.hint
+
+
+def test_move_to_turns_in_place_and_says_when_it_cannot(k):
+    assert k.run([{"do": "line", "forward": 0.08, "up": 0.14}]).ok
+    p0 = k.chain.fk(k.state.q)[:3, 3].copy()
+    assert k.run({"do": "move_to", "jaws": "up"}).ok                               # a wrist roll, high up
+    assert np.linalg.norm(k.chain.fk(k.state.q)[:3, 3] - p0) < 1e-3 and _pointing(k)[1] == "up and down"
+    out = k.run({"do": "move_to", "point": "down"})
+    assert out.status == "refused" and "cannot turn to point straight down here" in out.message, out.message
+    for bad in ({"point": "sideways"}, {"point": "down", "jaws": "up"}):
+        assert k.run({"do": "move_to", **bad}).status == "refused"
+
+
+def test_a_check_says_where_the_gripper_ends_pointing(k):
+    from world_use import check
+    L = float(k.world.from_base("work", k.chain.fk(k.state.q)[:3, 3])[1])
+    report = check({"do": "move_to", "to": [0.22, L, 0.10], "point": "down"}, k)
+    assert "the gripper ends pointing straight down, jaws open left and right (turned 90 deg)" in str(report)
+
+
+def test_a_free_checkpoint_takes_any_answer_and_keeps_it_with_where_the_tool_was(k):
+    job = k.submit([{"do": "checkpoint", "ask": "where is the tool?", "expect": None}, {"do": "line", "up": 0.02},
+                    [{"do": "checkpoint", "ask": "and now?", "expect": None}]])
+    for answer in ("512,300", "unseen"):
+        while job.status != "waiting":
+            k.tick()
+            k.clock.wait()
+        k.answer(job.id, answer)
+    while not job.finished:
+        k.tick()
+        k.clock.wait()
+    first, second = job.outcome.data["answers"]
+    assert first["answer"] == "512,300" and second["answer"] == "unseen" and second["step"] == 3
+    assert abs(second["tool"][2] - first["tool"][2] - 0.02) < 2e-3                  # measured, 2 cm apart
+
+
+def test_a_rehearsal_assumes_any_answer_at_a_free_checkpoint(k):
+    from world_use import check
+    report = check([{"do": "checkpoint", "ask": "where is the tool?", "expect": None}], k)
+    assert report.ok and "(any answer)" in report.assumed[0]

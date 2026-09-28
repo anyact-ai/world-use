@@ -35,6 +35,7 @@ class GripperSpec:
     v_max: float = 4.5
     track_tol: float = 0.6
     tau_max: float = 4.0
+    squeeze: float = 0.1              # a grip closes this much past contact; kp times it must stay under tau_max
     approach: tuple[float, float, float] = (0.0, 0.0, 1.0)     # tool-frame direction the fingers point
     opens_along: tuple[float, float, float] = (0.0, 1.0, 0.0)  # tool-frame axis the jaws open along
     tool_point: str = "between the fingertips"                  # where the tool link sits, in words
@@ -57,11 +58,16 @@ class Rest:
     q: tuple[float, ...]
     joints: tuple[int, ...]           # the joints that carry weight: only they must be near q
     tol: float = 0.15
+    stops: tuple[int, ...] = ()       # joints that fold onto a hard stop at q; the stop carries part of their load
 
     def holds(self, q) -> bool:
         q = np.asarray(q, float)
         idx = list(self.joints)
         return bool(np.abs(q[idx] - np.asarray(self.q)[idx]).max() <= self.tol)
+
+    def off_stop(self, i: int, joint: JointSpec) -> float:
+        """+1 or -1: the way joint i leaves the stop it rests on, towards the middle of its range."""
+        return 1.0 if (joint.lower + joint.upper) / 2 > self.q[i] else -1.0
 
 
 @dataclass(frozen=True)
@@ -115,13 +121,16 @@ class JointState:
 
 @runtime_checkable
 class Body(Protocol):
+    """The I/O contract. The kernel calls it from one thread at a time: once its control loop runs, only that
+    thread (hardware drivers are rarely safe to call from two at once)."""
     manifest: Manifest
 
     def connect(self) -> JointState:
         """Open the connection read-only and return the measured state. Must not move or release anything."""
 
     def enable(self) -> None:
-        """Switch torque on at the measured pose, without a jump."""
+        """Switch torque on at the measured pose, without a jump. If it raises, every motor is off again, or the
+        error names those it could not confirm off: the kernel counts torque as off either way."""
 
     def read(self) -> JointState:
         """Latest measurement. Called once per control tick."""
@@ -130,7 +139,8 @@ class Body(Protocol):
         """Position setpoint for this tick, with velocity feedforward."""
 
     def disable(self) -> None:
-        """Switch torque off. The kernel only calls this where the manifest says it is safe."""
+        """Switch torque off. The kernel only calls this where the manifest says it is safe. If it raises, the
+        kernel counts torque as still on and keeps commanding."""
 
     def close(self) -> None:
         """Release the connection. Must not switch torque off: that is disable()'s job."""

@@ -8,6 +8,7 @@ import numpy as np
 
 from .errors import Refused
 from .plan import reach
+from .world import along, heading
 
 
 def _xyz(k, p, frame="work") -> str:
@@ -85,6 +86,8 @@ def status(k) -> dict:
         d["overrides"] = k.envelope.overrides
     if k.world.held is not None:
         d["holding"] = k.world.held[0]
+    elif k.held_at is not None:
+        d["holding"] = "something the world has no box for"
     if k.world.facts:
         d["facts"] = {key: (f.value if f.stale is None else f"{f.value} (STALE: {f.stale})")
                       for key, f in k.world.facts.items()}
@@ -92,7 +95,7 @@ def status(k) -> dict:
     return d
 
 
-def incident(k, job) -> str:
+def incident(k, job, reach=None) -> str:
     """What went differently from the plan, in one block a policy can act on."""
     out = job.outcome
     lines = [f"job {job.id} {out.status}: {out.message}"]
@@ -102,7 +105,7 @@ def incident(k, job) -> str:
         lines.append(f"hint: {out.hint}")
     lines.append(state_line(k))
     if out.status == "refused" and k.enabled and k.active is None:
-        lines.append(reach_line(k))
+        lines.append((reach or reach_line)(k))
     recent = [e for e in k.events.since(max(0, k.events.seq - 8))
               if e["level"] != "info" or e["kind"] in ("contact", "grip")]
     for e in recent[-4:]:
@@ -141,33 +144,15 @@ def _why(k, refusal: Refused) -> str:
     return " and ".join(dict.fromkeys(reasons))
 
 
-def _heading(v) -> str:
-    """A direction in the work frame, in words: 'forward, level', 'straight down', 'left, tilted 30 deg down'."""
-    v = np.asarray(v, float) / np.linalg.norm(v)
-    elev = float(np.degrees(np.arcsin(np.clip(v[2], -1.0, 1.0))))
-    if abs(elev) > 80:
-        return "straight up" if elev > 0 else "straight down"
-    names = ("forward", "forward-left", "left", "back-left", "back", "back-right", "right", "forward-right")
-    name = names[int(np.round(np.degrees(np.arctan2(v[1], v[0])) / 45.0)) % 8]
-    return f"{name}, " + ("level" if abs(elev) < 5 else f"tilted {abs(elev):.0f} deg {'up' if elev > 0 else 'down'}")
-
-
-def _axis(v) -> str:
-    v = np.abs(np.asarray(v, float)) / np.linalg.norm(v)
-    i = int(v.argmax())
-    name = ("forward and back", "left and right", "up and down")[i]
-    return name if v[i] > 0.94 else f"roughly {name}"
-
-
 def tool_line(k) -> str | None:
     """Which way the gripper points and opens, in the work frame: what a policy needs to plan an approach."""
     g = k.manifest.gripper
     if g is None:
         return None
     R = k.world.frame("work").T[:3, :3].T @ k.chain.fk(k.cmd.q)[:3, :3]
-    return (f"tool: the gripper points {_heading(R @ np.asarray(g.approach))}; its jaws open "
-            f"{_axis(R @ np.asarray(g.opens_along))}; the tool point (the position the state line reports) is "
-            f"{g.tool_point}. line, lines and move_to keep this angle; only joints moves change it.")
+    return (f"tool: the gripper points {heading(R @ np.asarray(g.approach))}; its jaws open "
+            f"{along(R @ np.asarray(g.opens_along))}; the tool point (the position the state line reports) is "
+            f"{g.tool_point}. line and lines keep this angle; move_to with \"point\" turns it, and so do joints moves.")
 
 
 def box_line(k, b, frame: str = "work") -> str:
@@ -202,7 +187,7 @@ def world_text(k) -> str:
     return "\n".join(lines)
 
 
-def card(k) -> str:
+def card(k, reach=None) -> str:
     """The embodiment card: what this robot is and what it can do, for the top of a policy's context."""
     m, c = k.manifest, k.chain
     sim = bool(getattr(k.body, "simulated", False))
@@ -217,7 +202,8 @@ def card(k) -> str:
         g = m.gripper
         span = "" if g.m_per_unit is None else f" = 0..{1000 * abs(g.aperture(g.open) or 0):.0f} mm opening"
         mm = " gripper and grip also take millimetres (aperture_mm, start_mm, expect_mm)." if g.m_per_unit else ""
-        lines.append(f"gripper: {g.closed}..{g.open} {g.unit} (closed..open){span}.{mm}")
+        lines.append(f"gripper: {g.closed}..{g.open} {g.unit} (closed..open){span}.{mm} grip squeezes "
+                     f"{g.squeeze} {g.unit} past contact.")
         lines.append(tool_line(k) or "")
     reach_m = np.linalg.norm(c.fk(np.zeros(c.n))[:3, 3] - c.points(np.zeros(c.n))[1])
     shoulder = c.points(k.cmd.q)[1]
@@ -248,7 +234,7 @@ def card(k) -> str:
     if cams:
         lines.append(f"cameras: {', '.join(cams)}. `wu look NAME` saves an image and prints its path.")
     if k.enabled and k.active is None:
-        lines.append(reach_line(k))
+        lines.append((reach or reach_line)(k))
     lines += [f"note: {n}" for n in m.notes]
     lines += [f"hardware: {n}" for n in m.hardware_notes]
     return "\n".join(lines)

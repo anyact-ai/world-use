@@ -161,3 +161,30 @@ def test_kernel_session_on_the_adapter_moves_folds_and_releases(fake):
     assert bus.disables == 7 and not k.enabled
     k.close()
     assert bus.disables == 7                              # closing sends no further disable frames
+
+
+def test_a_failed_engage_switches_every_motor_off_again(fake, monkeypatch):
+    bus = fake(np.append(Q_REST, 1.0))
+    body = rebot.ReBotBody()
+    body.connect()
+    alive = FakeMotor.get_state
+
+    def get_state(self):                                  # the elbow goes quiet once switched on
+        return None if (self.i == 2 and self.on) else alive(self)
+    monkeypatch.setattr(FakeMotor, "get_state", get_state)
+    with pytest.raises(ConnectionError, match="disagrees with the start pose"):
+        body.enable()
+    assert bus.enables == 7 and bus.disables == 7 and not body.enabled
+
+
+def test_an_unconfirmed_switch_off_says_so(fake, monkeypatch):
+    fake(np.append(Q_REST, 1.0))
+    body = rebot.ReBotBody()
+    body.connect()
+    alive, off = FakeMotor.get_state, FakeMotor.disable
+    monkeypatch.setattr(FakeMotor, "get_state", lambda self: None if (self.i == 2 and self.on) else alive(self))
+    monkeypatch.setattr(FakeMotor, "disable", lambda self: None if self.i == 4 else off(self))   # j5 stays on
+    with pytest.raises(ConnectionError) as e:
+        body.enable()
+    assert "joint5" in " ".join(e.value.__notes__) and "energised" in " ".join(e.value.__notes__)
+    assert body.enabled                                   # counted as on: nothing was confirmed off for j5

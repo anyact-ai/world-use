@@ -31,7 +31,9 @@ compared to the robot, so decide in phases, not in single small steps.
    would refuse any step, nothing moves and you get every problem at once, each with the numbers that would
    pass, plus which short moves are possible from here. Otherwise it runs, waits up to 60 s, and prints the
    outcome and the state line. (`wu check '<plan>'` rehearses without running: time, contacts, heat. After a
-   check, `wu run --checked` runs that same plan without pasting it again.)
+   check, `wu run --checked` runs that same plan without pasting it again.) The exit status is the outcome: 0
+   done, 4 refused or surprise (and so on), 5 waiting at a checkpoint. So `wu run '...' && wu home` stops where
+   the robot did instead of carrying on after a surprise.
 3. **At a checkpoint** the arm holds and the job waits: `wu look` at the named camera, then
    `wu answer JOB yes` (any other answer ends the plan so you can decide what to do instead). `wu answer`
    waits until the next checkpoint or the end of the plan.
@@ -53,21 +55,22 @@ A surprise also marks remembered facts as stale (`wu status` shows them): re-che
 ## Vocabulary
 
 Distances in metres, angles in degrees unless noted. `forward`/`left`/`up` follow the axes of a frame, by
-default `work` (see the card). Moves keep the gripper's angle; only `joints` changes it. Every step takes an
+default `work` (see the card). `line` and `lines` keep the gripper's angle; `move_to` with `point` turns it (as do
+`joints` moves). Every step takes an
 optional `"label"`. `wu help STEP` lists a step's parameters.
 
 | step | example | notes |
 |---|---|---|
 | line | `{"do": "line", "forward": 0.05, "up": 0.02}` | straight tool line; at most one segment long (card) |
 | lines | `{"do": "lines", "legs": [[0.05, 0, 0], [0, 0.03, 0]], "blend": 0.02}` | several legs as one smooth motion |
-| move_to | `{"do": "move_to", "to": [0.35, -0.05, 0.30]}` | absolute position in a frame |
+| move_to | `{"do": "move_to", "to": [0.20, 0, 0.10], "point": "down"}` | absolute position in a frame; `point` (down, forward, ... or `[f, l, u]`) turns the gripper on the way, `jaws` says which way it opens; near the base it may only tilt, and says how far off it ended (`within_deg`, default 5) |
 | joints | `{"do": "joints", "delta_deg": {"6": -90}}` | joint numbers from 1; or `target_deg` |
 | touchdown | `{"do": "touchdown", "max": 0.06}` | slow move down that stops on contact; no contact is a surprise |
 | guarded | `{"do": "guarded", "forward": 0.03, "dtau": 0.6}` | the same in any direction; `expect_contact: false` to probe |
 | gripper | `{"do": "gripper", "aperture_mm": 60}` | or `to` in native units (card) |
 | grip | `{"do": "grip", "start_mm": 60, "expect_mm": [35, 45]}` | close until contact, check the width, squeeze, hold |
 | hold | `{"do": "hold", "seconds": 2}` | |
-| checkpoint | `{"do": "checkpoint", "ask": "is the block between the jaws?", "view": "side"}` | `expect` defaults to "yes" |
+| checkpoint | `{"do": "checkpoint", "ask": "is the block between the jaws?", "view": "side"}` | `expect` defaults to "yes"; `"expect": null` takes any answer and keeps it |
 
 A plain list is a sequence; the first step that does not end "done" ends the whole plan.
 
@@ -82,6 +85,20 @@ A plain list is a sequence; the first step that does not end "done" ends the who
   after a surprise. Record what you measured, not what you assume.
 - In a simulation the cameras show the simulator's scene, which may hold things the kernel does not know yet.
 
+## Cameras
+
+- `wu look` draws what the kernel believes only on a calibrated camera. A camera that was never calibrated draws
+  nothing; one that has moved since draws in the wrong place, which is worse, so calibrate it again.
+- Calibrate a camera from the arm: put the tool in open space the camera sees well, above the turn height, then
+  `wu calibrate CAMERA`. The arm visits the corners of a box, and at each a question asks where the tool point
+  (between the fingertips) is: `wu look CAMERA --grid`, then `wu answer JOB x,y` in that picture's pixels (or
+  `unseen`). The last answer brings the fit, installed if it is good, with the workcell lines that keep it. It takes
+  two or three minutes with the torque on: calibrate early, while the motors are cool.
+- If the box leaves the picture, answers come back `unseen` and the fit may refuse: move the tool so the camera
+  sees more around it and calibrate again. A camera on the arm moves with the tool and cannot be calibrated this way.
+- A 360 camera serves pinhole cuts (`projection = "equirect"`); once calibrated, a cut is aimed at a point with
+  `look_at` and drawn on like any other camera.
+
 ## Contact
 
 - Intended contact uses `touchdown` or `guarded`: slow, and stopped the moment the joints feel it.
@@ -89,6 +106,15 @@ A plain list is a sequence; the first step that does not end "done" ends the who
 - Inside a `fragile` zone (glass, for example) both thresholds drop sharply.
 - If the world knows a surface is there, a guarded move plans only 2 cm past it. Reaching the end without
   contact then means the world model is wrong: look, then correct it.
+- Guard only the last few centimetres: a line to about 2 cm short of where contact should be, then the guarded
+  move. Over a long guarded move a real arm's torque drifts from its model, and a stop on nothing gets likely.
+- Contact is judged against the arm holding still where the guarded move starts (it waits a moment if needed), and
+  noise raises a threshold, up to twice the one asked for, so that it sits outside the joint's own noise. A fragile
+  zone's threshold is never raised: on a noisy arm a stop there may be nothing. The outcome says when either
+  happens.
+- Something held in a two-finger pinch turns instead of pushing back when it lands. To set it down at a height you
+  know, use `guarded` with `"expect_contact": false` down to that height, look, then open. A `touchdown` would end
+  in "no contact", which cancels the steps after it, the opening included.
 
 ## Going home and letting go
 

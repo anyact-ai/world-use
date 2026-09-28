@@ -8,21 +8,26 @@ Its rules are the lessons of running a slow policy on real hardware:
 - A surprise holds where the arm really is, cancels anything queued behind it, and waits for the policy.
 - A refused command moves nothing.
 - The policy may be slow, crash or restart: the kernel keeps holding until it is told something new.
+- Once the control loop runs, only its thread talks to the body. Requests from other threads (switching torque
+  on or off) are handed to it and waited for, so a driver is never called from two threads at once.
 """
 import itertools
 import json
+import queue
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
+from concurrent.futures import CancelledError, Future
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
-from .behaviors import STATUSES, Behavior, ContactSense, Outcome, build
+from .behaviors import STATUSES, Behavior, ContactSense, Outcome, Residuals, Sequence, build, fragile_dtau
 from .body import Body, JointState
-from .envelope import Envelope, Trip
-from .errors import Refused
+from .envelope import MARGIN, Envelope, Trip
+from .errors import Refused, explain
 from .events import EventLog
 from .kinematics import Chain
 from .motion import Timing
@@ -96,26 +101,31 @@ class Job:
 
 class Heat:
     """Temperature trend per joint from the readings since the torque last came on (at most the last minute):
-    how long until the limit at this rate. Readings from before a switch would dilute the trend."""
+    how long until the limit at this rate. Readings from before a switch would dilute the trend, and so would the
+    first WARMUP_S after it: a motor driver's reading jumps as the current comes on (the reBot's elbow read 28 to
+    37 C in 12 s, then flat), and a line through that said "1 min to 80 C"."""
+    WARMUP_S = 20.0
 
     def __init__(self):
         self.samples: deque[tuple[float, np.ndarray]] = deque(maxlen=60)
         self.last_t = -np.inf
         self.on = False
+        self.since = -np.inf                         # when the torque last came on or went off
 
     def update(self, t: float, temp, on: bool = True):
         if on != self.on:
             self.samples.clear()
-            self.on = on
+            self.on, self.since = on, t
         if temp is not None and t - self.last_t >= 1.0:
             self.samples.append((t, np.asarray(temp, float)))
             self.last_t = t
 
     def slope_per_min(self) -> np.ndarray | None:
-        if len(self.samples) < 5:
+        settled = [s for s in self.samples if s[0] >= self.since + self.WARMUP_S]
+        if len(settled) < 5:
             return None
-        t = np.array([s[0] for s in self.samples])
-        T = np.array([s[1] for s in self.samples])
+        t = np.array([s[0] for s in settled])
+        T = np.array([s[1] for s in settled])
         tc = t - t.mean()
         return (tc @ (T - T.mean(0))) / (tc @ tc) * 60.0
 
@@ -171,13 +181,20 @@ class Kernel:
         self._hot_alarm_t = -np.inf
         self._warned: set[int] = set()
         self._sense: ContactSense | None = None    # collision check for every move (guarded moves add their own)
-        self._held_at: float | None = None         # gripper position where the held object stopped the fingers
+        self.held_at: float | None = None          # where the fingers closed on something, known to the world or not
+        self.grip_start: float | None = None       # the gripper as the session found it: home puts it back
+        self.residuals = Residuals(m.rate_hz)      # torque the model does not explain: contact checks judge against it
+        self.still = 0                             # ticks the command has not changed for
+        self._last_q_cmd = np.zeros(0)
+        self._loop_thread: threading.Thread | None = None     # set by loop(): from then on the body's only caller
+        self._posted: queue.SimpleQueue[tuple[Callable[[], object], Future]] = queue.SimpleQueue()
 
     # -- lifecycle -------------------------------------------------------------------------------
     def connect(self) -> JointState:
         st = self.body.connect()
         self.state, self.q_start = st, np.asarray(st.q, float).copy()
         self.cmd = Command(self.q_start.copy(), np.zeros(self.manifest.n), st.gripper)
+        self.grip_start = st.gripper
         self.envelope = Envelope(self.manifest, self.chain, self.world, self.q_start)
         for name, T in (self.manifest.frames(self.chain, self.q_start) if self.manifest.frames else {}).items():
             if name not in self.world.frames:        # a twin inherits the real session's frames, never recomputes them
@@ -192,38 +209,99 @@ class Kernel:
         return st
 
     def enable(self):
-        with self.lock:
-            self.body.enable()
-            self.state = self.body.read()
-            self.cmd = Command(np.asarray(self.state.q, float).copy(), np.zeros(self.manifest.n), self.state.gripper)
-            self.enabled = True
-        self.emit("enabled", "torque on")
+        """Torque on at the measured pose. Nothing if it is on already."""
+        self._on_loop(self._enable)
 
     def release(self):
         """Torque off. Only where that moves nothing (the manifest's rest pose), and only when idle."""
+        self._on_loop(self._release)
+
+    def _enable(self):
+        if self._loop_thread is not None and not self._loop_thread.is_alive():
+            raise Refused("the control loop has stopped, so nothing would command the motors", "no_loop",
+                          "restart the daemon")
+        if self.enabled:
+            return
+        try:                          # not under the lock: an engage takes a second or two, and status must answer
+            self.body.enable()
+        except Exception as e:
+            self.emit("enable_failed", explain(e), "warn" if isinstance(e, Refused) else "alarm")
+            raise
+        st = self.body.read()
         with self.lock:
+            self.state = st
+            self.cmd = Command(np.asarray(st.q, float).copy(), np.zeros(self.manifest.n), st.gripper)
+            self.residuals.clear()                 # readings from before a release say nothing about now
+            self.enabled = True
+        self.emit("enabled", "torque on")
+
+    def _release(self):
+        with self.lock:
+            if not self.enabled:
+                return
             if self.active is not None:
                 raise Refused("a job is running; stop it first", "busy")
             rest = self.manifest.rest
-            if self.enabled and rest is not None and not rest.holds(self.state.q):
+            if rest is not None and not rest.holds(self.state.q):
                 raise Refused("the arm is not at its rest pose: releasing torque here would drop it", "not_at_rest",
                               "go home first")
-            if self.enabled:
-                self.body.disable()
-                self.enabled = False
+            self.body.disable()
+            self.enabled = False
         self.emit("released", "torque off")
+
+    def _on_loop(self, fn: Callable[[], object]):
+        """Run fn where the body may be called: on the control thread while the loop runs (this thread waits for
+        it), else right here. Never call it holding self.lock: fn may need the lock on the control thread."""
+        loop = self._loop_thread
+        if loop is None or loop is threading.current_thread() or not loop.is_alive():
+            return fn()
+        f: Future = Future()
+        self._posted.put((fn, f))
+        while True:
+            try:
+                return f.result(timeout=0.5)
+            except TimeoutError:
+                if not loop.is_alive() and f.cancel():       # the loop ended before taking it: nothing was done
+                    raise RuntimeError("the control loop stopped before it could do this") from None
+            except CancelledError:
+                raise RuntimeError("the control loop stopped before it could do this") from None
+
+    def _run_posted(self, run: bool = True):
+        """Do what other threads handed over; with run=False (the loop has stopped) refuse it instead: switching
+        torque on now would leave nothing to command the motors."""
+        while True:
+            try:
+                fn, f = self._posted.get_nowait()
+            except queue.Empty:
+                return
+            if not run:
+                f.cancel()
+            elif f.set_running_or_notify_cancel():
+                try:
+                    f.set_result(fn())
+                except Exception as e:
+                    f.set_exception(e)
 
     def close(self) -> dict:
         """Close the connection (never switches torque off by itself) and write the flight record."""
         self.body.close()
-        summary = dict(body=self.manifest.name, **self.tape.summary(self.manifest.rate_hz))
-        if self.run_dir:
-            summary = dict(body=self.manifest.name, **self.tape.save(self.run_dir / "tape.npz", self.manifest.rate_hz))
-            summary["events"] = self.events.seq
-            save_summary(self.run_dir / "summary.json", summary)
-            (self.run_dir / "world.json").write_text(json.dumps(self.world.to_dict(), indent=1))
+        summary = self.save_record()
         self.emit("closed", "connection closed")
         self.events.close()
+        return summary
+
+    def save_record(self) -> dict:
+        """Write the flight record so far (tape, summary, world; events are written as they happen), without
+        closing: a run can be studied while it goes on. Returns the summary."""
+        rate = self.manifest.rate_hz
+        if not self.run_dir:
+            return dict(body=self.manifest.name, **self.tape.summary(rate))
+        summary = dict(body=self.manifest.name, **self.tape.save(self.run_dir / "tape.npz", rate))
+        summary["events"] = self.events.seq
+        save_summary(self.run_dir / "summary.json", summary)
+        with self.lock:                                  # the control thread moves held boxes about
+            world = self.world.to_dict()
+        (self.run_dir / "world.json").write_text(json.dumps(world, indent=1))
         return summary
 
     # -- requests (any thread) ---------------------------------------------------------------------
@@ -278,16 +356,29 @@ class Kernel:
         if self.last_touch >= route[1]:
             raise Refused("the arm has touched something since the home route was set; the way back may be blocked",
                           "home_route_stale", "look again, then set the home route again")
-        q0 = self.q_start
+        q0 = self.q_start.copy()
         rest = self.manifest.rest
         carry = set(rest.joints) if rest else set()
-        # full precision: a folded arm rests on its stops, and a rounded target would sit a hair past them
+        # A folded arm rests on its stops, and the start pose was measured with torque off, sagged into them.
+        # Powered, it meets them a little earlier: folding to that angle pushes into the stop. Fold to just off it.
+        if rest is not None:
+            for i in rest.stops:
+                s = rest.off_stop(i, self.manifest.joints[i])
+                q0[i] = rest.q[i] + s * max(MARGIN, s * (q0[i] - rest.q[i]))
+        # full precision elsewhere: a rounded target would differ from where the session started
         free = {str(i + 1): float(np.degrees(q0[i])) for i in range(self.manifest.n) if i not in carry}
         fold = [{"do": "joints", "target_deg": free, "label": "turn back while high"}] if free else []
         if carry:
             fold.append({"do": "joints", "target_deg": {str(i + 1): float(np.degrees(q0[i])) for i in sorted(carry)},
                          "label": "fold"})
-        return route[0] + [f for f in fold if self._differs(f)]
+        plan = route[0] + [f for f in fold if self._differs(f)]
+        g = self.manifest.gripper       # a gripper left open past pi comes back a turn low on the reBot
+        if (g is not None and self.grip_start is not None and self.held_at is None and self.cmd.gripper is not None
+                and abs(self.cmd.gripper - self.grip_start) > 0.02):     # never while it holds something
+            lo, hi = sorted((g.closed, g.open))
+            plan.append({"do": "gripper", "to": round(float(np.clip(self.grip_start, lo, hi)), 3),
+                         "label": "gripper as it was found"})
+        return plan
 
     def _differs(self, spec) -> bool:
         goal = self.cmd.q.copy()
@@ -312,7 +403,8 @@ class Kernel:
         job = self.active
         assert job is not None, "a question is asked by the running job"
         if self.auto_answer:
-            job.answer = question.get("expect", "yes")
+            expect = question.get("expect", "yes")
+            job.answer = "(any answer)" if expect is None else expect
             self.emit("assumed", f"assumed '{job.answer}' for: {question['ask']}", "warn", **question)
             return
         job.question, job.status = question, "waiting"
@@ -340,44 +432,42 @@ class Kernel:
         dev = self._sense.deviation(self)
         if len(self._sense.hist) < (self._sense.hist.maxlen or 0):
             return None
-        limit = np.array([j.contact_dtau for j in self.manifest.joints])
-        tool = self.chain.fk(self.state.q)[:3, 3]
-        for zone in self.world.zones_at(tool):
-            if zone.kind == "fragile":
-                limit = np.minimum(limit, float(zone.params.get("dtau", 0.3)))
+        limit = self._sense.limits([j.contact_dtau for j in self.manifest.joints], fragile_dtau(self))
         over = np.abs(dev) > limit
         if over.any():
             i = int(np.argmax(np.abs(dev) - limit))
+            doubt = self._sense.doubt(limit, [i])
             return Trip("contact", f"unexpected contact: {self.manifest.joints[i].name} torque moved {dev[i]:+.1f} Nm "
-                        f"beyond what the arm's weight explains (limit {limit[i]:.1f})", i, float(dev[i]),
-                        float(limit[i]))
+                        f"beyond what the arm's weight explains (limit {limit[i]:.1f}"
+                        + (f"; {doubt}" if doubt else "") + ")", i, float(dev[i]), float(limit[i]))
         return None
 
     def touched(self, kind: str, message: str):
         e = self.emit(kind, message)
         self.last_touch = e["seq"]
 
-    def gripped(self, contact: float) -> str | None:
-        """A grip closed on something at `contact`. If the world knows an object at the tool point, it now moves
-        with the tool (until the gripper opens past it). Returns the object's name, if known."""
-        self._held_at = contact
+    def gripped(self, contact: float, attach: bool = True) -> str | None:
+        """The fingers closed on something at `contact`: it is held until the gripper opens past it, whatever the
+        world knows. With attach, an object the world knows at the tool point moves with the tool meanwhile
+        (not when the grip found the wrong width: then it is not the object planned). Returns its name, if known."""
+        self.held_at = contact
         held = self.world.held
-        if held is None:
-            box = self.world.grab(self.tool)
-            return None if box is None else box.name
-        return held[0]
+        if held is not None:
+            return held[0]
+        box = self.world.grab(self.tool) if attach else None
+        return None if box is None else box.name
 
     def _track_held(self):
-        """Keep a held object's box with the tool; let go of it when the gripper opens past it."""
-        if self.world.held is None:
-            self._held_at = None
-            return
+        """Keep a held object's box with the tool; let go of it when the gripper opens past where it closed."""
         g = self.manifest.gripper
-        if (g is not None and self._held_at is not None and self.cmd.gripper is not None
-                and (self.cmd.gripper - self._held_at) * np.sign(g.open - g.closed) > 0.1):
+        if self.held_at is None or g is None:
+            return
+        if self.cmd.gripper is not None and (self.cmd.gripper - self.held_at) * np.sign(g.open - g.closed) > 0.1:
             box = self.world.drop()
-            self._held_at = None
-            if box is not None:
+            self.held_at = None
+            if box is None:
+                self.emit("let_go", "let go of what it held")
+            else:
                 c = self.world.from_base("work", box.pose[:3, 3]) if "work" in self.world.frames else box.pose[:3, 3]
                 self.emit("let_go",
                           f"let go of {box.name!r}; it should now stand at F{c[0]:+.3f} L{c[1]:+.3f} U{c[2]:+.3f}")
@@ -391,6 +481,8 @@ class Kernel:
     def tick(self):
         st = self.body.read()
         self.state = st
+        if self.enabled and st.tau is not None:
+            self.residuals.push(np.asarray(st.tau, float) - self.chain.gravity(st.q))
         now = self.clock.now()
         self.heat.update(now, st.temp, self.enabled)
         with self.lock:
@@ -410,7 +502,8 @@ class Kernel:
                     self._end(self.active, self.active.behavior.stop(self, reason))
                 elif self.enabled:
                     self.hold_here()
-            if self.active is None and self.queue and self.enabled:
+            # a job starts once there is a torque baseline to judge contact against (0.1 s after switching on)
+            if self.active is None and self.queue and self.enabled and (st.tau is None or self.residuals.ready):
                 self._start(self.queue.popleft(), now)
             job = self.active
         if job is not None and job.status in ("running", "waiting"):
@@ -426,6 +519,8 @@ class Kernel:
                     self._end(job, out)
         if self.enabled:
             self.body.command(self.cmd.q, self.cmd.dq, self.cmd.gripper, self.cmd.gripper_v)
+        self.still = self.still + 1 if np.array_equal(self.cmd.q, self._last_q_cmd) else 0
+        self._last_q_cmd = self.cmd.q.copy()
         moving = bool(job is not None and not job.finished and job.status == "running" and job.behavior.moves)
         self.tape.add(now - self.t0, self.enabled, moving, job.id if job else 0, self.cmd.q, st.q, st.tau, st.temp,
                       self.cmd.gripper, st.gripper, st.gripper_tau)
@@ -470,9 +565,14 @@ class Kernel:
         if trip.isolate:                             # gripper only: freeze it where it is, the arm carries on
             self.cmd.gripper, self.cmd.gripper_v = self.state.gripper, 0.0
             self.emit("gripper_trip", trip.message, "warn")
-            if self.active is not None and self.active.behavior.kind in ("gripper", "grip"):
-                self._end(self.active, Outcome("surprise", self.active.behavior.kind, trip.message,
-                                               hint="look at the gripper"))
+            job = self.active
+            step = job.behavior if job is not None else None
+            while isinstance(step, Sequence) and step.current is not None:     # the step a plan is on
+                step = step.current
+            if job is not None and step is not None and step.kind in ("gripper", "grip"):
+                seq = job.behavior
+                where = f"step {seq.i + 1}/{len(seq.steps)}: " if isinstance(seq, Sequence) else ""
+                self._end(job, Outcome("surprise", step.kind, where + trip.message, hint="look at the gripper"))
             return
         if trip.kind == "hot":
             self._on_hot(trip, now)
@@ -531,6 +631,8 @@ class Kernel:
     # -- convenience -------------------------------------------------------------------------------
     def run(self, spec, timeout_s: float = 600.0) -> Outcome:
         """Submit and tick until it ends (scripts, tests, twin checks). Not for use while a loop thread runs."""
+        if self._loop_thread is not None and self._loop_thread.is_alive():
+            raise RuntimeError("the control loop is running: submit() the job and wait for it instead")
         job = self.submit(spec)
         deadline = self.clock.now() + timeout_s
         while not job.finished:
@@ -544,10 +646,33 @@ class Kernel:
         return job.outcome
 
     def loop(self, stop: threading.Event):
-        """The control loop for a daemon thread."""
+        """The control loop for a daemon thread. From here on this thread is the only one that calls the body."""
+        if self._loop_thread is not None and self._loop_thread.is_alive():
+            raise RuntimeError("a control loop is already running for this kernel")
+        self._loop_thread = threading.current_thread()
         while not stop.is_set():
-            self.tick()
+            self._run_posted()
+            try:
+                self.tick()
+            except Exception as e:
+                self._survive(e)
             self.clock.wait()
+        self._run_posted(run=False)
+
+    def _survive(self, e: Exception):
+        """The body raised (an adapter unplugged, a value out of range): fault and say so, but keep the loop and
+        the daemon alive, so the flight record survives and an operator sees why. The motors keep their last
+        command until something works again or someone switches them off."""
+        with self.lock:
+            first = not self.faulted
+            self.faulted = True
+            self.hold_here()
+            self._cancel_queue("the kernel faulted")
+            if self.active is not None:
+                self._end(self.active, Outcome("faulted", self.active.behavior.kind, explain(e),
+                                               hint="check the hardware, then reset"))
+        if first:
+            self.emit("fault", f"control tick failed: {explain(e)}", "alarm")
 
     @property
     def tool(self) -> np.ndarray:

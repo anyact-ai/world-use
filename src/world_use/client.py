@@ -86,12 +86,21 @@ class Client:
     def remove(self, name: str) -> dict:
         return self.world(remove=name)
 
-    def look(self, camera: str | None = None, spec=None) -> dict:
-        """Save a picture from a camera (with the plan's path drawn on it, given a spec); returns its path."""
-        return self._call("POST", "/look", dict(camera=camera, spec=spec))
+    def look(self, camera: str | None = None, spec=None, grid: bool = False) -> dict:
+        """Save a picture from a camera (with the plan's path drawn on it, given a spec; with grid, a pixel ruler
+        and nothing else); returns its path."""
+        return self._call("POST", "/look", dict(camera=camera, spec=spec, grid=grid))
 
     def help(self) -> dict:
         return self._call("GET", "/help")["steps"]
+
+    def calibrate(self, camera: str, points: int = 8, spread: float | None = None, wait: float = 0.0) -> dict:
+        """Start calibrating a camera from the arm: a job whose checkpoints ask where the tool point is."""
+        return self._call("POST", "/calibrate", dict(camera=camera, points=points, spread=spread, wait=wait))
+
+    def record(self) -> dict:
+        """Write the flight record so far, without stopping anything."""
+        return self._call("POST", "/record", {})
 
     def shutdown(self) -> dict:
         return self._call("POST", "/shutdown", {})

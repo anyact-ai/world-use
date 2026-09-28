@@ -134,6 +134,11 @@ class Chain:
         F = self.link_frames(q)
         return np.array([F[self.root][:3, 3]] + [F[j.child][:3, 3] for j in self.active] + [F[self.tool_link][:3, 3]])
 
+    def axes(self, q) -> np.ndarray:
+        """Each moving joint's axis in the root frame, one row per joint."""
+        F = self.link_frames(q)
+        return np.array([F[j.child][:3, :3] @ j.axis for j in self.active])
+
     def jacobian(self, q) -> np.ndarray:
         """6 x n geometric Jacobian of the tool point: linear rows, then angular rows, root frame."""
         F = self.link_frames(q)

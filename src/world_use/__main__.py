@@ -2,4 +2,5 @@ import sys
 
 from .cli import main
 
-sys.exit(main())
+if __name__ == "__main__":        # a spawned worker process re-imports the main module: it must not run the CLI
+    sys.exit(main())

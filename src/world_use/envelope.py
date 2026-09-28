@@ -116,7 +116,7 @@ class Envelope:
         for name, depth in deepest.items():
             problems.append(Refused(f"the tool would go {1000 * depth:.0f} mm into {name!r}", "surface",
                                     "stop above it, or use a guarded move (touchdown) to make contact", box=name))
-        turn = self._turn_problem(full, rate)
+        turn = self.turn_problem(full, rate)
         if turn is not None:
             problems.append(turn)
         if problems:
@@ -139,7 +139,7 @@ class Envelope:
     def _up(self, p) -> float:
         return float(self.world.from_base("work", p)[2]) if "work" in self.world.frames else float(p[2])
 
-    def _turn_problem(self, full, rate) -> Refused | None:
+    def turn_problem(self, full, rate) -> Refused | None:
         if self.m.turn_clearance is None:
             return None
         joints, above = self.m.turn_clearance

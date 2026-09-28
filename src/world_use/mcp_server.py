@@ -69,11 +69,12 @@ def build(url: str = DEFAULT_URL):
         return call(lambda: job_text(c.answer(job, answer, wait=wait_s)))
 
     @server.tool()
-    def look(camera: str | None = None, plan: list[dict] | dict | None = None):
+    def look(camera: str | None = None, plan: list[dict] | dict | None = None, grid: bool = False):
         """A picture from a camera (default: the first), with the tool point, the work axes and the boxes the kernel
-        knows drawn on it; given a plan, its rehearsed tool path too."""
+        knows drawn on it; given a plan, its rehearsed tool path too. grid: a pixel ruler and nothing else, for
+        reading off where something is (as calibrating asks)."""
         def shot():
-            r = c.look(camera, plan)
+            r = c.look(camera, plan, grid)
             text = f"{r['camera']} camera: {r['drawn']}" + (f"\n{r['check']}" if r.get("check") else "")
             return [text, Image(path=r["path"])]
         return call(shot)
@@ -148,6 +149,23 @@ def build(url: str = DEFAULT_URL):
             return "\n".join(f"[{e['seq']}] {e['t']:>7.1f}s {e['level']:5s} {e['kind']}: {e['message']}"
                              for e in r["events"][-40:]) or "(none)"
         return call(recent)
+
+    @server.tool()
+    def calibrate(camera: str, points: int = 8, wait_s: float = 60.0) -> str:
+        """Find where a camera is from the arm: the tool visits the corners of a box, and at each a question asks
+        where the tool point is in `look(camera, grid=True)`; answer x,y pixels (or unseen) with `answer`. The
+        reply to the last answer has the fit, installed if it is good, and the workcell lines to keep it."""
+        return call(lambda: job_text(c.calibrate(camera, points, None, wait_s)))
+
+    @server.tool()
+    def record() -> str:
+        """Write the flight record so far (tape, summary, world) without stopping anything; returns where."""
+        def saved():
+            r = c.record()
+            s = r["summary"]
+            return (f"{r['run']}: powered {s.get('powered_s', 0)} s, moving {s.get('moving_s', 0)} s, "
+                    f"max temps {s.get('max_temp_c')}")
+        return call(saved)
 
     return server
 

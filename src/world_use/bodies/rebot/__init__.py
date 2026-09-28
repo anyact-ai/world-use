@@ -22,10 +22,12 @@ from ...kinematics import Chain
 HERE = Path(__file__).resolve().parent
 
 # name, motor id, motor model, kp (Nm/rad), kd (Nm s/rad), track_tol (rad), tau_max (Nm), hold_max (Nm), contact (Nm)
-# Gains are Seeed's RS values; track_tol and tau_max sit about 2x above anything a healthy move produced on the
-# arm. The contact thresholds are first estimates (a healthy move reached ~1.6 Nm on the shoulder); calibrate them.
+# Gains are Seeed's RS values, except the base's: at Seeed's kp 50, kd 3 its turns stuck, lurched and stopped short
+# (friction), and doubling both halved that on the arm (2026-09-28). track_tol and tau_max sit about 2x above
+# anything a healthy move produced on the arm. The contact thresholds are first estimates (a healthy move reached
+# ~1.6 Nm on the shoulder); calibrate them.
 MOTORS = (
-    ("joint1", 1, "rs-06", 50.0, 3.0, 0.15, 10.0, 1.0, 2.5),
+    ("joint1", 1, "rs-06", 100.0, 6.0, 0.15, 10.0, 1.0, 2.5),
     ("joint2", 2, "rs-06", 150.0, 10.0, 0.15, 20.0, 14.0, 3.0),
     ("joint3", 3, "rs-06", 150.0, 10.0, 0.15, 20.0, 14.0, 3.0),
     ("joint4", 4, "rs-00", 50.0, 5.0, 0.20, 7.0, 5.0, 1.5),
@@ -50,7 +52,9 @@ def work_frame(chain: Chain, q) -> np.ndarray:
     return T
 
 
-REST = Rest(q=(0.0,) * 6, joints=(1, 2, 3), tol=0.15)
+# Folded, the shoulder and elbow rest on hard stops (their lower limits). Powered, the elbow meets its stop about
+# 1 deg before the angle it sags to unpowered (2026-09-27), so the stop takes part of its load there.
+REST = Rest(q=(0.0,) * 6, joints=(1, 2, 3), tol=0.15, stops=(1, 2))
 MANIFEST = Manifest(
     name="reBot Arm B601-RS",
     urdf=HERE / "ReBot_Arm_RS.urdf",
@@ -59,8 +63,9 @@ MANIFEST = Manifest(
                            excursion_exempt=(name == "joint6"), contact_dtau=contact)
                  for (name, _, _, _, _, tol, tmax, hold, contact), (lo, hi) in zip(MOTORS, URDF_LIMITS, strict=True)),
     rate_hz=100.0,
+    # squeeze: at the gripper's kp of 50 Nm/rad, 0.05 rad on something rigid is 2.5 Nm; 0.1 would pass tau_max
     gripper=GripperSpec(closed=0.05, open=4.5, unit="rad", m_per_unit=0.020, v_max=4.5, track_tol=0.6, tau_max=4.0,
-                        approach=(1.0, 0.0, 0.0), opens_along=(0.0, 1.0, 0.0)),
+                        squeeze=0.05, approach=(1.0, 0.0, 0.0), opens_along=(0.0, 1.0, 0.0)),
     rest=REST,
     temp_warn_c=70.0,
     temp_limit_c=80.0,
@@ -78,10 +83,16 @@ MANIFEST = Manifest(
         "torque off. Decide with torque off; act in bursts.",
         "Gripper opening is roughly 20 mm per rad (approximate); holding shows as -1.4..-2.2 Nm of gripper effort.",
         "The work frame points where the arm points at rest: forward, left, up. It stays fixed for the session.",
+        "Nose-down (move_to with point \"down\") is reachable low and near: about U+0.04 to +0.12 with the tool "
+        "F+0.14 to +0.26 in front of the base. That is below the turn height, where the wrist and base may not turn, "
+        "so it ends a few degrees off straight down (3.6 from rest).",
     ),
     hardware_notes=(
         "Forward/up moves end 2-5 mm low (the elbow carries about 15% more than the URDF says).",
-        "After base turns the tool can be 5-10 mm off sideways: the base gain is soft.",
+        "After base turns the tool can stop a few mm short sideways: the base sticks and slips (friction).",
+        "Joint torque strays 1-3 Nm from the gravity model over a 10 cm move (friction and hysteresis, not mass), "
+        "so a long guarded move can stop on nothing: line to about 2 cm short of the expected contact, then guard "
+        "only the rest. Contact is found at a few newtons.",
     ),
 )
 
@@ -162,7 +173,9 @@ class ReBotBody:
         return self._last
 
     def enable(self):
-        """Torque on at the measured pose: gains and gravity support ramp in over a second, no jump."""
+        """Torque on at the measured pose: gains and gravity support ramp in over a second, no jump. If anything
+        fails on the way, every motor is switched off again before the error goes up: the arm is at rest, so that
+        moves nothing, while a motor left on with nothing commanding it holds its last frame indefinitely."""
         q0 = self._params_positions()
         if not REST.holds(q0[:6]):
             raise Refused(f"the arm is not folded at rest (joints deg {np.round(np.degrees(q0[:6]), 1).tolist()}); "
@@ -173,6 +186,16 @@ class ReBotBody:
                 self._awake = subprocess.Popen(["caffeinate", "-dims", "-w", str(os.getpid())])
             except OSError:
                 self._awake = None
+        self.enabled = True
+        try:
+            self._engage(q0)
+        except BaseException as e:
+            unconfirmed = self._switch_off()
+            if unconfirmed:
+                e.add_note(f"could not confirm torque-off on: {', '.join(unconfirmed)}. Treat the arm as energised.")
+            raise
+
+    def _engage(self, q0):
         for m in self.motors:
             m.ensure_mode(self._Mode.MIT, 1000)
             time.sleep(0.05)
@@ -180,7 +203,6 @@ class ReBotBody:
         for m in self.motors:
             m.enable()
             time.sleep(0.02)
-        self.enabled = True
         q = q0[:6].copy()
         grip = q0[6] - self.grip_offset
         n = int(ENGAGE_S * MANIFEST.rate_hz)
@@ -241,6 +263,13 @@ class ReBotBody:
         for k in range(n):
             self._send_all(q, np.zeros(6), grip, 0.0, scale=1.0 - (k + 1) / n)
             time.sleep(1.0 / MANIFEST.rate_hz)
+        unconfirmed = self._switch_off()
+        if unconfirmed:
+            raise RuntimeError(f"could not confirm torque-off on: {', '.join(unconfirmed)}. "
+                               "Treat the arm as energised.")
+
+    def _switch_off(self) -> list[str]:
+        """Disable each motor and check its acknowledgement. Returns the motors whose torque-off is unconfirmed."""
         unconfirmed = []
         for (name, *_), m in zip((*MOTORS, GRIPPER_MOTOR), self.motors, strict=True):
             off = False
@@ -259,9 +288,7 @@ class ReBotBody:
         if self._awake:
             self._awake.terminate()
             self._awake = None
-        if unconfirmed:
-            raise RuntimeError(f"could not confirm torque-off on: {', '.join(unconfirmed)}. "
-                               "Treat the arm as energised.")
+        return unconfirmed
 
     def close(self):
         """Release the adapter WITHOUT disable frames: if the arm is raised and holding, a disable drops it."""

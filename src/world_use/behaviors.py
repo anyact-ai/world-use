@@ -15,8 +15,10 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from . import motion
+from . import geometry, motion
+from .envelope import TURN_EPS
 from .errors import Refused
+from .world import DIRECTIONS, along, heading
 
 if TYPE_CHECKING:
     from .kernel import Kernel
@@ -198,37 +200,185 @@ class Lines(PathBehavior):
         return path
 
 
-class MoveTo(PathBehavior):
-    """Tool point to an absolute position, in a straight line; the gripper keeps its angle.
+def _direction(value) -> np.ndarray:
+    """A direction from a word (down, forward, ...) or a vector, in the step's frame."""
+    if isinstance(value, str):
+        if value not in DIRECTIONS:
+            raise Refused(f"no direction {value!r}; say one of {', '.join(DIRECTIONS)}, or give [f, l, u]", "spec")
+        return np.asarray(DIRECTIONS[value], float)
+    v = np.asarray(value, float)
+    if v.shape != (3,) or np.linalg.norm(v) < 1e-9:
+        raise Refused(f"a direction is a word or three numbers [f, l, u], got {value!r}", "spec")
+    return v / np.linalg.norm(v)
 
-    to        [forward, left, up] metres in the frame (default: work)
+
+class MoveTo(PathBehavior):
+    """Tool point to an absolute position in a straight line; with point, the gripper turns on the way.
+
+    to          [forward, left, up] metres in the frame (default: work); leave it out to turn in place
+    point       which way the gripper should end up pointing: down, up, forward, back, left, right, or [f, l, u]
+    jaws        which way its jaws should open, the same way (default: as near to now as pointing allows)
+    within_deg  how far from point it may end so the wrist and base can stay still below the turn height
+                (default 5: near its base a real arm can seldom point exactly down without turning them)
     frame, duration, speed  as for line
     """
     kind = "move_to"
-    example = {"do": "move_to", "to": [0.35, -0.05, 0.30]}
+    example = {"do": "move_to", "to": [0.20, 0.0, 0.10], "point": "down"}
 
     def plan(self, k):
-        target = k.world.to_base(self.params.get("frame", "work"), self.params["to"])
-        here = k.chain.fk(k.cmd.q)[:3, 3]
-        d = target - here
+        p = self.params
+        frame = p.get("frame", "work")
+        F = k.world.frame(frame).T[:3, :3]
+        T0 = k.chain.fk(k.cmd.q)
+        if not {"to", "point", "jaws"} & set(p):
+            raise Refused("move_to needs to, point or jaws", "spec")
+        target = k.world.to_base(frame, p["to"]) if "to" in p else T0[:3, 3].copy()
+        d = target - T0[:3, 3]
         if np.linalg.norm(d) > k.manifest.max_segment_m:
             raise Refused(f"target is {100 * np.linalg.norm(d):.1f} cm away; one move may be at most "
                           f"{100 * k.manifest.max_segment_m:.0f} cm", "segment_length", "go in shorter moves (lines)")
-        path, _, _ = motion.line(k.chain, k.cmd.q, d, _speed_timing(k, self.params.get("speed")),
-                                 self.params.get("duration"), *k.envelope.bounds(k.cmd.q), weights=k.ik_weights)
-        return path
+        timing = _speed_timing(k, p.get("speed"))
+        self.aimed = None
+        if "point" not in p and "jaws" not in p:
+            path, _, _ = motion.line(k.chain, k.cmd.q, d, timing, p.get("duration"), *k.envelope.bounds(k.cmd.q),
+                                     weights=k.ik_weights)
+            return path
+        g = k.manifest.gripper
+        if g is None:
+            raise Refused("this robot has no gripper to point", "no_gripper")
+        want = F @ _direction(p["point"]) if "point" in p else T0[:3, :3] @ np.asarray(g.approach, float)
+        jaws = F @ _direction(p["jaws"]) if "jaws" in p else None
+        try:
+            R = geometry.aim(T0[:3, :3], g.approach, g.opens_along, want, jaws)
+        except ValueError as e:
+            raise Refused(str(e), "spec", "give jaws square to point") from None
+        T = np.eye(4)
+        T[:3, :3], T[:3, 3] = R, target
+        words = heading(F.T @ want)
+        exact, failed, turn = None, None, None
+        try:
+            lo, hi = k.envelope.bounds(k.cmd.q)
+            exact, _, _ = motion.cartesian(k.chain, k.cmd.q, T, timing, p.get("duration"), lo, hi,
+                                           weights=k.ik_weights, turning=words)
+            turn = k.envelope.turn_problem(np.vstack([k.cmd.q, exact]), k.manifest.rate_hz)
+        except Refused as e:
+            failed = e
+        if exact is not None and turn is None:
+            self.aimed = (want, False)
+            return exact
+        within = np.radians(float(p.get("within_deg", 5.0)))
+        tilt = self._tilt(k, T0, target, want, jaws, timing, words)
+        if tilt is not None and tilt[0] is not None and tilt[1] <= within:
+            self.aimed = (want, True)
+            return tilt[0]
+        if exact is not None and turn is not None:      # only the turn below the turn height is in the way
+            more = "" if tilt is None or tilt[0] is None else (
+                f", or let it only tilt: that ends {np.degrees(tilt[1]):.0f} deg from {words} "
+                f"(within_deg {np.ceil(np.degrees(tilt[1])):.0f})")
+            raise Refused(str(turn), "turn_clearance", turn.hint + more, **turn.data)
+        assert failed is not None
+        raise failed
+
+    def _tilt(self, k, T0, target, want, jaws, timing, words):
+        """Point as near to `want` as the pitch joints alone can, with the joints the turn-clearance rule guards
+        held still: (path, or None if unreachable; how far from want it ends, rad), or None where the arm has no
+        such rule or its other joints do not share one axis."""
+        rule = k.manifest.turn_clearance
+        if rule is None:
+            return None
+        held = list(rule[0])
+        free = [i for i in range(k.manifest.n) if i not in held]
+        axes = k.chain.axes(k.cmd.q)
+        n = axes[free[0]]
+        if any(np.linalg.norm(np.cross(axes[i], n)) > 1e-6 for i in free[1:]):
+            return None
+        g = k.manifest.gripper
+        a0 = T0[:3, :3] @ np.asarray(g.approach, float)
+        pa, pw = a0 - (a0 @ n) * n, want - (want @ n) * n
+        if np.linalg.norm(pa) < 1e-6 or np.linalg.norm(pw) < 1e-6:
+            return None
+        R = geometry.axis_angle(n, np.arctan2(n @ np.cross(pa, pw), pa @ pw)) @ T0[:3, :3]
+        off = geometry.angle(R @ g.approach, want)
+        if jaws is not None:
+            j = R @ np.asarray(g.opens_along, float)
+            off = max(off, min(geometry.angle(j, jaws), geometry.angle(-j, jaws)))
+        T = np.eye(4)
+        T[:3, :3], T[:3, 3] = R, target
+        q = np.asarray(k.cmd.q, float)
+        lo, hi = k.envelope.bounds(q)
+        for i in held:
+            lo[i], hi[i] = max(lo[i], q[i] - TURN_EPS / 2), min(hi[i], q[i] + TURN_EPS / 2)
+        try:
+            path, _, _ = motion.cartesian(k.chain, q, T, timing, self.params.get("duration"), lo, hi,
+                                          weights=k.ik_weights, turning=words)
+        except Refused:
+            return None, off
+        return path, off
+
+    def arrived(self, k) -> Outcome:
+        if self.aimed is None:
+            return super().arrived(k)
+        want, tilted = self.aimed
+        g, W = k.manifest.gripper, k.world.frame("work").T[:3, :3]
+        R = k.chain.fk(k.cmd.q)[:3, :3]
+        off = np.degrees(geometry.angle(R @ g.approach, want))
+        why = f" ({off:.1f} deg off: the wrist stays still below the turn height)" if tilted and off >= 0.5 else ""
+        return self.done(f"{self.describe()}: now pointing {heading(W.T @ R @ g.approach)}{why}, jaws open "
+                         f"{along(W.T @ R @ g.opens_along)}", seconds=self.info["seconds"], off_deg=round(off, 1))
 
 
 # -- contact ------------------------------------------------------------------------------------------
 
+class Residuals:
+    """Joint torque the arm's own weight does not explain (measured minus the gravity model), over the last few
+    tenths of a second: the baseline a contact check judges against, and how noisy each joint is right now."""
+
+    def __init__(self, rate_hz: float, window_s: float = 0.3, need_s: float = 0.1):
+        self.samples: deque[np.ndarray] = deque(maxlen=max(1, int(window_s * rate_hz)))
+        self.need = max(1, int(need_s * rate_hz))
+
+    def push(self, r):
+        self.samples.append(np.asarray(r, float))
+
+    def clear(self):
+        self.samples.clear()
+
+    @property
+    def ready(self) -> bool:
+        return len(self.samples) >= self.need
+
+    @property
+    def window(self) -> int:
+        return self.samples.maxlen or 1
+
+    def baseline(self) -> tuple[np.ndarray, np.ndarray]:
+        """(median, robust noise) per joint. Refuses when empty: a NaN bias would make every check pass."""
+        if not self.samples:
+            raise RuntimeError("no torque readings since the torque came on")
+        s = np.array(self.samples)
+        bias = np.median(s, axis=0)
+        return bias, 1.4826 * np.median(np.abs(s - bias), axis=0)
+
+
 class ContactSense:
     """Torque change that the arm's own weight does not explain.
 
-    The bias (measured minus model) is captured while holding still before the move, so the URDF's mass errors
-    and cable loads cancel. A short median filter rejects single-tick spikes. Without an explicit joint list it
-    watches the joints with real leverage along the direction of motion: a vertical push barely loads a vertical
-    base axis, whose friction would only add noise.
+    The bias (measured minus model) is the median of the kernel's last few tenths of a second, so the URDF's mass
+    errors and cable loads cancel and one noisy reading does not shift every judgement after it. Their spread is
+    the joint's noise, and no threshold is set below NOISE_K times it: a real reBot's loaded shoulder and elbow
+    read +-0.5-1 Nm from one tick to the next while holding still. Noise raises a threshold at most NOISE_CAP
+    times, so a joint gone noisy stops on nothing rather than going numb, and never above a fragile zone's limit:
+    that one is the operator's. A short median filter rejects single-tick spikes. Without an explicit joint list
+    it watches the joints with real leverage along the direction of motion: a vertical push barely loads a
+    vertical base axis, whose friction would only add noise.
+
+    A joint resting on the stop it folds onto (the manifest's rest stops) is not judged, and is re-zeroed until it
+    leaves: the stop takes part of its load, so arriving there or lifting off moved ~2 Nm between the reBot's
+    elbow motor and its stop with nothing touched.
     """
+    NOISE_K = 3.5                     # holds of up to 54 s on the reBot stayed within 3.3x (2026-09-27)
+    NOISE_CAP = 2.0                   # noise raises a joint's threshold at most this many times
+    STOP_ZONE = 0.06                  # rad from a rest stop within which a joint is not judged
 
     def __init__(self, k: Kernel, joints=None, direction=None, window=5):
         st = k.state
@@ -241,23 +391,54 @@ class ContactSense:
             self.joints = [int(i) for i in np.where(lever >= 0.3 * lever.max())[0]]
         else:
             self.joints = list(range(k.manifest.n))
-        self.bias = np.asarray(st.tau, float) - k.chain.gravity(st.q)
+        if k.residuals.samples:
+            self.bias, noise = k.residuals.baseline()
+        else:                         # a heat emergency may start home before any reading: judge from this one
+            self.bias, noise = np.asarray(st.tau, float) - k.chain.gravity(st.q), np.zeros(k.manifest.n)
+        self.floor = self.NOISE_K * noise
+        rest = k.manifest.rest
+        self.stops = [] if rest is None else [(i, rest.q[i]) for i in rest.stops]
         self.hist = deque(maxlen=window)
 
     def deviation(self, k: Kernel) -> np.ndarray:
         st = k.state
-        dev = np.asarray(st.tau, float) - k.chain.gravity(st.q) - self.bias
-        self.hist.append(dev)
-        return np.median(np.array(self.hist), axis=0)
+        self.hist.append(np.asarray(st.tau, float) - k.chain.gravity(st.q))
+        med = np.median(np.array(self.hist), axis=0)
+        on = [i for i, stop in self.stops if abs(st.q[i] - stop) < self.STOP_ZONE]
+        self.bias[on] = med[on]
+        return med - self.bias
 
-    def exceeded(self, k, dtau) -> tuple[bool, np.ndarray]:
+    def limits(self, limit, fragile: float | None = None) -> np.ndarray:
+        """Per-joint thresholds: the requested ones, raised clear of the joint's measured noise (at most NOISE_CAP
+        times), and never above a fragile zone's limit. There a noisy arm may stop on nothing: it must not press
+        harder than the zone allows. `doubt` says when."""
+        limit = np.broadcast_to(np.asarray(limit, float), self.floor.shape)
+        raised = np.clip(self.floor, limit, self.NOISE_CAP * limit)
+        return raised if fragile is None else np.minimum(raised, fragile)
+
+    def doubt(self, used, joints=None) -> str:
+        """Joints whose noise alone can cross the threshold used for them, in words: a stop there may be nothing."""
+        loud = [i for i in (self.joints if joints is None else joints) if self.floor[i] > used[i] + 1e-9]
+        return ("noise alone can cross the limit, so it may be nothing: "
+                + ", ".join(f"j{i + 1} {self.floor[i]:.1f} Nm" for i in loud)) if loud else ""
+
+    def exceeded(self, k, dtau, fragile: float | None = None) -> tuple[bool, np.ndarray]:
         dev = self.deviation(k)
-        sel = np.abs(dev[self.joints])
-        return bool(len(self.hist) == self.hist.maxlen and sel.max() > dtau), dev
+        over = np.abs(dev[self.joints]) > self.limits(dtau, fragile)[self.joints]
+        return bool(len(self.hist) == self.hist.maxlen and over.any()), dev
+
+
+def fragile_dtau(k: Kernel) -> float | None:
+    """The contact limit of the fragile zones the tool is in (the lowest), or None outside them."""
+    tool = k.chain.fk(k.state.q)[:3, 3]
+    limits = [float(b.params.get("dtau", 0.3)) for b in k.world.zones_at(tool) if b.kind == "fragile"]
+    return min(limits) if limits else None
 
 
 class Guarded(Line):
     """Slow straight line that stops the moment something pushes back; no contact by the end is a surprise.
+    It first makes sure the arm has held still for a moment where it starts: that stillness is what contact is
+    judged against.
 
     forward, left, up  metres along the frame's axes: the furthest it may go
     dtau               joint torque change that counts as contact, Nm (default 0.6; fragile zones use less)
@@ -274,9 +455,9 @@ class Guarded(Line):
 
     def start(self, k):
         self.d, self.cut = self._clip_to_surfaces(k, self.delta(k))
-        self.sense = ContactSense(k, self.params.get("joints"), direction=self.d)
         self.seconds = max(1.0, float(np.linalg.norm(self.d)) / float(self.params.get("speed_mps", 0.02)) / 0.8)
         super().start(k)
+        self.sense: ContactSense | None = None     # taken once the arm has held still for a whole baseline window
 
     def _clip_to_surfaces(self, k, d):
         """A known surface ends the search: no need to plan (or be able to reach) beyond it."""
@@ -299,29 +480,44 @@ class Guarded(Line):
                                  weights=k.ik_weights, shape=motion.cruise)
         return path
 
-    def dtau(self, k) -> float:
-        base = float(self.params.get("dtau", 0.6))
-        tool = k.chain.fk(k.state.q)[:3, 3]
-        zones = [b for b in k.world.zones_at(tool) if b.kind == "fragile"]
-        return min([base] + [float(b.params.get("dtau", 0.3)) for b in zones])
-
     def tick(self, k):
-        hit, dev = self.sense.exceeded(k, self.dtau(k))
+        if self.sense is None:
+            # straight after another move the recent torque is that move's slowing down, not this pose at rest
+            if k.still < k.residuals.window:
+                k.set(k.cmd.q)
+                return None
+            self.sense = ContactSense(k, self.params.get("joints"), direction=self.d)
+        hit, dev = self.sense.exceeded(k, float(self.params.get("dtau", 0.6)), fragile_dtau(k))
         if hit:
             k.hold_here()
             moved = float(np.linalg.norm(k.chain.fk(k.state.q)[:3, 3] - k.chain.fk(self.path[0])[:3, 3]))
             k.touched("contact", f"contact after {100 * moved:.1f} cm")
-            return self.done(f"contact after {100 * moved:.1f} cm", moved_m=round(moved, 4),
+            return self.done(f"contact after {100 * moved:.1f} cm{self._noisy(k)}", moved_m=round(moved, 4),
                              torque_change=np.round(dev, 2).tolist())
         return super().tick(k)
+
+    def _noisy(self, k) -> str:
+        """Say so when a joint's noise, not the request, set its threshold, or when its noise alone can cross the
+        threshold (a fragile zone's is never raised): either changes what counts as contact."""
+        if self.sense is None:
+            return ""
+        asked, fragile = float(self.params.get("dtau", 0.6)), fragile_dtau(k)
+        want = asked if fragile is None else min(asked, fragile)
+        used = self.sense.limits(asked, fragile)
+        raised = [i for i in self.sense.joints if used[i] > want + 1e-9]
+        notes = ["torque noise raised the threshold: " + ", ".join(f"j{i + 1} {used[i]:.1f} Nm" for i in raised)
+                 if raised else "", self.sense.doubt(used)]
+        return f" ({'; '.join(n for n in notes if n)})" if any(notes) else ""
 
     def arrived(self, k):
         if self.params.get("expect_contact", True):
             where = f", {100 * self.OVERSHOOT:.0f} cm past where {self.cut!r} should be" if self.cut else ""
-            return self.surprise(f"reached the end of the guarded move without contact{where}", expected="contact",
-                                 observed="no contact",
+            return self.surprise(f"reached the end of the guarded move without contact{where}{self._noisy(k)}",
+                                 expected="contact", observed="no contact",
                                  hint="the world model is off here: look, then correct it" if self.cut else
-                                 "the surface is further than planned: look first, then go further")
+                                 "the surface is further than planned, or something held turned in the grip instead "
+                                 "of pushing back: look first. To set a held thing down at a known height, use "
+                                 "guarded with expect_contact false")
         return self.done("no contact, as expected")
 
 
@@ -405,7 +601,7 @@ class Grip(Behavior):
     expect_mm  [lo, hi] opening where the fingers should meet the object; outside it, or nothing, is a surprise
     expect     the same in the gripper's native units
     start_mm   open to this first (or start, native units)
-    squeeze    how much further to close after contact, native units (default 0.1)
+    squeeze    how much further to close after contact, native units (default: the gripper's, on the card)
     effort     gripper effort that counts as contact (default 0.6)
     lag        how far the gripper may fall behind its command before that counts as contact (default 0.1)
     speed      closing speed, native units per second (default 0.3)
@@ -442,7 +638,7 @@ class Grip(Behavior):
             behind = abs(st.gripper - k.cmd.gripper)
             if effort > self.effort or behind > self.lag:
                 self.contact = float(st.gripper)
-                squeeze = float(p.get("squeeze", 0.1)) * np.sign(g.closed - g.open)
+                squeeze = float(p.get("squeeze", g.squeeze)) * np.sign(g.closed - g.open)
                 k.set_gripper(self.contact + squeeze)
                 self.phase, self.wait = "squeeze", int(0.3 * k.manifest.rate_hz)
                 return None
@@ -467,6 +663,7 @@ class Grip(Behavior):
             lo, hi = self.expect
             mm = p.get("expect_mm")
             want = f"{mm[0]}..{mm[1]} mm" if mm else f"{lo:.2f}..{hi:.2f} {g.unit}"
+            k.gripped(contact, attach=False)        # it holds something all the same: going home must not let go
             return self.surprise(f"fingers met something at {contact:.2f} {g.unit}{_mm(g, contact)}, "
                                  f"outside the expected {want}", expected=[lo, hi], observed=contact,
                                  hint="the object is not where, or not the size, planned: open and look", **data)
@@ -507,7 +704,8 @@ class Checkpoint(Behavior):
 
     ask     the question, e.g. "is the black loop between the jaws?"
     view    the camera that answers it best (`wu look VIEW`); roi = [x0, y0, x1, y1] in that image
-    expect  the answer that means carry on (default "yes"); any other answer ends the plan
+    expect  the answer that means carry on (default "yes"); any other answer ends the plan. null: any answer carries
+            on, and is kept in the outcome with where the tool was (a measurement, like "512,300" in a picture)
     """
     kind = "checkpoint"
     example = {"do": "checkpoint", "ask": "is the block between the jaws?", "view": "side"}
@@ -517,15 +715,20 @@ class Checkpoint(Behavior):
         self.asked = False
 
     def tick(self, k):
+        expect = self.params.get("expect", "yes")
+        expect = None if expect is None else str(expect)
         if not self.asked:
             k.ask(dict(ask=self.params["ask"], view=self.params.get("view"), roi=self.params.get("roi"),
-                       expect=str(self.params.get("expect", "yes"))))
+                       expect=expect))
             self.asked = True
         k.set(k.cmd.q, np.zeros(k.manifest.n))
         answer = k.take_answer()
         if answer is None:
             return None
-        expect = str(self.params.get("expect", "yes"))
+        if expect is None:
+            tool = k.world.from_base("work", k.chain.fk(k.state.q)[:3, 3])
+            return self.done(f"{self.params['ask']} -> {answer}", answer=answer, ask=self.params["ask"],
+                             tool=np.round(tool, 4).tolist())
         if answer.strip().lower() == expect.lower():
             return self.done(f"{self.params['ask']} -> {answer}", answer=answer)
         return self.surprise(f"{self.params['ask']} -> {answer}", expected=expect, observed=answer)
@@ -555,12 +758,14 @@ class Sequence(Behavior):
     def start(self, k):
         self.i, self.current = 0, None
         self.results: list[Outcome] = []
+        self.answers: list[dict] = []     # what free checkpoints were told, however deep, in order
 
     def tick(self, k):
         while True:
             if self.current is None:
                 if self.i >= len(self.steps):
-                    return self.done(f"{len(self.steps)} steps done", steps=[o.message for o in self.results])
+                    return self.done(f"{len(self.steps)} steps done", steps=[o.message for o in self.results],
+                                     **({"answers": self.answers} if self.answers else {}))
                 self.current = self.steps[self.i]
                 k.emit("step", f"step {self.i + 1}/{len(self.steps)}: {self.current.describe()}", step=self.i + 1)
                 k.rebias()
@@ -576,8 +781,13 @@ class Sequence(Behavior):
             self.results.append(out)
             self.current = None
             self.i += 1
+            if "tool" in out.data and "answer" in out.data:
+                self.answers.append(dict(step=self.i, ask=out.data["ask"], answer=out.data["answer"],
+                                         tool=out.data["tool"]))
+            self.answers += [{**a, "step": self.i} for a in out.data.get("answers", [])]     # this plan's step
             if not out.ok:
-                out.data = {**out.data, "step": self.i, "of": len(self.steps)}
+                out.data = {**out.data, "step": self.i, "of": len(self.steps),
+                            **({"answers": self.answers} if self.answers else {})}
                 out.message = f"step {self.i}/{len(self.steps)}: {out.message}"
                 return out
             k.emit("step_done", f"step {self.i}/{len(self.steps)}: {out.message}", step=self.i)

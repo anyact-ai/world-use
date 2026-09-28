@@ -13,8 +13,15 @@ every line ends up in a model's context.
     wu help [STEP]              the steps a plan can use, from the running daemon
     wu fact KEY VALUE           record a measurement with its source
     wu home-route '<steps>'     the way home from here ('[]' = fold straight back); wu home runs it
+    wu record                   write the flight record so far (tape, summary, world), without stopping
+    wu calibrate CAMERA         find where a camera is from the arm: say where you see the tool point, 6-8 times
     wu stop | events | enable | release | down
     wu mcp                      the same verbs as MCP tools, over stdio
+
+The exit status says how it went, so a shell chain stops where the robot did: 0 done (a job) or passed (a
+check); 4 refused, surprise, stopped, faulted or cancelled, or a check that would not pass; 5 waiting at a
+checkpoint (`wu answer`); 6 still running when the wait ran out (`wu job ID --wait 60`); 2 the daemon refused the
+request; 3 no daemon. `--json` works before or after the command.
 """
 import argparse
 import json
@@ -37,6 +44,8 @@ def _spec(text: str):
 def job_text(d: dict) -> str:
     """A job as a policy reads it: the outcome (or the question it waits on) and the state line."""
     lines = [f"warning: {d['warning']}"] if d.get("warning") else []
+    if d.get("calibration"):
+        lines.append(d["calibration"]["text"])
     if d.get("incident"):
         return "\n".join(lines + [d["incident"]])
     out = d.get("outcome")
@@ -50,6 +59,18 @@ def job_text(d: dict) -> str:
         more = f"; keep waiting with: wu job {d['id']} --wait 60" if d["status"] in ("queued", "running") else ""
         lines.append(f"job {d['id']} {d['status']}: {d['what']}{more}")
     return "\n".join(lines + [d["line"]])
+
+
+JOB_EXIT = {"done": 0, "waiting": 5, "queued": 6, "running": 6}
+
+
+def exit_status(a, r) -> int:
+    """How a command went, as a shell reads it: see the module docstring."""
+    if isinstance(r, dict) and "id" in r and "status" in r:
+        return JOB_EXIT.get(r["status"], 4)
+    if a.cmd == "check" and isinstance(r, dict):
+        return 0 if r.get("ok") else 4
+    return 0
 
 
 def cmd_up(a):
@@ -89,6 +110,12 @@ def main(argv=None) -> int:
     up.add_argument("--runs", default=os.environ.get("WORLD_USE_RUNS", "runs"))
     up.add_argument("--enable", action="store_true")
     sub.add_parser("down", help="release at rest and stop the daemon")
+    sub.add_parser("record", help="write the flight record so far, without stopping")
+    p = sub.add_parser("calibrate", help="find where a camera is from the arm: answer where it sees the tool point")
+    p.add_argument("camera")
+    p.add_argument("--points", type=int, default=8, help="corners of the box to visit (6-8)")
+    p.add_argument("--spread", type=float, help="half-width of the box, m (default: the largest that passes)")
+    p.add_argument("--wait", type=float, default=60.0)
     sub.add_parser("status")
     sub.add_parser("card")
     for name in ("run", "check"):
@@ -101,6 +128,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("look", help="save a picture from a camera and print its path")
     p.add_argument("camera", nargs="?")
     p.add_argument("--plan", help="draw this plan's tool path on the picture (JSON spec or file)")
+    p.add_argument("--grid", action="store_true", help="a pixel ruler and nothing the kernel believes")
     p = sub.add_parser("help", help="the steps a plan can use")
     p.add_argument("step", nargs="?")
     sub.add_parser("world", help="frames, boxes and facts the kernel knows")
@@ -138,6 +166,8 @@ def main(argv=None) -> int:
     p.add_argument("--source", default="policy")
     for name in ("enable", "release", "reset"):
         sub.add_parser(name)
+    for p in sub.choices.values():                  # `wu status --json` as well as `wu --json status`
+        p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="print raw JSON")
     a = ap.parse_args(argv)
     c = Client(a.url)
     try:
@@ -156,6 +186,10 @@ def main(argv=None) -> int:
             r = c.shutdown()
             print(json.dumps(r["summary"]) if a.json else _summary(r["summary"]))
             return 0
+        if a.cmd == "record":
+            r = c.record()
+            print(json.dumps(r) if a.json else f"{r['run'] or '(no run folder)'}\n{_summary(r['summary'])}")
+            return 0
         r = _dispatch(a, c)
         if a.json:
             print(json.dumps(r, indent=1))
@@ -171,7 +205,7 @@ def main(argv=None) -> int:
             print(r)
         else:
             print(json.dumps(r, indent=1))
-        return 0
+        return exit_status(a, r)
     except DaemonError as e:
         refused = e.body.get("refused")
         if refused:
@@ -193,8 +227,10 @@ def _dispatch(a, c: Client):
         if a.spec is None and not a.checked:
             raise SystemExit("wu run '<plan>' (or wu run --checked, for the plan the last wu check rehearsed)")
         return c.run(None if a.checked else _spec(a.spec), wait=a.wait, check=not a.no_check, checked=a.checked)
+    if a.cmd == "calibrate":
+        return c.calibrate(a.camera, a.points, a.spread, a.wait)
     if a.cmd == "look":
-        r = c.look(a.camera, None if a.plan is None else _spec(a.plan))
+        r = c.look(a.camera, None if a.plan is None else _spec(a.plan), a.grid)
         return f"{r['path']}\n{r['camera']} camera, {r['size'][0]}x{r['size'][1]}: {r['drawn']}" + (
             f"\n{r['check']}" if r.get("check") else "")
     if a.cmd == "help":
