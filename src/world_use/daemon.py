@@ -28,7 +28,8 @@ from . import bodies, cameras, views
 from .behaviors import REGISTRY
 from .errors import Refused, explain
 from .kernel import Kernel
-from .plan import Report, check
+from .plan import Report
+from .worker import Rehearser
 from .world import World
 
 DEFAULT_PORT = 7431
@@ -37,7 +38,7 @@ MAX_WAIT_S = 120.0
 
 class Daemon:
     def __init__(self, kernel: Kernel, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
-                 cams: dict[str, cameras.Camera] | None = None):
+                 cams: dict[str, cameras.Camera] | None = None, rehearser: Rehearser | None = None):
         self.k = kernel
         self.host, self.port = host, port
         self.cameras = dict(cams or {})
@@ -49,6 +50,9 @@ class Daemon:
         self._closing = threading.Lock()                 # held once a shutdown has begun
         self.http = ThreadingHTTPServer((host, port), _handler(self))
         self.http.daemon_threads = True
+        # rehearsals and reach probes run in a worker process: in this one they took the control loop's ticks
+        self.rehearser = rehearser if rehearser is not None else Rehearser()
+        self._own_rehearser = rehearser is None
         self.control = threading.Thread(target=self.k.loop, args=(self.stop_loop,), name="control", daemon=True)
 
     def start(self):
@@ -67,6 +71,8 @@ class Daemon:
             self.stop_loop.set()
             self.control.join(timeout=2.0)
             summary = k.close()
+            if self._own_rehearser:
+                self.rehearser.close()
         except BaseException:
             self._closing.release()           # not down after all: a later shutdown may try again
             raise
@@ -82,7 +88,7 @@ class Daemon:
             with k.lock:
                 return 200, views.status(k)
         if method == "GET" and route == ["card"]:
-            return 200, dict(card=views.card(k))
+            return 200, dict(card=views.card(k, reach=self.rehearser.reach_line))
         if method == "GET" and route == ["help"]:
             return 200, dict(steps={kind: cls.help() for kind, cls in REGISTRY.items()})
         if method == "GET" and route == ["events"]:
@@ -104,7 +110,7 @@ class Daemon:
         if route == ["look"]:
             return 200, self.look(body.get("camera"), body.get("spec"))
         if route == ["check"]:
-            report = check(body["spec"], k)          # snapshots the kernel under its lock, then runs unlocked
+            report = self.rehearser.check(body["spec"], k)
             self.checked = body["spec"]
             return 200, dict(report.to_dict(), text=str(report))
         if route == ["answer"]:
@@ -151,9 +157,10 @@ class Daemon:
             if busy:
                 note = "not rehearsed: another job is running or queued"
             else:
-                report = check(spec, k)
+                report = self.rehearser.check(spec, k)
                 if report.refused:
-                    text = "refused in rehearsal, so nothing moved:\n" + str(report) + "\n" + views.reach_line(k)
+                    text = ("refused in rehearsal, so nothing moved:\n" + str(report) + "\n"
+                            + self.rehearser.reach_line(k))
                     return 200, dict(id=None, status="refused", incident=text, rehearsal=report.to_dict(),
                                      line=views.state_line(k))
         job = k.submit(spec)
@@ -177,7 +184,7 @@ class Daemon:
         cam = self.cameras.get(name)
         if cam is None:
             raise Refused(f"no camera {name!r}; cameras: {', '.join(self.cameras)}", "no_camera")
-        report = check(spec, k) if spec is not None else None
+        report = self.rehearser.check(spec, k) if spec is not None else None
         img = cam.snap(k)
         tool = k.world.from_base("work", k.chain.fk(k.state.q)[:3, 3])
         drawn = ("magenta cross = tool point; green outlines = the boxes the kernel knows; F/L/U = work axes"
@@ -210,7 +217,7 @@ class Daemon:
         d = job.to_dict()
         d["line"] = views.state_line(self.k)
         if job.outcome is not None and not job.outcome.ok:
-            d["incident"] = views.incident(self.k, job)
+            d["incident"] = views.incident(self.k, job, reach=self.rehearser.reach_line)
         return 200, d
 
     def _world(self, body: dict) -> tuple[int, dict]:

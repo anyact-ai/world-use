@@ -94,7 +94,7 @@ def status(k) -> dict:
     return d
 
 
-def incident(k, job) -> str:
+def incident(k, job, reach=None) -> str:
     """What went differently from the plan, in one block a policy can act on."""
     out = job.outcome
     lines = [f"job {job.id} {out.status}: {out.message}"]
@@ -104,7 +104,7 @@ def incident(k, job) -> str:
         lines.append(f"hint: {out.hint}")
     lines.append(state_line(k))
     if out.status == "refused" and k.enabled and k.active is None:
-        lines.append(reach_line(k))
+        lines.append((reach or reach_line)(k))
     recent = [e for e in k.events.since(max(0, k.events.seq - 8))
               if e["level"] != "info" or e["kind"] in ("contact", "grip")]
     for e in recent[-4:]:
@@ -204,7 +204,7 @@ def world_text(k) -> str:
     return "\n".join(lines)
 
 
-def card(k) -> str:
+def card(k, reach=None) -> str:
     """The embodiment card: what this robot is and what it can do, for the top of a policy's context."""
     m, c = k.manifest, k.chain
     sim = bool(getattr(k.body, "simulated", False))
@@ -251,7 +251,7 @@ def card(k) -> str:
     if cams:
         lines.append(f"cameras: {', '.join(cams)}. `wu look NAME` saves an image and prints its path.")
     if k.enabled and k.active is None:
-        lines.append(reach_line(k))
+        lines.append((reach or reach_line)(k))
     lines += [f"note: {n}" for n in m.notes]
     lines += [f"hardware: {n}" for n in m.hardware_notes]
     return "\n".join(lines)

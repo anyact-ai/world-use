@@ -32,7 +32,16 @@ def lifted():
     return k
 
 
-def serve(tmp_path, cell=None):
+@pytest.fixture(scope="session")
+def rehearser():
+    """One rehearsal worker for the whole test session: each spawns a Python process."""
+    from world_use.worker import Rehearser
+    r = Rehearser()
+    yield r
+    r.close()
+
+
+def serve(tmp_path, cell=None, rehearser=None):
     """A daemon on a simulated reBot as `wu up` makes it: the simulator's truth and the kernel's model apart."""
     world, truth = World(), World()
     body = bodies.make("sim", truth, q=Q_REST, gripper=1.0)
@@ -41,14 +50,14 @@ def serve(tmp_path, cell=None):
     truth.frames.update(world.frames)
     apply_workcell(cell or {}, k, truth)
     k.enable()
-    d = Daemon(k, port=0, cams=cameras.sim_cameras(body, truth))      # port 0: any free port
+    d = Daemon(k, port=0, cams=cameras.sim_cameras(body, truth), rehearser=rehearser)      # port 0: any free port
     d.start()
     return d, Client(f"http://127.0.0.1:{d.http.server_address[1]}")
 
 
 @pytest.fixture
-def daemon(tmp_path):
-    d, c = serve(tmp_path)
+def daemon(tmp_path, rehearser):
+    d, c = serve(tmp_path, rehearser=rehearser)
     yield d, c
     d.stop_loop.set()
     d.http.shutdown()

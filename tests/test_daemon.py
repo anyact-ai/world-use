@@ -98,9 +98,9 @@ def test_a_box_the_policy_adds_goes_into_the_model_not_into_the_simulation(daemo
     assert c.remove("tray")["line"] == "removed 'tray'"
 
 
-def test_a_workcell_box_marked_unknown_is_only_in_the_simulation(tmp_path):
+def test_a_workcell_box_marked_unknown_is_only_in_the_simulation(tmp_path, rehearser):
     cell = {"box": [dict(name="shelf", kind="surface", center=[0.3, 0, 0.1], size=[0.2, 0.2, 0.02], known=False)]}
-    d, _ = serve(tmp_path, cell)
+    d, _ = serve(tmp_path, cell, rehearser)
     try:
         assert "shelf" in d.k.body.world.boxes and "shelf" not in d.k.world.boxes
     finally:
