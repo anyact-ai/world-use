@@ -26,7 +26,7 @@ import numpy as np
 
 from .behaviors import STATUSES, Behavior, ContactSense, Outcome, Residuals, build
 from .body import Body, JointState
-from .envelope import Envelope, Trip
+from .envelope import MARGIN, Envelope, Trip
 from .errors import Refused, explain
 from .events import EventLog
 from .kinematics import Chain
@@ -340,10 +340,16 @@ class Kernel:
         if self.last_touch >= route[1]:
             raise Refused("the arm has touched something since the home route was set; the way back may be blocked",
                           "home_route_stale", "look again, then set the home route again")
-        q0 = self.q_start
+        q0 = self.q_start.copy()
         rest = self.manifest.rest
         carry = set(rest.joints) if rest else set()
-        # full precision: a folded arm rests on its stops, and a rounded target would sit a hair past them
+        # A folded arm rests on its stops, and the start pose was measured with torque off, sagged into them.
+        # Powered, it meets them a little earlier: folding to that angle pushes into the stop. Fold to just off it.
+        if rest is not None:
+            for i in rest.stops:
+                s = rest.off_stop(i, self.manifest.joints[i])
+                q0[i] = rest.q[i] + s * max(MARGIN, s * (q0[i] - rest.q[i]))
+        # full precision elsewhere: a rounded target would differ from where the session started
         free = {str(i + 1): float(np.degrees(q0[i])) for i in range(self.manifest.n) if i not in carry}
         fold = [{"do": "joints", "target_deg": free, "label": "turn back while high"}] if free else []
         if carry:

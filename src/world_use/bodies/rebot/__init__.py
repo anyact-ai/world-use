@@ -50,7 +50,9 @@ def work_frame(chain: Chain, q) -> np.ndarray:
     return T
 
 
-REST = Rest(q=(0.0,) * 6, joints=(1, 2, 3), tol=0.15)
+# Folded, the shoulder and elbow rest on hard stops (their lower limits). Powered, the elbow meets its stop about
+# 1 deg before the angle it sags to unpowered (2026-09-27), so the stop takes part of its load there.
+REST = Rest(q=(0.0,) * 6, joints=(1, 2, 3), tol=0.15, stops=(1, 2))
 MANIFEST = Manifest(
     name="reBot Arm B601-RS",
     urdf=HERE / "ReBot_Arm_RS.urdf",

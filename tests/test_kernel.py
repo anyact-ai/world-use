@@ -8,6 +8,8 @@ from conftest import Q_REST, make_kernel
 
 from world_use import Kernel, RealClock, Refused, World, bodies
 
+HOME = np.maximum(Q_REST, [-np.inf, 0.02, 0.02, -np.inf, -np.inf, -np.inf])   # folded just off the stops
+
 
 def test_line_moves_the_tool_by_the_request_in_the_work_frame(k):
     p0 = k.world.from_base("work", k.chain.fk(k.state.q)[:3, 3])
@@ -165,7 +167,7 @@ def test_home_folds_back_to_the_session_start_and_release_is_then_allowed(lifted
     k.set_home_route([])
     out = k.run({"do": "seq", "steps": k.home_plan()})
     assert out.ok, out.message
-    assert np.allclose(k.cmd.q, Q_REST, atol=1e-4)
+    assert np.allclose(k.cmd.q, HOME, atol=1e-4)
     k.release()
     assert not k.enabled
 
@@ -192,9 +194,9 @@ def test_hot_motor_goes_home_along_a_valid_route_and_otherwise_holds_and_alarms(
     for _ in range(6000):
         k2.tick()
         k2.clock.wait()
-        if k2.active is None and np.allclose(k2.cmd.q, Q_REST, atol=1e-4):
+        if k2.active is None and np.allclose(k2.cmd.q, HOME, atol=1e-4):
             break
-    assert np.allclose(k2.cmd.q, Q_REST, atol=1e-4)
+    assert np.allclose(k2.cmd.q, HOME, atol=1e-4)
 
 
 def test_heat_budget_is_reported(lifted):
@@ -371,3 +373,28 @@ def test_a_job_waits_for_a_torque_baseline_after_switching_on():
     k.tick()
     k.clock.wait()
     assert job.status == "running" and (k._sense.floor > 0).all()   # judged against a baseline, noise included
+
+
+def test_a_joint_on_its_rest_stop_is_not_judged_and_is_re_zeroed_until_it_leaves(k):
+    """Folded, the reBot's shoulder and elbow rest on hard stops that carry part of their load: arriving there or
+    lifting off moved ~2 Nm between motor and stop with nothing touched, and stopped folds home on hardware."""
+    from world_use.behaviors import ContactSense
+    from world_use.body import JointState
+
+    assert k.manifest.rest.stops == (1, 2)
+    for _ in range(k.residuals.need):
+        k.tick()
+        k.clock.wait()
+    sense = ContactSense(k)
+
+    def feel(q, extra):
+        k.state = JointState(k.state.t, np.asarray(q, float), None, k.chain.gravity(q) + extra, k.state.temp)
+        for _ in range(5):
+            dev = sense.deviation(k)
+        return dev
+    stop_load = np.array([0, 0, -2.0, 0, 0, 0])
+    assert abs(feel(Q_REST, stop_load)[2]) < 1e-9                # on the stop: not judged
+    lifted = Q_REST + [0, 0.1, 0.1, 0, 0, 0]
+    assert abs(feel(lifted, stop_load)[2]) < 1e-9                # off it: judged from where it let go
+    assert feel(lifted, stop_load + [0, 0, 3.5, 0, 0, 0])[2] > 3.0
+

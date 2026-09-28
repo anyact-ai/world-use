@@ -57,11 +57,16 @@ class Rest:
     q: tuple[float, ...]
     joints: tuple[int, ...]           # the joints that carry weight: only they must be near q
     tol: float = 0.15
+    stops: tuple[int, ...] = ()       # joints that fold onto a hard stop at q; the stop carries part of their load
 
     def holds(self, q) -> bool:
         q = np.asarray(q, float)
         idx = list(self.joints)
         return bool(np.abs(q[idx] - np.asarray(self.q)[idx]).max() <= self.tol)
+
+    def off_stop(self, i: int, joint: JointSpec) -> float:
+        """+1 or -1: the way joint i leaves the stop it rests on, towards the middle of its range."""
+        return 1.0 if (joint.lower + joint.upper) / 2 > self.q[i] else -1.0
 
 
 @dataclass(frozen=True)

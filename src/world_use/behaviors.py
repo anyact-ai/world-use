@@ -261,8 +261,13 @@ class ContactSense:
     read +-0.5-1 Nm from one tick to the next while holding still. A short median filter rejects single-tick
     spikes. Without an explicit joint list it watches the joints with real leverage along the direction of
     motion: a vertical push barely loads a vertical base axis, whose friction would only add noise.
+
+    A joint resting on the stop it folds onto (the manifest's rest stops) is not judged, and is re-zeroed until it
+    leaves: the stop takes part of its load, so arriving there or lifting off moved ~2 Nm between the reBot's
+    elbow motor and its stop with nothing touched.
     """
     NOISE_K = 3.5                     # holds of up to 54 s on the reBot stayed within 3.3x (2026-09-27)
+    STOP_ZONE = 0.06                  # rad from a rest stop within which a joint is not judged
 
     def __init__(self, k: Kernel, joints=None, direction=None, window=5):
         st = k.state
@@ -280,12 +285,17 @@ class ContactSense:
         else:                         # a heat emergency may start home before any reading: judge from this one
             self.bias, noise = np.asarray(st.tau, float) - k.chain.gravity(st.q), np.zeros(k.manifest.n)
         self.floor = self.NOISE_K * noise
+        rest = k.manifest.rest
+        self.stops = [] if rest is None else [(i, rest.q[i]) for i in rest.stops]
         self.hist = deque(maxlen=window)
 
     def deviation(self, k: Kernel) -> np.ndarray:
         st = k.state
         self.hist.append(np.asarray(st.tau, float) - k.chain.gravity(st.q))
-        return np.median(np.array(self.hist), axis=0) - self.bias
+        med = np.median(np.array(self.hist), axis=0)
+        on = [i for i, stop in self.stops if abs(st.q[i] - stop) < self.STOP_ZONE]
+        self.bias[on] = med[on]
+        return med - self.bias
 
     def limits(self, limit) -> np.ndarray:
         """Per-joint thresholds: the requested ones, but never inside the joint's measured noise."""
