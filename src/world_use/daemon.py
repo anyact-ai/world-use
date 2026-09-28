@@ -108,7 +108,7 @@ class Daemon:
                 return self._run(self.checked, wait, bool(body.get("check", True)))
             return self._run(body["spec"], wait, bool(body.get("check", True)))
         if route == ["look"]:
-            return 200, self.look(body.get("camera"), body.get("spec"))
+            return 200, self.look(body.get("camera"), body.get("spec"), bool(body.get("grid")))
         if route == ["check"]:
             report = self.rehearser.check(body["spec"], k)
             self.checked = body["spec"]
@@ -174,9 +174,10 @@ class Daemon:
             d["rehearsal"] = note
         return code, d
 
-    def look(self, camera: str | None = None, spec=None) -> dict:
+    def look(self, camera: str | None = None, spec=None, grid: bool = False) -> dict:
         """One picture from a camera, with the tool, the known boxes and (given a plan) its path drawn on it, saved
-        to the flight record. Returns the file's path: a model reads the image from there."""
+        to the flight record. Returns the file's path: a model reads the image from there. With grid, a pixel ruler
+        and nothing the kernel believes: for reading off where something is, e.g. while calibrating."""
         k = self.k
         if not self.cameras:
             raise Refused("no cameras: add [[camera]] entries to the workcell", "no_camera")
@@ -184,6 +185,9 @@ class Daemon:
         cam = self.cameras.get(name)
         if cam is None:
             raise Refused(f"no camera {name!r}; cameras: {', '.join(self.cameras)}", "no_camera")
+        if grid:
+            return self._save(k, name, cam, cameras.ruler(cam.picture(k)),
+                              "a pixel grid every 100 px (x across, y down, from the top left); nothing else drawn")
         report = self.rehearser.check(spec, k) if spec is not None else None
         img = cam.picture(k)
         tool = k.world.from_base("work", k.chain.fk(k.state.q)[:3, 3])
@@ -193,16 +197,19 @@ class Daemon:
             if cam.view is not None else "no calibration for this camera, so nothing is drawn on it"
         caption = f"{name} | t+{k.clock.now() - k.t0:.0f}s | tool F{tool[0]:+.3f} L{tool[1]:+.3f} U{tool[2]:+.3f}"
         img = cameras.overlay(img, cam.view, k, None if report is None else report.tool_path, caption)
+        out = self._save(k, name, cam, img, drawn)
+        if report is not None:
+            out["check"] = str(report)
+        return out
+
+    def _save(self, k, name: str, cam, img, drawn: str) -> dict:
         self.shots += 1
         folder = (k.run_dir or Path(tempfile.gettempdir()) / "world-use") / "views"
         folder.mkdir(parents=True, exist_ok=True)
         path = (folder / f"{self.shots:04d}-{name}.{'png' if isinstance(cam, cameras.SimCamera) else 'jpg'}").resolve()
         img.save(path, quality=88) if path.suffix == ".jpg" else img.save(path)
         k.emit("look", f"{name}: {path.name}", camera=name)
-        out = dict(path=str(path), camera=name, size=list(img.size), drawn=drawn)
-        if report is not None:
-            out["check"] = str(report)
-        return out
+        return dict(path=str(path), camera=name, size=list(img.size), drawn=drawn)
 
     def _settle(self):
         """Let the control loop read the body once or twice, so the reply shows the new state."""

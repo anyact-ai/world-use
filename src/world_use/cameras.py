@@ -440,6 +440,24 @@ def overlay(img: Image.Image, view: View | None, k, path=None, caption: str = ""
     return img
 
 
+def ruler(img: Image.Image, step: int = 100) -> Image.Image:
+    """The picture, scaled as `wu look` saves it, with a labelled pixel grid every `step` px and nothing else: for
+    reading off where something is. Coordinates count from the top left, in this picture's own pixels."""
+    img = img.convert("RGB")
+    if max(img.size) > MAX_SIDE:
+        s = MAX_SIDE / max(img.size)
+        img = img.resize((round(img.width * s), round(img.height * s)), Image.Resampling.LANCZOS)
+    d = ImageDraw.Draw(img, "RGBA")
+    font = _font(max(11, img.width // 70))
+    for x in range(step, img.width, step):
+        d.line([(x, 0), (x, img.height)], fill=(255, 235, 60, 110), width=1)
+        _label(d, (x - 6, 14), str(x), (20, 20, 20), font)
+    for y in range(step, img.height, step):
+        d.line([(0, y), (img.width, y)], fill=(255, 235, 60, 110), width=1)
+        _label(d, (0, y + 6), str(y), (20, 20, 20), font)
+    return img
+
+
 def _line(d, v: View, a, b, colour, width) -> bool:
     uv, z = v.project([a, b])
     if z.min() <= 0.01:

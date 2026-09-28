@@ -69,11 +69,12 @@ def build(url: str = DEFAULT_URL):
         return call(lambda: job_text(c.answer(job, answer, wait=wait_s)))
 
     @server.tool()
-    def look(camera: str | None = None, plan: list[dict] | dict | None = None):
+    def look(camera: str | None = None, plan: list[dict] | dict | None = None, grid: bool = False):
         """A picture from a camera (default: the first), with the tool point, the work axes and the boxes the kernel
-        knows drawn on it; given a plan, its rehearsed tool path too."""
+        knows drawn on it; given a plan, its rehearsed tool path too. grid: a pixel ruler and nothing else, for
+        reading off where something is (as calibrating asks)."""
         def shot():
-            r = c.look(camera, plan)
+            r = c.look(camera, plan, grid)
             text = f"{r['camera']} camera: {r['drawn']}" + (f"\n{r['check']}" if r.get("check") else "")
             return [text, Image(path=r["path"])]
         return call(shot)

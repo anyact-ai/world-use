@@ -120,6 +120,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("look", help="save a picture from a camera and print its path")
     p.add_argument("camera", nargs="?")
     p.add_argument("--plan", help="draw this plan's tool path on the picture (JSON spec or file)")
+    p.add_argument("--grid", action="store_true", help="a pixel ruler and nothing the kernel believes")
     p = sub.add_parser("help", help="the steps a plan can use")
     p.add_argument("step", nargs="?")
     sub.add_parser("world", help="frames, boxes and facts the kernel knows")
@@ -219,7 +220,7 @@ def _dispatch(a, c: Client):
             raise SystemExit("wu run '<plan>' (or wu run --checked, for the plan the last wu check rehearsed)")
         return c.run(None if a.checked else _spec(a.spec), wait=a.wait, check=not a.no_check, checked=a.checked)
     if a.cmd == "look":
-        r = c.look(a.camera, None if a.plan is None else _spec(a.plan))
+        r = c.look(a.camera, None if a.plan is None else _spec(a.plan), a.grid)
         return f"{r['path']}\n{r['camera']} camera, {r['size'][0]}x{r['size'][1]}: {r['drawn']}" + (
             f"\n{r['check']}" if r.get("check") else "")
     if a.cmd == "help":

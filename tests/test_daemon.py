@@ -160,3 +160,14 @@ def test_the_flight_record_can_be_written_without_stopping(client):
     run = Path(r["run"])
     assert {"tape.npz", "summary.json", "world.json"} <= {f.name for f in run.iterdir()}
     assert r["summary"]["moving_s"] > 0 and "idle" in c.status()["line"]          # still serving
+
+
+def test_look_with_a_grid_draws_a_ruler_and_nothing_the_kernel_believes(client):
+    from world_use import cli
+    r = client.look("side", grid=True)
+    assert "pixel grid every 100 px" in r["drawn"] and "magenta" not in r["drawn"]
+    img = np.asarray(Image.open(r["path"]).convert("RGB")).astype(int)
+    believed = client.look("side")
+    assert "magenta" in believed["drawn"]
+    assert (np.abs(img[:, 99:102] - img[:, 95:98]).sum() > 0)                   # a grid line at x = 100
+    assert cli.main(["--url", client.url, "look", "side", "--grid"]) == 0
