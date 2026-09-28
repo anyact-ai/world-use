@@ -9,15 +9,20 @@ Workcell entry (positions in the work frame, metres):
 
     [[camera]]
     name = "side"
-    url = "http://127.0.0.1:8081/snapshot.jpg"    # or: command = "imagesnap -q -"  (prints an image to stdout)
+    path = "~/frames/side.jpg"                     # the newest frame a capture app keeps writing (refused when
+    max_age_s = 3                                  # older than this); or url = "http://.../snapshot.jpg", or
+                                                   # command = "imagesnap -q -" (prints an image to stdout)
+    rotate = 180                                   # optional: 90, 180 or 270 clockwise, for a camera mounted turned
     eye = [0.35, -0.60, 0.40]                      # calibration, optional: where the camera is,
     look_at = [0.30, 0.0, 0.15]                    # what the image centre shows,
     fov_deg = 55                                   # and its horizontal field of view
 """
 import subprocess
+import time
 import urllib.request
 from dataclasses import dataclass
 from io import BytesIO
+from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -89,19 +94,29 @@ def view_from_config(cfg: dict, world, size=(800, 600)) -> View | None:
 
 # -- cameras ------------------------------------------------------------------------------------------
 
+ROTATE = {90: Image.Transpose.ROTATE_270, 180: Image.Transpose.ROTATE_180, 270: Image.Transpose.ROTATE_90}
+
+
 class Camera:
-    def __init__(self, name: str, view: View | None = None):
-        self.name, self.view = name, view
+    def __init__(self, name: str, view: View | None = None, rotate: int = 0):
+        if rotate not in (0, *ROTATE):
+            raise ValueError(f"camera {name!r}: rotate is 0, 90, 180 or 270 (degrees clockwise), not {rotate!r}")
+        self.name, self.view, self.rotate = name, view, rotate
 
     def snap(self, k) -> Image.Image:
         raise NotImplementedError
+
+    def picture(self, k) -> Image.Image:
+        """The picture as the camera serves it: turned upright if it is mounted turned."""
+        img = self.snap(k)
+        return img.transpose(ROTATE[self.rotate]) if self.rotate else img
 
 
 class HttpCamera(Camera):
     """Any camera that serves a still image over HTTP (an IP camera, a phone app, a small snapshot server)."""
 
-    def __init__(self, name: str, url: str, view: View | None = None, timeout: float = 5.0):
-        super().__init__(name, view)
+    def __init__(self, name: str, url: str, view: View | None = None, timeout: float = 5.0, rotate: int = 0):
+        super().__init__(name, view, rotate)
         self.url, self.timeout = url, timeout
 
     def snap(self, k) -> Image.Image:
@@ -112,8 +127,8 @@ class HttpCamera(Camera):
 class CommandCamera(Camera):
     """A command that prints one image to stdout, e.g. `imagesnap -q -` or an ffmpeg one-frame grab."""
 
-    def __init__(self, name: str, command: str, view: View | None = None, timeout: float = 15.0):
-        super().__init__(name, view)
+    def __init__(self, name: str, command: str, view: View | None = None, timeout: float = 15.0, rotate: int = 0):
+        super().__init__(name, view, rotate)
         self.command, self.timeout = command, timeout
 
     def snap(self, k) -> Image.Image:
@@ -121,6 +136,30 @@ class CommandCamera(Camera):
         if out.returncode != 0 or not out.stdout:
             raise RuntimeError(f"camera {self.name!r}: {self.command!r} failed: {out.stderr.decode()[-300:].strip()}")
         return Image.open(BytesIO(out.stdout)).convert("RGB")
+
+
+class FileCamera(Camera):
+    """The newest frame a capture app keeps writing to a file (how a Mac's cameras reach a process that may not open
+    them itself). A frame older than max_age_s is refused: a capture that died must not hand the policy an old
+    picture as if it were now."""
+
+    def __init__(self, name: str, path: str | Path, view: View | None = None, max_age_s: float = 3.0,
+                 rotate: int = 0):
+        super().__init__(name, view, rotate)
+        self.path, self.max_age_s = Path(path).expanduser(), float(max_age_s)
+
+    def snap(self, k) -> Image.Image:
+        try:
+            age = time.time() - self.path.stat().st_mtime
+        except FileNotFoundError:
+            raise RuntimeError(f"camera {self.name!r}: no frame at {self.path}") from None
+        if age > self.max_age_s:
+            raise RuntimeError(f"camera {self.name!r}: the newest frame is {age:.0f} s old (max_age_s "
+                               f"{self.max_age_s:g}): is the capture running?")
+        try:                          # read once: a writer that renames frames into place cannot mix two of them
+            return Image.open(BytesIO(self.path.read_bytes())).convert("RGB")
+        except OSError:               # caught mid-write by a writer that does not rename: one more try
+            return Image.open(BytesIO(self.path.read_bytes())).convert("RGB")
 
 
 class SimCamera(Camera):
@@ -152,12 +191,14 @@ def sim_cameras(body, world) -> dict[str, Camera]:
 
 
 def from_config(cfg: dict, world) -> Camera:
-    view = view_from_config(cfg, world)
+    view, rotate = view_from_config(cfg, world), int(cfg.get("rotate", 0))
+    if "path" in cfg:
+        return FileCamera(cfg["name"], cfg["path"], view, float(cfg.get("max_age_s", 3.0)), rotate)
     if "url" in cfg:
-        return HttpCamera(cfg["name"], cfg["url"], view)
+        return HttpCamera(cfg["name"], cfg["url"], view, rotate=rotate)
     if "command" in cfg:
-        return CommandCamera(cfg["name"], cfg["command"], view)
-    raise ValueError(f"camera {cfg.get('name')!r} needs a url or a command")
+        return CommandCamera(cfg["name"], cfg["command"], view, rotate=rotate)
+    raise ValueError(f"camera {cfg.get('name')!r} needs a path, a url or a command")
 
 
 # -- drawing ------------------------------------------------------------------------------------------

@@ -47,3 +47,28 @@ def test_a_view_drawn_on_a_picture_of_another_shape_keeps_square_pixels():
     native = View.look_at(eye, at, 70.0, (1024, 576))
     pts = np.array([[0.3, 0.0, 0.1], [0.25, 0.1, 0.0], [0.4, -0.1, 0.2]])
     assert moved.fx == moved.fy and np.allclose(moved.project(pts)[0], native.project(pts)[0], atol=1e-6)
+
+
+def test_a_file_camera_serves_the_newest_frame_and_refuses_a_stale_one(tmp_path):
+    """A capture app that died must not hand the policy an old picture as if it were now."""
+    import os
+    import time
+
+    import pytest
+    from PIL import Image
+
+    from world_use import World
+    from world_use.cameras import from_config
+    frame = tmp_path / "side.jpg"
+    Image.new("RGB", (64, 32), (200, 30, 30)).save(frame)
+    cam = from_config({"name": "side", "path": str(frame), "max_age_s": 2, "rotate": 90}, World())
+    assert cam.picture(None).size == (32, 64)                  # turned a quarter clockwise
+    old = time.time() - 60
+    os.utime(frame, (old, old))
+    with pytest.raises(RuntimeError, match="60 s old"):
+        cam.picture(None)
+    frame.unlink()
+    with pytest.raises(RuntimeError, match="no frame at"):
+        cam.picture(None)
+    with pytest.raises(ValueError, match="rotate"):
+        from_config({"name": "side", "path": str(frame), "rotate": 45}, World())

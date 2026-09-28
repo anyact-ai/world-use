@@ -185,7 +185,7 @@ class Daemon:
         if cam is None:
             raise Refused(f"no camera {name!r}; cameras: {', '.join(self.cameras)}", "no_camera")
         report = self.rehearser.check(spec, k) if spec is not None else None
-        img = cam.snap(k)
+        img = cam.picture(k)
         tool = k.world.from_base("work", k.chain.fk(k.state.q)[:3, 3])
         drawn = ("magenta cross = tool point; green outlines = the boxes the kernel knows; F/L/U = work axes"
                  + ("; blue = the plan's tool path" if report is not None else "")
@@ -342,12 +342,13 @@ def make_cameras(cell: dict, k: Kernel, body, truth: World | None) -> dict[str, 
     eye/look_at; with no entries at all, a simulator gets three views (side, front, top)."""
     cams: dict[str, cameras.Camera] = {}
     for c in cell.get("camera", []):
-        if "url" in c or "command" in c:
+        if "path" in c or "url" in c or "command" in c:
             cams[c["name"]] = cameras.from_config(c, k.world)
         elif truth is not None and (view := cameras.view_from_config(c, k.world)) is not None:
             cams[c["name"]] = cameras.SimCamera(c["name"], view, body)
         else:
-            raise ValueError(f"camera {c.get('name')!r} needs a url or a command (or, on a simulator, eye and look_at)")
+            raise ValueError(f"camera {c.get('name')!r} needs a path, a url or a command "
+                             "(or, on a simulator, eye and look_at)")
     if not cams and truth is not None:
         cams = cameras.sim_cameras(body, truth)
     return cams
