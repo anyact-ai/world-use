@@ -24,6 +24,12 @@ numbers that shaped it:
   (an idle timeout that folded the arm into an open glass door), and processes dying with the agent's tool
   call. A person's physical intuition fixed the remaining ones.
 
+- Tooling decides how fast a model gets started. A fresh agent given only the brief moved a block in
+  simulation in 14 calls and 409 s with v0.1, and lost most of that time to what the tool did not say: which
+  way the gripper points, which limits apply, positions it had to re-derive. With v0.2 (a card that says what
+  is possible, checks that name every problem, pictures), the same task took 11 calls and 241 s, with no
+  refusals, from a harder start pose.
+
 These are single-task, single-robot observations, not benchmarks. They are why the rules below exist.
 
 ## Rules
