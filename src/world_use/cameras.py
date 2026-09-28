@@ -177,6 +177,87 @@ class SimCamera(Camera):
         return render(self.view, b.world, b.chain, b.q, g, opening)
 
 
+def equirect_dirs(u, v) -> np.ndarray:
+    """Directions, in a 360 camera's own frame, of the points u, v (0..1 across and down) of its equirectangular
+    picture. The capture's convention: +z is the top of the picture, its middle looks along -x, and three quarters
+    of the way across looks along +y."""
+    theta, phi = (1.0 - np.asarray(u, float)) * 2 * np.pi, np.asarray(v, float) * np.pi
+    return np.stack([np.sin(phi) * np.cos(theta), np.sin(phi) * np.sin(theta), np.cos(phi)], axis=-1)
+
+
+def equirect_uv(d) -> tuple[np.ndarray, np.ndarray]:
+    """Where directions d (the 360's own frame) land in its picture: u, v in 0..1 across and down."""
+    d = np.asarray(d, float)
+    d = d / np.linalg.norm(d, axis=-1, keepdims=True)
+    u = (1.0 - np.arctan2(d[..., 1], d[..., 0]) / (2 * np.pi)) % 1.0
+    return u, np.arccos(np.clip(d[..., 2], -1.0, 1.0)) / np.pi
+
+
+def _axes(forward, up) -> np.ndarray:
+    """Columns: a pinhole camera's x (right), y (down) and z (forward), for a forward direction and an up."""
+    z = np.asarray(forward, float) / np.linalg.norm(forward)
+    x = np.cross(z, up)
+    if np.linalg.norm(x) < 1e-6:                       # looking straight up or down: image top = +x instead
+        x = np.cross(z, [1.0, 0.0, 0.0])
+    x /= np.linalg.norm(x)
+    return np.column_stack([x, np.cross(z, x), z])
+
+
+class EquirectCut(Camera):
+    """A pinhole view cut out of a 360 camera's equirectangular picture (see equirect_dirs for its convention).
+
+    Uncalibrated, it is aimed with yaw_deg (right of the picture's middle) and pitch_deg (up), and nothing can be
+    drawn on it. Once the 360's pose is known (`pose`, its own frame in the base frame, from `wu calibrate` or the
+    workcell), look_at aims it at a point and the cut has a view: the kernel's tool, axes and boxes are drawn on it.
+    Each frame is resampled through a table built once for its size, a few milliseconds of numpy.
+    """
+
+    def __init__(self, name: str, source: Camera, fov_deg: float = 70.0, size=(800, 500), yaw_deg: float = 0.0,
+                 pitch_deg: float = 0.0, pose=None, look_at=None):
+        super().__init__(name, None)
+        if abs(pitch_deg) >= 85:
+            raise ValueError(f"camera {name!r}: pitch_deg must be within 85 deg of level")
+        self.source, self.size = source, (int(size[0]), int(size[1]))
+        self.f = (self.size[0] / 2) / np.tan(np.radians(fov_deg) / 2)
+        self.pose = None if pose is None else np.asarray(pose, float)
+        self._tables: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]] = {}
+        if look_at is not None:
+            if self.pose is None:
+                raise ValueError(f"camera {name!r}: look_at needs the 360's pose; aim it with yaw_deg and pitch_deg")
+            forward = self.pose[:3, :3].T @ (np.asarray(look_at, float) - self.pose[:3, 3])
+        else:
+            y, p = np.radians(yaw_deg), np.radians(pitch_deg)
+            forward = np.array([-np.cos(p) * np.cos(y), np.cos(p) * np.sin(y), np.sin(p)])
+        self.R = _axes(forward, [0.0, 0.0, 1.0])       # the cut's axes in the 360's frame: its up is the 360's up
+        if self.pose is not None:
+            T = np.eye(4)
+            T[:3, :3], T[:3, 3] = self.pose[:3, :3] @ self.R, self.pose[:3, 3]
+            w, h = self.size
+            self.view = View(T, self.f, self.f, w / 2, h / 2, w, h)
+
+    def _table(self, h: int, w: int) -> tuple[np.ndarray, np.ndarray]:
+        if (h, w) not in self._tables:
+            cw, ch = self.size
+            xs, ys = np.meshgrid(np.arange(cw) + 0.5 - cw / 2, np.arange(ch) + 0.5 - ch / 2)
+            u, v = equirect_uv(np.stack([xs / self.f, ys / self.f, np.ones_like(xs)], -1) @ self.R.T)
+            x, y = u * w - 0.5, np.clip(v * h - 0.5, 0.0, h - 1.0)
+            x0, y0 = np.floor(x).astype(int), np.minimum(np.floor(y).astype(int), h - 2)
+            ax, ay = (x - x0).ravel(), (y - y0).ravel()
+            x0, x1, y0 = (x0 % w).ravel(), ((x0 + 1) % w).ravel(), y0.ravel()     # wraps around the seam
+            idx = np.stack([y0 * w + x0, y0 * w + x1, (y0 + 1) * w + x0, (y0 + 1) * w + x1])
+            wts = np.stack([(1 - ax) * (1 - ay), ax * (1 - ay), (1 - ax) * ay, ax * ay]).astype(np.float32)
+            self._tables[(h, w)] = (idx, wts)
+        return self._tables[(h, w)]
+
+    def snap(self, k) -> Image.Image:
+        pano = np.asarray(self.source.picture(k), dtype=np.uint8)
+        h, w = pano.shape[:2]
+        idx, wts = self._table(h, w)
+        flat = pano.reshape(-1, 3).astype(np.float32)
+        out = np.einsum("ki,kic->ic", wts, flat[idx])
+        return Image.fromarray(np.clip(out + 0.5, 0, 255).astype(np.uint8).reshape(self.size[1], self.size[0], 3))
+
+
 SIM_VIEWS = {                           # eye, look_at, up (work frame): three views that together fix a position
     "side": ([0.12, -0.82, 0.46], [0.12, 0.0, 0.13], [0, 0, 1]),
     "front": ([0.95, 0.38, 0.50], [0.16, 0.0, 0.14], [0, 0, 1]),
@@ -191,6 +272,8 @@ def sim_cameras(body, world) -> dict[str, Camera]:
 
 
 def from_config(cfg: dict, world) -> Camera:
+    if cfg.get("projection") == "equirect":
+        return equirect_from_config(cfg, world)
     view, rotate = view_from_config(cfg, world), int(cfg.get("rotate", 0))
     if "path" in cfg:
         return FileCamera(cfg["name"], cfg["path"], view, float(cfg.get("max_age_s", 3.0)), rotate)
@@ -199,6 +282,30 @@ def from_config(cfg: dict, world) -> Camera:
     if "command" in cfg:
         return CommandCamera(cfg["name"], cfg["command"], view, rotate=rotate)
     raise ValueError(f"camera {cfg.get('name')!r} needs a path, a url or a command")
+
+
+def equirect_from_config(cfg: dict, world) -> EquirectCut:
+    """A 360 cut from a workcell entry: the source as for any camera, then fov_deg, size and either yaw_deg and
+    pitch_deg, or the 360's pose (eye, facing = where the middle of its picture looks, up; in `frame`) and
+    look_at."""
+    name = cfg["name"]
+    if cfg.get("rotate") or any(key in cfg for key in ("crop",)):
+        raise ValueError(f"camera {name!r}: a 360 picture is not rotated or cropped; aim the cut instead")
+    source = from_config({key: cfg[key] for key in ("name", "path", "url", "command", "max_age_s") if key in cfg},
+                         world)
+    frame = cfg.get("frame", "work")
+    pose = None
+    if "eye" in cfg and "facing" in cfg:
+        F = world.frame(frame).T[:3, :3]
+        facing, up = F @ np.asarray(cfg["facing"], float), F @ np.asarray(cfg.get("up", [0.0, 0.0, 1.0]), float)
+        x = -facing / np.linalg.norm(facing)                  # the 360's -x is where the middle of its picture looks
+        z = up - (up @ x) * x
+        z /= np.linalg.norm(z)
+        pose = np.eye(4)
+        pose[:3, :3], pose[:3, 3] = np.column_stack([x, np.cross(z, x), z]), world.to_base(frame, cfg["eye"])
+    look_at = world.to_base(frame, cfg["look_at"]) if "look_at" in cfg else None
+    return EquirectCut(name, source, float(cfg.get("fov_deg", 70.0)), tuple(cfg.get("size", (800, 500))),
+                       float(cfg.get("yaw_deg", 0.0)), float(cfg.get("pitch_deg", 0.0)), pose, look_at)
 
 
 # -- drawing ------------------------------------------------------------------------------------------
