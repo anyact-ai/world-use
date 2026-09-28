@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from world_use import Plan, check
+from world_use import Plan, Refused, check
 
 
 def test_plan_builds_a_spec_from_any_registered_behavior():
@@ -66,3 +66,32 @@ def test_reach_from_here_names_what_passes_and_why_the_rest_does_not(k):
     assert r["up"] is None and r["forward"] is None
     assert r["left"] is not None and r["left"].rule == "turn_clearance"
     assert r["down"] is not None
+
+
+def test_a_snapshot_is_plain_data_and_rehearses_the_same(lifted):
+    """What a worker process gets: it must survive pickling and give the report an in-process check gives."""
+    import pickle
+
+    from world_use.plan import rehearse, snapshot, twin_from
+    k = lifted
+    p = k.chain.fk(k.state.q)[:3, 3]
+    k.world.add_box("table", "surface", center=[p[0], p[1], p[2] - 0.05], size=[0.3, 0.3, 0.02], frame="base")
+    spec = [{"do": "checkpoint", "ask": "clear?"}, {"do": "joints", "delta_deg": {"2": -60}},
+            {"do": "joints", "delta_deg": {"2": 60}}, {"do": "touchdown", "max": 0.08}]
+    s = pickle.loads(pickle.dumps(snapshot(k)))
+    assert s.body == "rebot"
+    assert rehearse(spec, twin_from(s)).to_dict() == check(spec, k).to_dict()
+
+
+def test_a_twins_home_route_goes_stale_when_the_twin_touches_something(lifted):
+    """The twin kept the robot's event number for its route, so in a rehearsal a contact never made it stale."""
+    from world_use.plan import twin
+    k = lifted
+    for _ in range(40):
+        k.emit("note", "the robot's event numbers run far ahead of a fresh twin's")
+    k.set_home_route([])
+    t = twin(k)
+    assert t.home_plan()
+    t.touched("contact", "in the rehearsal")
+    with pytest.raises(Refused, match="touched something"):
+        t.home_plan()

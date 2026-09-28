@@ -15,8 +15,10 @@ import numpy as np
 
 from . import motion
 from .behaviors import REGISTRY, Outcome
+from .body import Manifest
 from .errors import Refused
 from .kernel import Kernel, VirtualClock
+from .world import World
 
 
 class Plan:
@@ -97,28 +99,70 @@ class Report:
         return "\n".join(lines)
 
 
-def twin(k: Kernel) -> Kernel:
-    """A simulated copy of a kernel at the robot's measured state: same manifest, world, limits and session start."""
+@dataclass(frozen=True)
+class Snapshot:
+    """A robot's kernel as plain data: all a twin needs, so a rehearsal can run in another process."""
+    body: str | None                  # the manifest's name in bodies.manifests(); None if it is not registered
+    world: dict
+    q: list[float]                    # measured: the twin starts where the robot really is
+    gripper: float | None
+    temp: list[float] | None
+    q_cmd: list[float]                # commanded: where the kernel plans from (reach probes start there)
+    grip_cmd: float | None
+    q_start: list[float]
+    max_excursion: float | None
+    overrides: dict
+    home_route: list | None           # the steps, while the robot's route is still valid
+    held_at: float | None
+    grip_start: float | None
+    ik_weights: list[float] | None
+
+
+def snapshot(k: Kernel) -> Snapshot:
+    """k's state as plain data, taken under its lock so it is consistent."""
+    from . import bodies
+    with k.lock:
+        st, env, route = k.state, k.envelope, k.home_route
+        return Snapshot(
+            body=next((name for name, m in bodies.manifests().items() if m is k.manifest), None),
+            world=k.world.to_dict(), q=np.asarray(st.q, float).tolist(), gripper=st.gripper,
+            temp=None if st.temp is None else np.asarray(st.temp, float).tolist(),
+            q_cmd=np.asarray(k.cmd.q, float).tolist(), grip_cmd=k.cmd.gripper,
+            q_start=np.asarray(k.q_start, float).tolist(), max_excursion=env.max_excursion,
+            overrides=dict(env.overrides),
+            home_route=list(route[0]) if route is not None and k.last_touch < route[1] else None,
+            held_at=k.held_at, grip_start=k.grip_start,
+            ik_weights=None if k.ik_weights is None else list(k.ik_weights))
+
+
+def twin_from(s: Snapshot, manifest: Manifest | None = None) -> Kernel:
+    """A simulated kernel at the snapshot's state: same manifest, world, limits, session start and home route."""
+    from . import bodies
     from .bodies.sim import SimBody
-    with k.lock:                              # a consistent snapshot; the twin itself runs without the lock
-        world = k.world.copy()
-        st, q_start, env = k.state, k.q_start.copy(), k.envelope
-        grip_cmd = k.cmd.gripper
-        route = k.home_route
-        held_at, grip_start = k.held_at, k.grip_start
-    body = SimBody(k.manifest, world, q=st.q, gripper=st.gripper, temp_c=st.temp)
-    t = Kernel(body, world, VirtualClock(k.manifest.rate_hz), ik_weights=k.ik_weights, auto_answer=True)
-    t.connect()
-    t.q_start = q_start
-    t.envelope.q_start = env.q_start
-    t.envelope.max_excursion, t.envelope.overrides = env.max_excursion, dict(env.overrides)
-    t.home_route, t.last_touch = route, 0
-    t.held_at, t.grip_start = held_at, grip_start
+    if manifest is None:
+        if s.body is None:
+            raise ValueError("this snapshot's body is not registered, so its manifest must be given")
+        manifest = bodies.manifests()[s.body]
+    world = World.from_dict(s.world)
+    body = SimBody(manifest, world, q=s.q, gripper=s.gripper, temp_c=s.temp)
+    t = Kernel(body, world, VirtualClock(manifest.rate_hz), ik_weights=s.ik_weights, auto_answer=True)
+    t.connect()                       # the world already holds the session's frames, so they are kept
+    t.q_start = np.asarray(s.q_start, float)
+    t.envelope.q_start = t.q_start
+    t.envelope.max_excursion, t.envelope.overrides = s.max_excursion, dict(s.overrides)
+    if s.home_route is not None:      # valid from here on, until something in the twin is touched
+        t.home_route = (list(s.home_route), t.events.seq + 1)
+    t.held_at, t.grip_start = s.held_at, s.grip_start
     t.residuals.need = 1              # noise-free, and the robot's own baseline is warm by the time a plan runs
     t.enable()
-    if grip_cmd is not None:
-        t.cmd.gripper = grip_cmd
+    if s.grip_cmd is not None:
+        t.cmd.gripper = s.grip_cmd
     return t
+
+
+def twin(k: Kernel) -> Kernel:
+    """A simulated copy of a kernel at the robot's measured state: same manifest, world, limits and session start."""
+    return twin_from(snapshot(k), k.manifest)
 
 
 def check(spec, k: Kernel, timeout_s: float = 900.0) -> Report:
@@ -127,9 +171,13 @@ def check(spec, k: Kernel, timeout_s: float = 900.0) -> Report:
     Limits a step would break are recorded and the rehearsal carries on past them, so one check lists every
     problem in the plan. It stops early only where a step cannot be planned at all (out of reach, a bad spec).
     """
+    return rehearse(spec, twin(k), timeout_s)
+
+
+def rehearse(spec, t: Kernel, timeout_s: float = 900.0) -> Report:
+    """Run spec on the twin t (see check) and report what happened."""
     if isinstance(spec, Plan):
         spec = spec.spec()
-    t = twin(k)
     t.envelope.rehearsal = []
     temp0 = None if t.state.temp is None else np.asarray(t.state.temp, float).copy()
     seq0 = t.events.seq
