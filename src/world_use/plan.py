@@ -105,6 +105,7 @@ def twin(k: Kernel) -> Kernel:
         st, q_start, env = k.state, k.q_start.copy(), k.envelope
         grip_cmd = k.cmd.gripper
         route = k.home_route
+        held_at, grip_start = k.held_at, k.grip_start
     body = SimBody(k.manifest, world, q=st.q, gripper=st.gripper, temp_c=st.temp)
     t = Kernel(body, world, VirtualClock(k.manifest.rate_hz), ik_weights=k.ik_weights, auto_answer=True)
     t.connect()
@@ -112,6 +113,7 @@ def twin(k: Kernel) -> Kernel:
     t.envelope.q_start = env.q_start
     t.envelope.max_excursion, t.envelope.overrides = env.max_excursion, dict(env.overrides)
     t.home_route, t.last_touch = route, 0
+    t.held_at, t.grip_start = held_at, grip_start
     t.residuals.need = 1              # noise-free, and the robot's own baseline is warm by the time a plan runs
     t.enable()
     if grip_cmd is not None:

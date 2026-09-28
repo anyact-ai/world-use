@@ -85,6 +85,8 @@ def status(k) -> dict:
         d["overrides"] = k.envelope.overrides
     if k.world.held is not None:
         d["holding"] = k.world.held[0]
+    elif k.held_at is not None:
+        d["holding"] = "something the world has no box for"
     if k.world.facts:
         d["facts"] = {key: (f.value if f.stale is None else f"{f.value} (STALE: {f.stale})")
                       for key, f in k.world.facts.items()}

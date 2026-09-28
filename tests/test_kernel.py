@@ -410,3 +410,32 @@ def test_a_gripper_trip_ends_the_gripper_step_inside_a_plan_too(lifted):
     out = k.run([{"do": "hold", "seconds": 0.1}, {"do": "gripper", "to": 1.0}])
     assert out.status == "surprise" and out.message.startswith("step 2/2: gripper")
     assert sum(e["kind"] == "gripper_trip" for e in k.events.since(0)) == 1
+
+
+def test_home_puts_the_gripper_back_as_it_was_found(lifted):
+    """The session ended with the reBot's gripper open at 4.39 rad: past pi, it comes back a turn low after a power
+    cycle. Home now closes it to where the session found it."""
+    k = lifted
+    assert k.run({"do": "gripper", "to": 3.0}).ok
+    k.set_home_route([])
+    plan = k.home_plan()
+    assert plan[-1] == {"do": "gripper", "to": 1.0, "label": "gripper as it was found"}
+    assert k.run({"do": "seq", "steps": plan}).ok and abs(k.cmd.gripper - 1.0) < 1e-9
+
+
+def test_a_grip_of_the_wrong_width_still_holds_and_home_does_not_let_go():
+    """A grip that found an unexpected width ended in a surprise without counting as holding, so home would have
+    closed the gripper on the object, or opened it at rest."""
+    from world_use import views
+
+    truth = World()                                           # the simulator knows the block, the kernel does not
+    k = make_kernel(sim_world=truth)
+    assert k.run([{"do": "line", "forward": 0.08, "up": 0.06}, {"do": "gripper", "to": 3.0}]).ok
+    p = k.chain.fk(k.state.q)[:3, 3]
+    truth.add_box("block", "object", center=p, size=[0.04, 0.04, 0.06], frame="base")
+    out = k.run({"do": "grip", "expect_mm": [10, 20]})
+    assert out.status == "surprise" and k.held_at is not None and k.world.held is None
+    k.set_home_route([])
+    assert all(step["do"] != "gripper" for step in k.home_plan())
+    assert views.status(k)["holding"] == "something the world has no box for"
+    assert k.run({"do": "gripper", "to": 3.0}).ok and k.held_at is None     # opened past it: let go

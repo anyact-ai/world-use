@@ -176,7 +176,8 @@ class Kernel:
         self._hot_alarm_t = -np.inf
         self._warned: set[int] = set()
         self._sense: ContactSense | None = None    # collision check for every move (guarded moves add their own)
-        self._held_at: float | None = None         # gripper position where the held object stopped the fingers
+        self.held_at: float | None = None          # where the fingers closed on something, known to the world or not
+        self.grip_start: float | None = None       # the gripper as the session found it: home puts it back
         self.residuals = Residuals(m.rate_hz)      # torque the model does not explain: contact checks judge against it
         self.still = 0                             # ticks the command has not changed for
         self._last_q_cmd = np.zeros(0)
@@ -188,6 +189,7 @@ class Kernel:
         st = self.body.connect()
         self.state, self.q_start = st, np.asarray(st.q, float).copy()
         self.cmd = Command(self.q_start.copy(), np.zeros(self.manifest.n), st.gripper)
+        self.grip_start = st.gripper
         self.envelope = Envelope(self.manifest, self.chain, self.world, self.q_start)
         for name, T in (self.manifest.frames(self.chain, self.q_start) if self.manifest.frames else {}).items():
             if name not in self.world.frames:        # a twin inherits the real session's frames, never recomputes them
@@ -355,7 +357,14 @@ class Kernel:
         if carry:
             fold.append({"do": "joints", "target_deg": {str(i + 1): float(np.degrees(q0[i])) for i in sorted(carry)},
                          "label": "fold"})
-        return route[0] + [f for f in fold if self._differs(f)]
+        plan = route[0] + [f for f in fold if self._differs(f)]
+        g = self.manifest.gripper       # a gripper left open past pi comes back a turn low on the reBot
+        if (g is not None and self.grip_start is not None and self.held_at is None and self.cmd.gripper is not None
+                and abs(self.cmd.gripper - self.grip_start) > 0.02):     # never while it holds something
+            lo, hi = sorted((g.closed, g.open))
+            plan.append({"do": "gripper", "to": round(float(np.clip(self.grip_start, lo, hi)), 3),
+                         "label": "gripper as it was found"})
+        return plan
 
     def _differs(self, spec) -> bool:
         goal = self.cmd.q.copy()
@@ -426,27 +435,28 @@ class Kernel:
         e = self.emit(kind, message)
         self.last_touch = e["seq"]
 
-    def gripped(self, contact: float) -> str | None:
-        """A grip closed on something at `contact`. If the world knows an object at the tool point, it now moves
-        with the tool (until the gripper opens past it). Returns the object's name, if known."""
-        self._held_at = contact
+    def gripped(self, contact: float, attach: bool = True) -> str | None:
+        """The fingers closed on something at `contact`: it is held until the gripper opens past it, whatever the
+        world knows. With attach, an object the world knows at the tool point moves with the tool meanwhile
+        (not when the grip found the wrong width: then it is not the object planned). Returns its name, if known."""
+        self.held_at = contact
         held = self.world.held
-        if held is None:
-            box = self.world.grab(self.tool)
-            return None if box is None else box.name
-        return held[0]
+        if held is not None:
+            return held[0]
+        box = self.world.grab(self.tool) if attach else None
+        return None if box is None else box.name
 
     def _track_held(self):
-        """Keep a held object's box with the tool; let go of it when the gripper opens past it."""
-        if self.world.held is None:
-            self._held_at = None
-            return
+        """Keep a held object's box with the tool; let go of it when the gripper opens past where it closed."""
         g = self.manifest.gripper
-        if (g is not None and self._held_at is not None and self.cmd.gripper is not None
-                and (self.cmd.gripper - self._held_at) * np.sign(g.open - g.closed) > 0.1):
+        if self.held_at is None or g is None:
+            return
+        if self.cmd.gripper is not None and (self.cmd.gripper - self.held_at) * np.sign(g.open - g.closed) > 0.1:
             box = self.world.drop()
-            self._held_at = None
-            if box is not None:
+            self.held_at = None
+            if box is None:
+                self.emit("let_go", "let go of what it held")
+            else:
                 c = self.world.from_base("work", box.pose[:3, 3]) if "work" in self.world.frames else box.pose[:3, 3]
                 self.emit("let_go",
                           f"let go of {box.name!r}; it should now stand at F{c[0]:+.3f} L{c[1]:+.3f} U{c[2]:+.3f}")

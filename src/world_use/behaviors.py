@@ -538,6 +538,7 @@ class Grip(Behavior):
             lo, hi = self.expect
             mm = p.get("expect_mm")
             want = f"{mm[0]}..{mm[1]} mm" if mm else f"{lo:.2f}..{hi:.2f} {g.unit}"
+            k.gripped(contact, attach=False)        # it holds something all the same: going home must not let go
             return self.surprise(f"fingers met something at {contact:.2f} {g.unit}{_mm(g, contact)}, "
                                  f"outside the expected {want}", expected=[lo, hi], observed=contact,
                                  hint="the object is not where, or not the size, planned: open and look", **data)
