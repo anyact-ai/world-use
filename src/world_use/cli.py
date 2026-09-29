@@ -75,10 +75,29 @@ def exit_status(a, r) -> int:
 
 
 def cmd_up(a):
+    from .daemon import load_workcell, session_identity
+
     c = Client(a.url)
-    if c.alive():
-        print(c.status()["line"])
+    cell = load_workcell(Path(a.workcell) if a.workcell else None)
+    wanted = session_identity(a.body or cell.get("body", "sim"), cell)
+
+    def connected():
+        status = c.status()
+        actual = status.get("session")
+        if actual != wanted:
+            adapter = actual.get("adapter", "unknown") if actual else "unknown (older daemon)"
+            print(f"refused: {a.url} serves {adapter} with a different or unknown startup configuration; "
+                  f"requested {wanted['adapter']}. Use its matching --body/--workcell, or stop that daemon "
+                  "at rest before starting this one.", file=sys.stderr)
+            return 2
+        if a.enable:
+            c.enable()
+            status = c.status()
+        print(json.dumps(status, indent=1) if a.json else status["line"])
         return 0
+
+    if c.alive():
+        return connected()
     log_dir = Path(a.runs)
     log_dir.mkdir(parents=True, exist_ok=True)
     port = a.url.rsplit(":", 1)[-1].split("/")[0]
@@ -87,15 +106,12 @@ def cmd_up(a):
         args += ["--body", a.body]
     if a.workcell:
         args += ["--workcell", a.workcell if not Path(a.workcell).exists() else str(Path(a.workcell).resolve())]
-    if a.enable:
-        args.append("--enable")
     with open(log_dir / "daemon.log", "a") as log:
         subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
     for _ in range(100):
         time.sleep(0.1)
         if c.alive():
-            print(c.status()["line"])
-            return 0
+            return connected()
     print(f"the daemon did not come up; see {log_dir / 'daemon.log'}", file=sys.stderr)
     return 1
 

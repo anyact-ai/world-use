@@ -10,6 +10,7 @@ With a simulated body the daemon keeps two worlds: the simulator's truth, and th
 box is in both unless it says `known = false`; what a policy adds (`wu box`) goes into the model only.
 """
 import argparse
+import hashlib
 import json
 import signal
 import sys
@@ -40,9 +41,14 @@ MAX_WAIT_S = 120.0
 
 class Daemon:
     def __init__(self, kernel: Kernel, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
-                 cams: dict[str, cameras.Camera] | None = None, rehearser: Rehearser | None = None):
+                 cams: dict[str, cameras.Camera] | None = None, rehearser: Rehearser | None = None,
+                 session: dict | None = None):
         self.k = kernel
         self.host, self.port = host, port
+        from .bodies.sim import SimBody
+        adapter = next((name for name, m in bodies.manifests().items() if m is kernel.manifest), "custom")
+        self.session = session or session_identity(
+            f"sim:{adapter}" if isinstance(kernel.body, SimBody) else adapter, {})
         self.cameras = dict(cams or {})
         kernel.cameras = self.cameras                    # the card lists them
         self.shots = 0
@@ -90,7 +96,9 @@ class Daemon:
         wait = min(float(body.get("wait", query.get("wait", 0)) or 0), MAX_WAIT_S)
         if method == "GET" and route == ["status"]:
             with k.lock:
-                return 200, views.status(k)
+                status = views.status(k)
+                status.update(session=self.session, line=f"{self.session['adapter']} | {status['line']}")
+                return 200, status
         if method == "GET" and route == ["card"]:
             return 200, dict(card=views.card(k, reach=self.rehearser.reach_line))
         if method == "GET" and route == ["help"]:
@@ -397,6 +405,17 @@ def _plain(o):
 WORKCELLS = Path(__file__).parent / "workcells"
 
 
+def session_identity(name: str, cell: dict) -> dict:
+    """The selected adapter and startup configuration, distinct from the robot manifest and live world."""
+    adapter = "sim:rebot" if name == "sim" else name
+    config = dict(cell)
+    if "fit" in config:
+        config["fit_sha256"] = hashlib.sha256(Path(config["fit"]).read_bytes()).hexdigest()
+    digest = hashlib.sha256(json.dumps(config, sort_keys=True, default=str).encode()).hexdigest()
+    return dict(adapter=adapter, mode="simulation" if adapter.startswith("sim:") else "hardware",
+                workcell_digest=digest)
+
+
 def load_workcell(path: Path | None) -> dict:
     """A workcell file (TOML): body, body options, boxes, cameras, facts, operator overrides and the robot model
     fitted from its records (`fit`, a path from the workcell's folder). Boxes and facts are added after connecting,
@@ -410,7 +429,7 @@ def load_workcell(path: Path | None) -> dict:
     with open(path, "rb") as f:
         cell = tomllib.load(f)
     if "fit" in cell:
-        cell["fit"] = str(path.parent / cell["fit"])
+        cell["fit"] = str((path.parent / cell["fit"]).resolve())
     return cell
 
 
@@ -479,10 +498,14 @@ def main(argv=None):
     if truth is not None:
         truth.frames.update(world.frames)
     apply_workcell(cell, k, truth)
-    if a.enable:
-        k.enable()
-    d = Daemon(k, port=a.port, cams=make_cameras(cell, k, body, truth))
+    d = Daemon(k, port=a.port, cams=make_cameras(cell, k, body, truth), session=session_identity(name, cell))
     d.start()
+    if a.enable:
+        try:
+            k.enable()
+        except Exception as e:
+            # Keep the daemon available for status and recovery after a partial power transition.
+            print(f"enable failed: {explain(e)}", file=sys.stderr, flush=True)
     print(f"world-use daemon: {k.manifest.name} on http://127.0.0.1:{a.port} (flight record: {run_dir})", flush=True)
     def on_signal(signum, _frame):
         try:

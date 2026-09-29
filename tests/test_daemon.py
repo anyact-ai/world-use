@@ -12,10 +12,34 @@ from world_use.client import DaemonError
 
 
 def test_status_card_and_a_run_with_wait(client):
+    assert client.status()["session"]["mode"] == "simulation"
     assert "idle" in client.status()["line"]
     assert "reBot" in client.card()
     r = client.run({"do": "line", "forward": 0.03, "up": 0.03, "duration": 1.0}, wait=10)
     assert r["status"] == "done" and "tool F" in r["line"]
+
+
+def test_up_reuses_only_the_requested_adapter_and_workcell(daemon, capsys):
+    from world_use import cli
+    from world_use.daemon import session_identity
+
+    d, c = daemon
+    up = ["--url", c.url, "up"]
+    assert cli.main(up + ["--body", "sim"]) == 0
+    assert cli.main(up + ["--body", "sim:rebot"]) == 0
+    assert cli.main(up + ["--workcell", "block"]) == 2
+    assert cli.main(up + ["--body", "rebot"]) == 2
+    d.session = session_identity("rebot", {})           # simulate an already-running hardware daemon
+    assert cli.main(up + ["--body", "sim", "--enable"]) == 2
+    assert "requested sim:rebot" in capsys.readouterr().err
+
+
+def test_up_enable_also_applies_to_a_matching_existing_daemon(client):
+    from world_use import cli
+
+    client.release()
+    assert cli.main(["--url", client.url, "up", "--body", "sim", "--enable"]) == 0
+    assert client.status()["enabled"]
 
 
 def test_refusal_is_reported_as_an_incident(client):
