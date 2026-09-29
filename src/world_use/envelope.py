@@ -2,6 +2,7 @@
 state is checked on every tick while it moves. A policy can tighten it; loosening needs an operator override,
 which is scoped, has a reason, and shows up in the log."""
 from dataclasses import dataclass
+from itertools import pairwise
 
 import numpy as np
 
@@ -12,7 +13,7 @@ from .world import World
 
 MARGIN = 0.02                         # rad kept clear of the URDF limits
 TURN_EPS = np.radians(2.0)            # a turn-clearance joint moving less than this in a path is not a turn
-POINT_EVERY = 40                      # check about this many poses along a path against the world
+POINT_EVERY = 40                      # sample gravity loads and surface clearance; zones check every tick
 
 
 @dataclass
@@ -34,6 +35,8 @@ class Envelope:
         self.overrides: dict[str, dict] = {}
         self.rehearsal: list[tuple[str, list[Refused]]] | None = None   # a twin's record of problems, else None
         self.context = ""                                                  # the step being planned, for that record
+        if not np.isfinite(manifest.link_radius_m) or manifest.link_radius_m < 0:
+            raise ValueError("link_radius_m must be finite and nonnegative")
 
     def override(self, key: str, value, reason: str):
         """Operator-only loosening, e.g. max_excursion for one task. Recorded with its reason."""
@@ -94,7 +97,7 @@ class Envelope:
             for i in np.where(g > hold_max)[0]:
                 problems.append(Refused(f"{self.m.joints[i].name} would hold {g[i]:.1f} Nm against gravity; limit "
                                         f"{hold_max[i]}", "gravity_load", "stay closer to the base", joint=int(i) + 1))
-        tool_z, clearance, entered, deepest = [], np.inf, set(), {}
+        tool_z, clearance, deepest = [], np.inf, {}
         tool0 = self.chain.fk(q_from)[:3, 3]
         # a path may start in contact (the tool resting on a table) and move away, never deeper than it began
         allowed = {b.name: max(0.0, b.depth(tool0)) + 0.001 for b in self.world.solids()}
@@ -102,11 +105,6 @@ class Envelope:
             pts = self.chain.points(q)
             tool = pts[-1]
             tool_z.append(tool[2])
-            for box in self.world.of_kind("keep_out"):
-                if box.name not in entered and any(box.contains(p) for p in pts[2:]):
-                    entered.add(box.name)
-                    problems.append(Refused(f"the arm would enter keep-out zone {box.name!r}", "keep_out",
-                                            "go around it", box=box.name))
             for box in self.world.solids():
                 depth = box.depth(tool)
                 if depth > allowed[box.name] and not allow_contact:
@@ -116,6 +114,27 @@ class Envelope:
         for name, depth in deepest.items():
             problems.append(Refused(f"the tool would go {1000 * depth:.0f} mm into {name!r}", "surface",
                                     "stop above it, or use a guarded move (touchdown) to make contact", box=name))
+        keep_out, slow = self.world.of_kind("keep_out"), self.world.of_kind("slow")
+        entered, too_fast = set(), set()
+        previous, previous_tool = q_from, tool0
+        if keep_out or slow:
+            for q in full:
+                pts = self.chain.points(q)
+                margin = self.m.link_radius_m + self.chain.motion_bound(previous, q)
+                for box in keep_out:
+                    if box.name not in entered and self._intersects(box, pts, margin):
+                        entered.add(box.name)
+                        problems.append(Refused(f"the arm would enter keep-out zone {box.name!r}", "keep_out",
+                                                "go around it", box=box.name))
+                speed = float(np.linalg.norm(pts[-1] - previous_tool) * rate)
+                for box in slow:
+                    if (box.name not in too_fast and speed > box.params["speed"] + 1e-9
+                            and box.intersects_segment(previous_tool, pts[-1])):
+                        too_fast.add(box.name)
+                        problems.append(Refused(f"tool speed {speed:.3f} m/s in slow zone {box.name!r}; "
+                                                f"limit {box.params['speed']:.3f}", "slow",
+                                                "give the move a longer duration", box=box.name))
+                previous, previous_tool = q, pts[-1]
         turn = self.turn_problem(full, rate)
         if turn is not None:
             problems.append(turn)
@@ -183,10 +202,12 @@ class Envelope:
                 if tau[i] > j.tau_max:
                     return Trip("overload", f"{j.name} torque {tau[i]:.1f} Nm; limit {j.tau_max}", i, float(tau[i]),
                                 j.tau_max)
-        tool = self.chain.fk(st.q)[:3, 3]
-        for box in self.world.of_kind("keep_out"):
-            if box.contains(tool):
-                return Trip("keep_out", f"the tool entered keep-out zone {box.name!r}")
+        zones = self.world.of_kind("keep_out")
+        if zones:
+            pts = self.chain.points(st.q)
+            for box in zones:
+                if self._intersects(box, pts, self.m.link_radius_m):
+                    return Trip("keep_out", f"the arm entered keep-out zone {box.name!r}")
         g = self.m.gripper
         if g is not None and grip_cmd is not None and st.gripper is not None:
             pushing = st.gripper_tau is None or abs(st.gripper_tau) > 0.5 * g.tau_max
@@ -196,6 +217,11 @@ class Envelope:
             if st.gripper_tau is not None and abs(st.gripper_tau) > g.tau_max:
                 return Trip("gripper", f"gripper effort {st.gripper_tau:.1f}; limit {g.tau_max}", isolate=True)
         return None
+
+    @staticmethod
+    def _intersects(box, points, margin):
+        # The fixed base pedestal is excluded; all links from the first joint through the tool are included.
+        return any(box.intersects_segment(a, b, margin) for a, b in pairwise(points[1:]))
 
     def _name(self, i):
         return self.m.joints[i].name if i < self.m.n else "gripper"

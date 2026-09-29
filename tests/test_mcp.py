@@ -26,5 +26,8 @@ def test_mcp_tools_drive_the_daemon(daemon):
         r = await server.call_tool("add_box", {"name": "tray", "kind": "surface", "center": [0.32, 0, 0.14],
                                                "size": [0.3, 0.4, 0.02]})
         assert r.content[0].text.startswith("surface 'tray'")
+        r = await server.call_tool("add_box", {"name": "careful", "kind": "slow", "center": [0.3, 0, 0.3],
+                                               "size": [0.1, 0.1, 0.1], "speed": 0.02})
+        assert "speed=0.02" in r.content[0].text
 
     asyncio.run(session())

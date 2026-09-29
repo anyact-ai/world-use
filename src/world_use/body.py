@@ -86,6 +86,7 @@ class Manifest:
     auto_accel: float = 3.0           # automatic durations keep peak joint acceleration under this
     min_move_s: float = 0.5
     max_segment_m: float = 0.25       # longest single Cartesian segment
+    link_radius_m: float = 0.03       # keep-out padding around the coarse joint-to-joint link model
     max_excursion: float | None = None    # rad any joint may travel from the session's start pose
     turn_clearance: tuple[tuple[int, ...], float] | None = None   # (joints, m): only turn these above start height + m
     notes: tuple[str, ...] = ()       # quirks worth telling the policy about (the embodiment card)

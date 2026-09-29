@@ -54,9 +54,9 @@ class Box:
     surface   something the tool may touch (a table, a printer bed); plans may not pass through it
     object    a thing to manipulate; grip_width (m) is how wide it is between the jaws. Not solid to the
               planner: the fingers have to reach around it
-    keep_out  nothing of the arm may enter it
+    keep_out  the padded link model may not enter it (not mesh collision detection)
     fragile   contact inside it is judged with a much smaller torque change (dtau, Nm)
-    slow      motion inside it is capped at speed (m/s)
+    slow      planned tool speed is capped at speed (m/s; required)
     """
     name: str
     kind: str
@@ -66,11 +66,38 @@ class Box:
     source: str = "config"
     t: float = field(default_factory=time.time)
 
+    def __post_init__(self):
+        if self.size.shape != (3,) or not np.isfinite(self.size).all() or (self.size <= 0).any():
+            raise ValueError("box size must be three finite, positive lengths")
+        if self.pose.shape != (4, 4) or not np.isfinite(self.pose).all():
+            raise ValueError("box pose must be a finite 4x4 transform")
+        if self.kind == "slow":
+            speed = float(self.params.get("speed", float("nan")))
+            if not np.isfinite(speed) or speed <= 0:
+                raise ValueError("a slow zone needs a finite, positive speed in m/s")
+            self.params = dict(self.params, speed=speed)
+
     def local(self, p) -> np.ndarray:
         return self.pose[:3, :3].T @ (np.asarray(p, float) - self.pose[:3, 3])
 
     def contains(self, p, margin: float = 0.0) -> bool:
         return bool(np.all(np.abs(self.local(p)) <= self.size / 2 + margin))
+
+    def intersects_segment(self, a, b, margin: float = 0.0) -> bool:
+        """Slab intersection in the box frame; margin expands each face, conservatively padding a link."""
+        a, b = self.local(a), self.local(b)
+        delta, half = b - a, self.size / 2 + margin
+        lower, upper = 0.0, 1.0
+        for i in range(3):
+            if abs(delta[i]) < 1e-12:
+                if abs(a[i]) > half[i]:
+                    return False
+                continue
+            enter, leave = sorted(((-half[i] - a[i]) / delta[i], (half[i] - a[i]) / delta[i]))
+            lower, upper = max(lower, enter), min(upper, leave)
+            if lower > upper:
+                return False
+        return True
 
     def depth(self, p) -> float:
         """How far p is below the top face, along the box's up axis; -inf outside its footprint. A surface is
