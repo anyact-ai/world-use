@@ -77,6 +77,7 @@ class Chain:
             path.append(by_child[link])
             link = by_child[link].parent
         path.reverse()
+        self._length = sum(float(np.linalg.norm(j.origin[:3, 3])) for j in path)
         self.active = [j for j in path if j.type in MOVABLE]
         self.joint_names = [j.name for j in self.active]
         self.n = len(self.active)
@@ -133,6 +134,14 @@ class Chain:
         """Joint origins and the tool point: a coarse stick model for clearance checks."""
         F = self.link_frames(q)
         return np.array([F[self.root][:3, 3]] + [F[j.child][:3, 3] for j in self.active] + [F[self.tool_link][:3, 3]])
+
+    def motion_bound(self, a, b) -> float:
+        """Upper bound on any stick-model point's travel during linear joint interpolation (metres)."""
+        a, b = np.asarray(a), np.asarray(b)
+        slide = np.array([j.type == "prismatic" for j in self.active])
+        reach = self._length + np.maximum(np.abs(a[slide]), np.abs(b[slide])).sum()
+        delta = np.abs(b - a)
+        return float(reach * delta[~slide].sum() + delta[slide].sum())
 
     def axes(self, q) -> np.ndarray:
         """Each moving joint's axis in the root frame, one row per joint."""

@@ -10,6 +10,7 @@ With a simulated body the daemon keeps two worlds: the simulator's truth, and th
 box is in both unless it says `known = false`; what a policy adds (`wu box`) goes into the model only.
 """
 import argparse
+import hashlib
 import json
 import signal
 import sys
@@ -17,6 +18,7 @@ import tempfile
 import threading
 import time
 import tomllib
+from dataclasses import replace
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -29,7 +31,7 @@ from .behaviors import REGISTRY
 from .errors import Refused, explain
 from .fit import load as load_fit
 from .kernel import Kernel
-from .plan import Report
+from .plan import Report, snapshot
 from .worker import Rehearser
 from .world import World
 
@@ -39,9 +41,14 @@ MAX_WAIT_S = 120.0
 
 class Daemon:
     def __init__(self, kernel: Kernel, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
-                 cams: dict[str, cameras.Camera] | None = None, rehearser: Rehearser | None = None):
+                 cams: dict[str, cameras.Camera] | None = None, rehearser: Rehearser | None = None,
+                 session: dict | None = None):
         self.k = kernel
         self.host, self.port = host, port
+        from .bodies.sim import SimBody
+        adapter = next((name for name, m in bodies.manifests().items() if m is kernel.manifest), "custom")
+        self.session = session or session_identity(
+            f"sim:{adapter}" if isinstance(kernel.body, SimBody) else adapter, {})
         self.cameras = dict(cams or {})
         kernel.cameras = self.cameras                    # the card lists them
         self.shots = 0
@@ -89,7 +96,9 @@ class Daemon:
         wait = min(float(body.get("wait", query.get("wait", 0)) or 0), MAX_WAIT_S)
         if method == "GET" and route == ["status"]:
             with k.lock:
-                return 200, views.status(k)
+                status = views.status(k)
+                status.update(session=self.session, line=f"{self.session['adapter']} | {status['line']}")
+                return 200, status
         if method == "GET" and route == ["card"]:
             return 200, dict(card=views.card(k, reach=self.rehearser.reach_line))
         if method == "GET" and route == ["help"]:
@@ -141,7 +150,8 @@ class Daemon:
             job = k.submit({"do": "seq", "steps": k.home_plan(), "label": "home"})
             return self._job(job.id, wait)
         if route == ["world"]:
-            return self._world(body)
+            with k.lock:
+                return self._world(body)
         if route == ["calibrate"]:
             return self.calibrate(body["camera"], int(body.get("points", 8)), body.get("spread"), wait)
         if route == ["record"]:
@@ -151,32 +161,51 @@ class Daemon:
         return 404, dict(error=f"no route POST /{path.strip('/')}")
 
     def _run(self, spec, wait: float, rehearse: bool) -> tuple[int, dict]:
-        """Rehearse on a twin first (when the robot is idle), and refuse the whole plan, with every problem named,
-        if the kernel would refuse any step of it. Otherwise run it."""
+        """Rehearse an idle snapshot, then admit only while that snapshot is still current."""
         k = self.k
         report: Report | None = None
-        note = ""
-        if rehearse and k.enabled and not k.faulted:
+        admission = None
+        if rehearse:
             with k.lock:
-                busy = k.active is not None or bool(k.queue)
-            if busy:
-                note = "not rehearsed: another job is running or queued"
-            else:
-                report = self.rehearser.check(spec, k)
-                if report.refused:
-                    text = ("refused in rehearsal, so nothing moved:\n" + str(report) + "\n"
-                            + self.rehearser.reach_line(k))
-                    return 200, dict(id=None, status="refused", incident=text, rehearsal=report.to_dict(),
-                                     line=views.state_line(k))
-        job = k.submit(spec)
+                if not k.enabled or k.faulted or k.power_uncertain:
+                    raise Refused("checked runs need torque on, confirmed power and a cleared fault", "not_ready",
+                                  "inspect status and resolve the power state before running")
+                if k.active is not None or k.queue or k._stop is not None:
+                    raise Refused("checked runs need an idle robot; another job is running, queued or stopping",
+                                  "busy", "wait for it to finish, then retry")
+                snap = snapshot(k)
+                seq = k.events.seq
+                jobs = len(k.jobs)
+
+            def admission():
+                current = snapshot(k)
+                # Temperature may drift while holding. Motion, scene/limit changes, lifecycle events and any
+                # intervening submission invalidate the check. Small encoder noise is allowed (0.01 rad/unit).
+                changed = (replace(current, q=snap.q, gripper=snap.gripper, temp=snap.temp) != snap
+                           or not np.allclose(current.q, snap.q, atol=0.01, rtol=0)
+                           or ((current.gripper is None) != (snap.gripper is None))
+                           or (current.gripper is not None and snap.gripper is not None
+                               and abs(current.gripper - snap.gripper) > 0.01))
+                own_job = k.active is not None and k.active.admission is admission
+                if (changed or k.events.seq != seq or len(k.jobs) != jobs + int(own_job)
+                        or k.queue or k._stop is not None or (k.active is not None and not own_job)
+                        or not k.enabled or k.faulted or k.power_uncertain):
+                    raise Refused("the robot or scene changed during rehearsal; nothing started", "stale_check",
+                                  "wait until idle, then retry so the plan is checked from the new state")
+
+            report = self.rehearser.check(spec, k, snap=snap)
+            if report.refused or report.outcome.status == "faulted":
+                text = ("refused in rehearsal, so nothing moved:\n" + str(report) + "\n"
+                        + self.rehearser.reach_line(k))
+                return 200, dict(id=None, status="refused", incident=text, rehearsal=report.to_dict(),
+                                 line=views.state_line(k))
+        job = k.submit(spec, admission=admission)
         code, d = self._job(job.id, wait)
         if report is not None:
             d["rehearsal"] = dict(seconds=report.seconds, moving_s=report.moving_s, ok=report.ok)
             if not report.ok:
                 d["warning"] = (f"in rehearsal this ended {report.outcome.status}: {report.outcome.message} "
                                 "(the world model may be incomplete; running it anyway)")
-        elif note:
-            d["rehearsal"] = note
         return code, d
 
     def look(self, camera: str | None = None, spec=None, grid: bool = False) -> dict:
@@ -376,6 +405,17 @@ def _plain(o):
 WORKCELLS = Path(__file__).parent / "workcells"
 
 
+def session_identity(name: str, cell: dict) -> dict:
+    """The selected adapter and startup configuration, distinct from the robot manifest and live world."""
+    adapter = "sim:rebot" if name == "sim" else name
+    config = dict(cell)
+    if "fit" in config:
+        config["fit_sha256"] = hashlib.sha256(Path(config["fit"]).read_bytes()).hexdigest()
+    digest = hashlib.sha256(json.dumps(config, sort_keys=True, default=str).encode()).hexdigest()
+    return dict(adapter=adapter, mode="simulation" if adapter.startswith("sim:") else "hardware",
+                workcell_digest=digest)
+
+
 def load_workcell(path: Path | None) -> dict:
     """A workcell file (TOML): body, body options, boxes, cameras, facts, operator overrides and the robot model
     fitted from its records (`fit`, a path from the workcell's folder). Boxes and facts are added after connecting,
@@ -389,7 +429,7 @@ def load_workcell(path: Path | None) -> dict:
     with open(path, "rb") as f:
         cell = tomllib.load(f)
     if "fit" in cell:
-        cell["fit"] = str(path.parent / cell["fit"])
+        cell["fit"] = str((path.parent / cell["fit"]).resolve())
     return cell
 
 
@@ -458,10 +498,14 @@ def main(argv=None):
     if truth is not None:
         truth.frames.update(world.frames)
     apply_workcell(cell, k, truth)
-    if a.enable:
-        k.enable()
-    d = Daemon(k, port=a.port, cams=make_cameras(cell, k, body, truth))
+    d = Daemon(k, port=a.port, cams=make_cameras(cell, k, body, truth), session=session_identity(name, cell))
     d.start()
+    if a.enable:
+        try:
+            k.enable()
+        except Exception as e:
+            # Keep the daemon available for status and recovery after a partial power transition.
+            print(f"enable failed: {explain(e)}", file=sys.stderr, flush=True)
     print(f"world-use daemon: {k.manifest.name} on http://127.0.0.1:{a.port} (flight record: {run_dir})", flush=True)
     def on_signal(signum, _frame):
         try:

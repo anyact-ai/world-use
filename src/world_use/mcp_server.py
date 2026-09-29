@@ -86,11 +86,14 @@ def build(url: str = DEFAULT_URL):
 
     @server.tool()
     def add_box(name: str, kind: str, center: list[float], size: list[float], yaw_deg: float = 0.0,
-                source: str = "policy", grip_width: float | None = None) -> str:
+                source: str = "policy", grip_width: float | None = None,
+                speed: float | None = None, dtau: float | None = None) -> str:
         """Tell the kernel about something you see. kind: surface (a table; plans may not pass through it), object
         (a thing to grip; grip_width in metres), keep_out, fragile or slow. center [forward, left, up] and size
-        [forward, left, up] in metres, work frame. Guarded moves and every plan check use it from then on."""
-        extra = {} if grip_width is None else dict(grip_width=grip_width)
+        [forward, left, up] in metres, work frame. slow requires speed (planned tool speed in m/s); fragile
+        accepts dtau (contact threshold in Nm). Guarded moves and every plan check use it from then on."""
+        extra = {key: value for key, value in dict(grip_width=grip_width, speed=speed, dtau=dtau).items()
+                 if value is not None}
         return call(lambda: c.box(name, kind, center, size, yaw_deg=yaw_deg, source=source, **extra)["line"])
 
     @server.tool()

@@ -83,6 +83,7 @@ class Job:
     t_start: float | None = None
     t_end: float | None = None
     attention: threading.Event = field(default_factory=threading.Event)   # set on waiting or finished
+    admission: Callable[[], None] | None = None    # revalidate a checked plan immediately before its first tick
 
     @property
     def finished(self) -> bool:
@@ -158,6 +159,7 @@ class Kernel:
                              f"manifest has {self.manifest.n}")
         self.world = world or World()
         self.clock = clock or RealClock(self.manifest.rate_hz)
+        self.t0 = self.clock.now()
         m = self.manifest
         self.timing = Timing(m.rate_hz, m.speed, m.auto_accel, m.min_move_s)
         self.ik_weights = ik_weights
@@ -165,8 +167,10 @@ class Kernel:
         self.run_dir = Path(run_dir) if run_dir else None
         if self.run_dir:
             self.run_dir.mkdir(parents=True, exist_ok=True)
-        self.events = EventLog(self.run_dir / "events.jsonl" if self.run_dir else None)
+        self.events = EventLog(self.run_dir / "events.jsonl" if self.run_dir else None,
+                               clock=self.clock.now, t0=self.t0)
         self.tape = Tape(m.n)
+        self.tape.mark_power(0.0, False)
         self.heat = Heat()
         self.lock = threading.RLock()
         self.jobs: dict[int, Job] = {}
@@ -175,6 +179,7 @@ class Kernel:
         self._ids = itertools.count(1)
         self._stop: str | None = None
         self.enabled = self.faulted = False
+        self.power_uncertain = False             # an incomplete enable/disable must never look like torque off
         self.cameras: dict = {}                     # name -> camera, when a daemon owns some (the card lists them)
         self.last_touch = 0                        # event seq of the last contact (0 = none this session)
         self.home_route: tuple[list, int] | None = None   # (specs, event seq when set)
@@ -202,7 +207,6 @@ class Kernel:
                 self.world.add_frame(name, T, source=f"{self.manifest.name}, at session start")
         if "work" not in self.world.frames:
             self.world.add_frame("work", np.eye(4), source="default: the base frame")
-        self.t0 = self.clock.now()
         self.emit("connected", f"{self.manifest.name} connected at joints (deg) "
                   f"{np.round(np.degrees(self.q_start), 1).tolist()}")
         for w in getattr(self.body, "warnings", []):
@@ -221,36 +225,52 @@ class Kernel:
         if self._loop_thread is not None and not self._loop_thread.is_alive():
             raise Refused("the control loop has stopped, so nothing would command the motors", "no_loop",
                           "restart the daemon")
-        if self.enabled:
-            return
         if self.faulted:              # a fault with torque off (a failed read, say) is not cleared by switching on
             raise Refused("the kernel is faulted: an operator must reset it before the torque comes on", "faulted",
                           "check the hardware, then reset")
+        if self.enabled:
+            return
+        self.power_uncertain = True
+        self.tape.mark_power(self.clock.now() - self.t0, True)
         try:                          # not under the lock: an engage takes a second or two, and status must answer
             self.body.enable()
+            self.enabled = True
+            st = self.body.read()
         except Exception as e:
+            with self.lock:
+                self.faulted = True
+                self._cancel_queue("enable failed; motor power is unconfirmed")
             self.emit("enable_failed", explain(e), "warn" if isinstance(e, Refused) else "alarm")
             raise
-        st = self.body.read()
         with self.lock:
             self.state = st
             self.cmd = Command(np.asarray(st.q, float).copy(), np.zeros(self.manifest.n), st.gripper)
             self.residuals.clear()                 # readings from before a release say nothing about now
             self.enabled = True
+            self.power_uncertain = False
         self.emit("enabled", "torque on")
 
     def _release(self):
         with self.lock:
-            if not self.enabled:
+            if not self.enabled and not self.power_uncertain:
                 return
-            if self.active is not None:
+            if self.active is not None or self.queue:
                 raise Refused("a job is running; stop it first", "busy")
+            # A failed enable may have left an old reading behind. Never release on that evidence.
+            self.state = self.body.read()
             rest = self.manifest.rest
             if rest is not None and not rest.holds(self.state.q):
                 raise Refused("the arm is not at its rest pose: releasing torque here would drop it", "not_at_rest",
                               "go home first")
-            self.body.disable()
+            self.power_uncertain = True
+            try:
+                self.body.disable()
+            except Exception:
+                self.faulted = True
+                raise
             self.enabled = False
+            self.power_uncertain = False
+            self.tape.mark_power(self.clock.now() - self.t0, False)
         self.emit("released", "torque off")
 
     def _on_loop(self, fn: Callable[[], object]):
@@ -298,9 +318,10 @@ class Kernel:
         """Write the flight record so far (tape, summary, world; events are written as they happen), without
         closing: a run can be studied while it goes on. Returns the summary."""
         rate = self.manifest.rate_hz
+        until = self.clock.now() - self.t0
         if not self.run_dir:
-            return dict(body=self.manifest.name, **self.tape.summary(rate))
-        summary = dict(body=self.manifest.name, **self.tape.save(self.run_dir / "tape.npz", rate))
+            return dict(body=self.manifest.name, **self.tape.summary(rate, until=until))
+        summary = dict(body=self.manifest.name, **self.tape.save(self.run_dir / "tape.npz", rate, until=until))
         summary["events"] = self.events.seq
         save_summary(self.run_dir / "summary.json", summary)
         with self.lock:                                  # the control thread moves held boxes about
@@ -309,14 +330,17 @@ class Kernel:
         return summary
 
     # -- requests (any thread) ---------------------------------------------------------------------
-    def submit(self, spec) -> Job:
+    def submit(self, spec, admission: Callable[[], None] | None = None) -> Job:
         """Queue a behavior. A malformed spec is refused here; limits are checked when it starts."""
         behavior = build(spec)
         with self.lock:
+            if admission is not None:
+                admission()
             job = Job(next(self._ids), behavior, spec if not isinstance(spec, Behavior) else spec.spec())
+            job.admission = admission
             self.jobs[job.id] = job
-            if self.faulted:
-                self._end(job, Outcome("refused", behavior.kind, "the kernel is faulted: an operator must reset it",
+            if self.faulted or self.power_uncertain:
+                self._end(job, Outcome("refused", behavior.kind, "the kernel is faulted or motor power is unconfirmed",
                                        hint="check the hardware, then reset"))
             elif not self.enabled:
                 self._end(job, Outcome("refused", behavior.kind, "torque is off: enable first", hint="enable"))
@@ -339,6 +363,9 @@ class Kernel:
     def reset(self):
         """Operator: clear a fault after checking the hardware."""
         with self.lock:
+            if self.power_uncertain:
+                raise Refused("motor power is unconfirmed: release at a freshly measured rest pose first",
+                              "power_uncertain")
             self.faulted = False
         self.emit("reset", "fault cleared by operator", "warn")
 
@@ -532,7 +559,8 @@ class Kernel:
                 elif self.enabled:
                     self.hold_here()
             # a job starts once there is a torque baseline to judge contact against (0.1 s after switching on)
-            if self.active is None and self.queue and self.enabled and (st.tau is None or self.residuals.ready):
+            if (self.active is None and self.queue and self.enabled and not self.faulted
+                    and not self.power_uncertain and (st.tau is None or self.residuals.ready)):
                 self._start(self.queue.popleft(), now)
             job = self.active
         if job is not None and job.status in ("running", "waiting"):
@@ -546,12 +574,13 @@ class Kernel:
             if out is not None:
                 with self.lock:
                     self._end(job, out)
-        if self.enabled:
+        if self.enabled and not self.power_uncertain:
             self.body.command(self.cmd.q, self.cmd.dq, self.cmd.gripper, self.cmd.gripper_v)
         self.still = self.still + 1 if np.array_equal(self.cmd.q, self._last_q_cmd) else 0
         self._last_q_cmd = self.cmd.q.copy()
         moving = bool(job is not None and not job.finished and job.status == "running" and job.behavior.moves)
-        self.tape.add(now - self.t0, self.enabled, moving, job.id if job else 0, self.cmd.q, st.q, st.tau, st.temp,
+        self.tape.add(now - self.t0, self.enabled or self.power_uncertain, moving, job.id if job else 0,
+                      self.cmd.q, st.q, st.tau, st.temp,
                       self.cmd.gripper, st.gripper, st.gripper_tau)
 
     def _start(self, job: Job, now: float):
@@ -560,6 +589,8 @@ class Kernel:
         self.rebias()
         self.envelope.context = job.behavior.describe()
         try:
+            if job.admission is not None:
+                job.admission()
             job.behavior.start(self)
         except Refused as e:
             self._end(job, Outcome("refused", job.behavior.kind, str(e), dict(rule=e.rule, **e.data), hint=e.hint))
@@ -572,6 +603,8 @@ class Kernel:
         self.emit("started", f"job {job.id}: {job.behavior.describe()}", job=job.id)
 
     def _end(self, job: Job, out: Outcome):
+        if out.status == "faulted":
+            self.faulted = True
         job.outcome, job.status, job.t_end = out, out.status, time.time()
         if self.active is job:
             self.active = None
@@ -591,6 +624,7 @@ class Kernel:
             self._end(j, Outcome("cancelled", j.behavior.kind, f"not started: {why}"))
 
     def _on_trip(self, trip: Trip, now: float):
+        self._cancel_queue(f"watchdog: {trip.message}")
         if trip.isolate:                             # gripper only: freeze it where it is, the arm carries on
             self.cmd.gripper, self.cmd.gripper_v = self.state.gripper, 0.0
             self.emit("gripper_trip", trip.message, "warn")
@@ -603,7 +637,7 @@ class Kernel:
                 where = f"step {seq.i + 1}/{len(seq.steps)}: " if isinstance(seq, Sequence) else ""
                 self._end(job, Outcome("surprise", step.kind, where + trip.message, hint="look at the gripper"))
             return
-        if trip.kind == "hot":
+        if trip.kind == "hot" and not self.faulted and not self.power_uncertain:
             self._on_hot(trip, now)
             return
         self.hold_here()
@@ -628,8 +662,7 @@ class Kernel:
         if rest is None or rest.holds(self.state.q):
             # at rest, switching torque off moves nothing, and it is how a motor cools fastest
             self._cancel_queue("motor hot")
-            self.body.disable()
-            self.enabled = False
+            self._release()
             self.emit("hot", f"{trip.message}: torque released at rest to cool", "alarm")
             return
         try:

@@ -1,7 +1,7 @@
 """Body: what a robot is (its manifest) and the small I/O contract every robot adapter implements.
 
 An adapter only moves joints and reports what it measures. Planning, limits, watchdogs, behaviors and
-logging live in the kernel, so a new arm needs a manifest and five methods.
+logging live in the kernel, so a new arm needs a manifest and six methods.
 """
 import math
 from collections.abc import Callable
@@ -86,6 +86,7 @@ class Manifest:
     auto_accel: float = 3.0           # automatic durations keep peak joint acceleration under this
     min_move_s: float = 0.5
     max_segment_m: float = 0.25       # longest single Cartesian segment
+    link_radius_m: float = 0.03       # keep-out padding around the coarse joint-to-joint link model
     max_excursion: float | None = None    # rad any joint may travel from the session's start pose
     turn_clearance: tuple[tuple[int, ...], float] | None = None   # (joints, m): only turn these above start height + m
     notes: tuple[str, ...] = ()       # quirks worth telling the policy about (the embodiment card)
@@ -133,7 +134,8 @@ class Body(Protocol):
 
     def enable(self) -> None:
         """Switch torque on at the measured pose, without a jump. If it raises, every motor is off again, or the
-        error names those it could not confirm off: the kernel counts torque as off either way."""
+        error names those it could not confirm off. The kernel treats a failed transition as unconfirmed power
+        until disable succeeds at a freshly measured rest pose."""
 
     def read(self) -> JointState:
         """Latest measurement. Called once per control tick."""
@@ -143,7 +145,7 @@ class Body(Protocol):
 
     def disable(self) -> None:
         """Switch torque off. The kernel only calls this where the manifest says it is safe. If it raises, the
-        kernel counts torque as still on and keeps commanding."""
+        kernel treats power as unconfirmed, faults, and suspends commands until a successful release."""
 
     def close(self) -> None:
         """Release the connection. Must not switch torque off: that is disable()'s job."""

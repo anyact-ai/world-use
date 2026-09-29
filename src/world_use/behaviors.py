@@ -556,8 +556,10 @@ class Gripper(Behavior):
             raise Refused(f"gripper target {to:.2f} {g.unit} is outside {lo}..{hi}", "gripper_limit")
         start = k.cmd.gripper if k.cmd.gripper is not None else k.state.gripper
         seconds = float(self.params.get("seconds", 0.0))
+        if not np.isfinite(seconds) or seconds < 0:
+            raise Refused("gripper seconds must be finite and nonnegative", "spec")
         seconds = max(seconds, 1.875 * abs(to - start) / g.v_max, 0.3)
-        n = max(2, int(seconds * k.manifest.rate_hz))
+        n = max(2, int(np.ceil(seconds * k.manifest.rate_hz)))
         s = motion.minjerk(np.arange(1, n + 1) / n)
         self.traj = start + (to - start) * s
         self.v = np.gradient(np.concatenate([[start], self.traj]))[1:] * k.manifest.rate_hz
@@ -601,7 +603,7 @@ class Grip(Behavior):
     expect_mm  [lo, hi] opening where the fingers should meet the object; outside it, or nothing, is a surprise
     expect     the same in the gripper's native units
     start_mm   open to this first (or start, native units)
-    squeeze    how much further to close after contact, native units (default: the gripper's, on the card)
+    squeeze    how much further to close after contact, native units (at most the gripper's, on the card)
     effort     gripper effort that counts as contact (default 0.6)
     lag        how far the gripper may fall behind its command before that counts as contact (default 0.1)
     speed      closing speed, native units per second (default 0.3)
@@ -616,15 +618,38 @@ class Grip(Behavior):
             raise Refused("this robot has no gripper", "no_gripper")
         p = self.params
         here = k.cmd.gripper if k.cmd.gripper is not None else k.state.gripper
-        self.expect = sorted(_native(g, p, "expect_mm", "expect")) if ("expect_mm" in p or "expect" in p) else None
+        lo, hi = sorted((g.closed, g.open))
+        self.expect = _native(g, p, "expect_mm", "expect") if ("expect_mm" in p or "expect" in p) else None
+        if self.expect is not None:
+            if (not isinstance(self.expect, list) or len(self.expect) != 2
+                    or not all(lo <= x <= hi for x in self.expect)):
+                raise Refused("expected grip width must be two finite positions within the gripper range",
+                              "gripper_limit")
+            self.expect.sort()
         start = _native(g, p, "start_mm", "start") if ("start_mm" in p or "start" in p) else None
+        if isinstance(start, list):
+            raise Refused("grip start must be a single position", "gripper_limit")
+        if start is not None and not lo <= start <= hi:
+            raise Refused(f"grip start must be within {lo}..{hi} {g.unit}", "gripper_limit")
+        speed = float(p.get("speed", 0.3))
+        self.squeeze = float(p.get("squeeze", g.squeeze))
+        self.effort, self.lag = float(p.get("effort", 0.6)), float(p.get("lag", 0.1))
+        self.floor = float(p.get("min", g.closed))
+        for name, value, limit in (("speed", speed, g.v_max), ("effort", self.effort, g.tau_max),
+                                   ("lag", self.lag, g.track_tol)):
+            if not np.isfinite(value) or not 0 < value <= limit:
+                raise Refused(f"grip {name} must be finite and in (0, {limit}]", "gripper_limit")
+        if not np.isfinite(self.squeeze) or not 0 <= self.squeeze <= g.squeeze:
+            raise Refused(f"grip squeeze must be in 0..{g.squeeze} {g.unit}", "gripper_limit")
+        if not lo <= self.floor <= hi:
+            raise Refused(f"grip min must be within {lo}..{hi} {g.unit}", "gripper_limit")
+        if (self.floor - (start if start is not None else here)) * np.sign(g.open - g.closed) > 0:
+            raise Refused("grip min is more open than the starting position", "gripper_limit")
         self.pre = None
         if start is not None and abs(start - here) > 0.02:             # open to the start width first, smoothly
             self.pre = Gripper(to=start)
             self.pre.start(k)
-        self.speed = float(p.get("speed", 0.3)) * np.sign(g.closed - g.open)     # units/s, towards closed
-        self.effort, self.lag = float(p.get("effort", 0.6)), float(p.get("lag", 0.1))
-        self.floor = float(p.get("min", g.closed))
+        self.speed = speed * np.sign(g.closed - g.open)     # units/s, towards closed
         self.phase, self.contact, self.wait = "open", None, 0
 
     def tick(self, k):
@@ -638,8 +663,9 @@ class Grip(Behavior):
             behind = abs(st.gripper - k.cmd.gripper)
             if effort > self.effort or behind > self.lag:
                 self.contact = float(st.gripper)
-                squeeze = float(p.get("squeeze", g.squeeze)) * np.sign(g.closed - g.open)
-                k.set_gripper(self.contact + squeeze)
+                squeeze = self.squeeze * np.sign(g.closed - g.open)
+                lower, upper = sorted((self.floor, g.open))
+                self.squeeze_target = float(np.clip(self.contact + squeeze, lower, upper))
                 self.phase, self.wait = "squeeze", int(0.3 * k.manifest.rate_hz)
                 return None
             nxt = k.cmd.gripper + self.speed / k.manifest.rate_hz
@@ -647,6 +673,12 @@ class Grip(Behavior):
                 k.set_gripper(self.floor)
                 return self._no_contact(k)
             k.set_gripper(nxt, self.speed)
+            return None
+        # Contact can leave the fingers behind the command. Approach the bounded squeeze target smoothly.
+        delta = self.squeeze_target - k.cmd.gripper
+        step = float(np.clip(delta, -g.v_max / k.manifest.rate_hz, g.v_max / k.manifest.rate_hz))
+        k.set_gripper(k.cmd.gripper + step, step * k.manifest.rate_hz if abs(delta) > abs(step) else 0.0)
+        if abs(delta) > abs(step) + 1e-9:
             return None
         self.wait -= 1                                    # squeeze: let it settle, then judge
         if self.wait > 0:

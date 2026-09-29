@@ -11,6 +11,63 @@ from world_use import Kernel, RealClock, Refused, World, bodies
 HOME = np.maximum(Q_REST, [-np.inf, 0.02, 0.02, -np.inf, -np.inf, -np.inf])   # folded just off the stops
 
 
+@pytest.mark.parametrize("trip", ["fault", "hot", "blocked"])
+def test_an_idle_watchdog_trip_cancels_motion_before_it_starts(k, monkeypatch, trip):
+    from world_use.envelope import Trip
+
+    k.run({"do": "hold", "seconds": 0.2})
+    before = k.cmd.q.copy()
+    job = k.submit({"do": "line", "up": 0.02})
+    monkeypatch.setattr(k.envelope, "watch", lambda *args: Trip(trip, "injected watchdog finding"))
+    k.tick()
+    assert job.status == "cancelled" and k.active is None
+    assert np.array_equal(k.cmd.q, before)
+    assert k.faulted == (trip == "fault")
+
+
+@pytest.mark.parametrize("phase", ["start", "tick"])
+def test_a_behavior_exception_latches_the_fault(k, phase):
+    from world_use.behaviors import Behavior
+
+    class Broken(Behavior):
+        kind = "broken"
+
+        def start(self, k):
+            if phase == "start":
+                raise RuntimeError("behavior failed")
+
+        def tick(self, k):
+            raise RuntimeError("behavior failed")
+
+    assert k.run(Broken()).status == "faulted"
+    assert k.faulted and k.submit({"do": "line", "up": 0.02}).status == "refused"
+    k.reset()
+    assert k.run({"do": "hold", "seconds": 0.1}).ok
+
+
+@pytest.mark.parametrize("phase", ["enable", "read"])
+def test_incomplete_enable_stays_visible_and_release_retries_torque_off(k, monkeypatch, phase):
+    from world_use import views
+
+    k.release()
+    original_enable, original_read = k.body.enable, k.body.read
+
+    def fail():
+        if phase == "enable":
+            original_enable()                   # a partial enable can leave a motor powered
+        raise OSError("lost feedback")
+
+    monkeypatch.setattr(k.body, phase, fail)
+    with pytest.raises(OSError, match="lost feedback"):
+        k.enable()
+    assert k.body.enabled and k.faulted and views.status(k)["power_uncertain"]
+    with pytest.raises(Refused, match="unconfirmed"):
+        k.reset()
+    monkeypatch.setattr(k.body, "read", original_read)
+    k.release()
+    assert not k.body.enabled and not k.enabled and not k.power_uncertain
+
+
 def test_line_moves_the_tool_by_the_request_in_the_work_frame(k):
     p0 = k.world.from_base("work", k.chain.fk(k.state.q)[:3, 3])
     out = k.run({"do": "line", "forward": 0.08, "up": 0.06})
@@ -84,7 +141,7 @@ def test_grip_on_an_object_reports_where_the_fingers_met_it(lifted):
     k = lifted
     tool = k.chain.fk(k.state.q)[:3, 3]
     k.body.world.add_box("block", "object", center=tool, size=[0.03, 0.012, 0.03], grip_width=0.012)
-    out = k.run({"do": "grip", "start": 3.0, "expect": [0.4, 1.0], "squeeze": 0.1})
+    out = k.run({"do": "grip", "start": 3.0, "expect": [0.4, 1.0], "squeeze": 0.05})
     assert out.ok, out.message
     assert abs(out.data["contact_at"] - (0.05 + 0.012 / 0.020)) < 0.08
     assert out.data["holding_effort"] < -0.5

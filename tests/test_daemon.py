@@ -12,10 +12,34 @@ from world_use.client import DaemonError
 
 
 def test_status_card_and_a_run_with_wait(client):
+    assert client.status()["session"]["mode"] == "simulation"
     assert "idle" in client.status()["line"]
     assert "reBot" in client.card()
     r = client.run({"do": "line", "forward": 0.03, "up": 0.03, "duration": 1.0}, wait=10)
     assert r["status"] == "done" and "tool F" in r["line"]
+
+
+def test_up_reuses_only_the_requested_adapter_and_workcell(daemon, capsys):
+    from world_use import cli
+    from world_use.daemon import session_identity
+
+    d, c = daemon
+    up = ["--url", c.url, "up"]
+    assert cli.main(up + ["--body", "sim"]) == 0
+    assert cli.main(up + ["--body", "sim:rebot"]) == 0
+    assert cli.main(up + ["--workcell", "block"]) == 2
+    assert cli.main(up + ["--body", "rebot"]) == 2
+    d.session = session_identity("rebot", {})           # simulate an already-running hardware daemon
+    assert cli.main(up + ["--body", "sim", "--enable"]) == 2
+    assert "requested sim:rebot" in capsys.readouterr().err
+
+
+def test_up_enable_also_applies_to_a_matching_existing_daemon(client):
+    from world_use import cli
+
+    client.release()
+    assert cli.main(["--url", client.url, "up", "--body", "sim", "--enable"]) == 0
+    assert client.status()["enabled"]
 
 
 def test_refusal_is_reported_as_an_incident(client):
@@ -75,6 +99,66 @@ def test_run_rehearses_and_refuses_the_whole_plan_with_every_problem_before_anyt
 def test_run_without_the_rehearsal_is_refused_by_the_kernel_at_the_step(client):
     r = client.run([{"do": "line", "up": 0.03}, {"do": "line", "left": 0.05}], wait=10, check=False)
     assert r["status"] == "refused" and "step 2/2" in r["incident"]
+
+
+def test_checked_run_refuses_while_another_job_is_waiting(daemon):
+    d, c = daemon
+    c.run({"do": "checkpoint", "ask": "hold here?"}, wait=5)
+    before, count = d.k.cmd.q.copy(), len(d.k.jobs)
+    with pytest.raises(DaemonError, match="idle robot"):
+        c.run([{"do": "line", "up": 0.03}, {"do": "line", "forward": 0.4}])
+    assert len(d.k.jobs) == count and np.array_equal(d.k.cmd.q, before)
+
+
+@pytest.mark.parametrize("state", ["off", "faulted", "uncertain"])
+def test_checked_run_never_skips_rehearsal_in_an_unready_state(daemon, state):
+    d, c = daemon
+    if state == "off":
+        c.release()
+    elif state == "faulted":
+        d.k.faulted = True
+    else:
+        d.k.power_uncertain = True
+    with pytest.raises(DaemonError, match="confirmed power"):
+        c.run({"do": "line", "up": 0.03})
+    assert not d.k.jobs
+
+
+@pytest.mark.parametrize("change", ["world", "stop", "job", "pose"])
+def test_checked_run_rejects_changes_during_rehearsal(daemon, monkeypatch, change):
+    d, c = daemon
+    original = d.rehearser.check
+
+    def changed(spec, k, **kwargs):
+        report = original(spec, k, **kwargs)
+        with k.lock:
+            if change == "world":
+                d._world({"fact": {"key": "scene", "value": "changed"}})
+            elif change == "stop":
+                k.stop()
+            elif change == "job":
+                k.submit({"do": "hold", "seconds": 0.01})
+            else:
+                k.cmd.q[0] += 0.02
+        return report
+
+    monkeypatch.setattr(d.rehearser, "check", changed)
+    with pytest.raises(DaemonError, match="changed during rehearsal"):
+        c.run({"do": "line", "up": 0.03})
+    assert not any(j.behavior.kind == "line" for j in d.k.jobs.values())
+
+
+def test_checked_run_revalidates_before_its_first_tick(daemon):
+    d, _ = daemon
+    d.stop_loop.set()
+    d.control.join(2)
+    _, result = d._run({"do": "line", "up": 0.03}, 0, True)
+    job = d.k.jobs[result["id"]]
+    before = d.k.cmd.q.copy()
+    d._world({"fact": {"key": "scene", "value": "changed after admission"}})
+    for _ in range(d.k.residuals.need):
+        d.k.tick()
+    assert job.status == "refused" and np.array_equal(d.k.cmd.q, before)
 
 
 def test_look_saves_a_picture_with_what_the_kernel_knows_drawn_on_it(daemon):

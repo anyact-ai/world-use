@@ -3,24 +3,27 @@ import json
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 
 LEVELS = ("info", "warn", "alarm")
 
 
 class EventLog:
-    def __init__(self, path: Path | None = None, keep: int = 5000):
+    def __init__(self, path: Path | None = None, keep: int = 5000, *,
+                 clock: Callable[[], float] = time.monotonic, t0: float | None = None):
         self.buf: deque[dict] = deque(maxlen=keep)
         self.seq = 0
         self.lock = threading.Lock()
         self.cond = threading.Condition(self.lock)
-        self.t0 = time.time()
+        self.clock = clock
+        self.t0 = clock() if t0 is None else t0
         self.file = open(path, "a", buffering=1) if path else None       # noqa: SIM115 - open for the log's life
 
     def emit(self, kind: str, message: str, level: str = "info", **data) -> dict:
         with self.cond:
             self.seq += 1
-            e: dict = dict(seq=self.seq, t=round(time.time() - self.t0, 2), kind=kind, level=level, message=message)
+            e: dict = dict(seq=self.seq, t=round(self.clock() - self.t0, 6), kind=kind, level=level, message=message)
             if data:
                 e["data"] = data
             self.buf.append(e)

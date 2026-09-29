@@ -1,8 +1,8 @@
 # Design
 
-world-use is the layer between a frontier model and a robot. The model decides; world-use keeps the robot
-safe, spends as little of its powered time as possible waiting, and turns what happens into context the model
-can use. This document explains why it is built the way it is.
+world-use separates an agent's decisions from a robot's control loop. The agent submits a phase of work;
+the runtime checks motion limits, executes the plan, and reports the outcome. The design comes from trying
+to make those phases useful while spending less powered time waiting for the next decision.
 
 ## What we measured
 
@@ -31,14 +31,18 @@ numbers that shaped it:
   refusals, from a harder start pose.
 
 These are single-task, single-robot observations, not benchmarks. They are why the rules below exist.
+The original moving-time percentages were computed from nominal-rate tick counts. Current records use
+elapsed monotonic time, including stalled ticks and power transitions; do not compare the two accounting
+methods as if they were the same measurement.
 
 ## Rules
 
 1. **Two clocks.** The robot runs at 100 Hz or faster; the model at a few seconds per decision. The model
    decides phases, targets and skills; the kernel runs everything below that. Think with the torque off.
 2. **Plans are data, checked before they run.** Code builds a plan; the plan is JSON; the same kernel runs
-   it on a twin first and on the robot second. `wu run` rehearses every plan and refuses it whole if any step
-   would break a limit: refusals happen before anything moves, not halfway.
+   it on a twin first and on the robot second. By default, `wu run` requires an idle robot and rehearses the
+   whole plan. Admission and the first execution tick both verify that the checked state is still current.
+   `--no-check` and embedded `Kernel.run` check steps at execution time; earlier steps may have moved.
 3. **Say what would pass.** A refusal names every limit a plan would break, with the number that would pass
    ("lift at least 2 cm more first"). The card says which way the gripper points and opens, where known
    things are in the frame moves use, and which short moves are possible from here. A model should never
@@ -46,14 +50,17 @@ These are single-task, single-robot observations, not benchmarks. They are why t
 4. **Every step says what it expects.** Contact within a distance, a grip within a width, an answer at a
    checkpoint. Anything else is a surprise: the robot holds where it really is, queued work is cancelled,
    and the model gets an incident report instead of a stream of numbers.
-5. **Holding still is the safe state, and nothing moves on its own.** No idle timeouts that move. The only
-   automatic motion is going home along a route the policy set, and only if nothing has been touched since.
-6. **Every motion stops on unexpected contact.** Joint torque is compared with what the arm's own weight
-   explains; guarded moves use tighter thresholds, fragile zones tighter still.
+5. **Idle means holding.** No idle timeouts that move. Holding still can heat motors and is not safe in every
+   situation. A heat trip may use a home route the policy set, only if no contact has made it stale and the
+   kernel is not faulted. Without a route it holds and reports the problem.
+6. **Monitor unexpected contact.** Joint torque is compared with what the arm's own weight explains;
+   guarded moves use tighter thresholds, fragile zones tighter still. Filtering, sensing, and model error
+   determine detection latency. The checks do not replace hardware protection or an operator.
 7. **Facts remember their source.** A door angle, a table height, a camera pose: recorded with where they
    came from, and marked stale when a surprise shows the world may have changed.
-8. **The robot process outlives the agent.** One daemon per robot. Agents, consoles and viewers are clients;
-   a crashed or interrupted agent leaves a robot that is holding still, not one that is mid-motion or dead.
+8. **The robot process outlives the agent.** One daemon per robot. Agents, consoles and viewers are clients.
+   An accepted plan continues after a client disconnects; a checkpoint waits for an answer. Between jobs,
+   the runtime holds position. Client loss does not imply cancellation.
 9. **Context is a budget.** One state line per step. Events, not sensor streams. The embodiment card once.
    Incidents with the expected and the observed side by side. Pictures when asked for, with what the kernel
    believes drawn on them, so a wrong belief shows in one look.
@@ -62,11 +69,11 @@ These are single-task, single-robot observations, not benchmarks. They are why t
 
 ## The core
 
-Six concepts. Everything else is a plugin.
+The core has six concepts:
 
 | | |
 |---|---|
-| **Body** | What the robot is (a manifest: joints, limits, gripper, rest pose, sensing, notes) and a five-method adapter: connect, enable, read, command, disable, close. |
+| **Body** | A manifest (joints, limits, gripper, rest pose, sensing, notes) and six adapter methods: connect, enable, read, command, disable, close. |
 | **World** | Frames, boxes (surfaces, objects, keep-out, fragile and slow zones) and facts with their sources. |
 | **Behavior** | Anything that moves the robot, under one contract: `start` plans and may refuse; `tick` runs one control step and returns an outcome when done. A line, a guarded touchdown, a grip, a checkpoint and a whole plan are all behaviors. |
 | **Event** | One numbered stream of everything that happened. |
@@ -77,6 +84,20 @@ The envelope inside the kernel holds the limits: joint limits with a margin, spe
 excursion from the session's start pose, gravity load, keep-out zones, surfaces, and robot-specific rules
 (the reBot may not turn its base while the gripper is at table height). A policy can tighten it; loosening it
 is an operator override with a reason, and it is logged.
+
+Keep-out geometry is a coarse link model: joint-to-joint segments padded by the manifest's `link_radius_m`
+(default 3 cm). Planning expands that margin by an upper bound on point travel between adjacent joint
+samples, covering linear interpolation between control samples. The watchdog checks the same link segments
+at the measured pose. This is not mesh collision detection: the base pedestal, fingers, payloads, and
+self-collision are not represented. Surface checks sample the tool point. Slow zones cap planned tool speed
+in m/s and refuse a path that needs a longer duration.
+
+An idle watchdog trip cancels queued jobs before another can start. Hardware and behavior faults latch until
+an operator resets them. An incomplete power transition stays visible as `power_uncertain`; commands are
+suspended, and release must succeed at a freshly measured rest pose before reset. Power-time accounting
+includes the interval from an enable attempt through confirmed disable, conservatively counting uncertain
+and ramp intervals. Events and tape rows share a monotonic clock and origin. `moving_s` measures elapsed time
+in a motion behavior, not independently detected physical movement.
 
 ## Two loops, one runtime
 
@@ -103,10 +124,11 @@ so a laptop and a low-cost arm are enough.
 
 Near term, in order:
 
-1. **Graphs.** Plans grow branches on outcomes, retries and tunable parameters. Every node's success rate and
-   time go into the flight record, so failures point at a node.
-2. **Success criteria and evaluation.** Checkable task predicates, and `wu eval`: run a plan many times on the
-   twin with poses and heights varied, and report success rate, cycle time and the failing node.
+1. **Success criteria and evaluation.** Checkable task predicates, and `wu eval`: run a plan many times on the
+   twin with poses and heights varied, and report task success, cycle time, interventions, and failing steps.
+   Completing every command is not enough to establish that the task succeeded.
+2. **Graphs.** Add branches, bounded retries, and tunable parameters where repeated task failures call for them.
+   Keep outcomes and timing attached to each node so a larger program remains inspectable.
 3. **A physics twin fitted from real runs.** Joint torques are evidence a video cannot give. `wu fit` does the
    first part: links' masses and centres of mass and joints' friction, fitted from flight records and checked
    on records it did not see. A workcell's `fit` puts the result into contact checks, rehearsals and the reBot's

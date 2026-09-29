@@ -29,7 +29,9 @@ def state_line(k) -> str:
     st = k.state
     parts = [f"t+{k.clock.now() - k.t0:.0f}s"]
     job = k.active
-    if k.faulted:
+    if k.power_uncertain:
+        parts.append("FAULTED, motor power unconfirmed")
+    elif k.faulted:
         parts.append("FAULTED, holding")
     elif job is not None:
         parts.append(f"job {job.id} {job.status}: {job.behavior.describe()}"[:80])
@@ -55,7 +57,8 @@ def state_line(k) -> str:
 def status(k) -> dict:
     st = k.state
     tool = k.chain.fk(st.q)
-    d = dict(body=k.manifest.name, enabled=k.enabled, faulted=k.faulted, line=state_line(k),
+    d = dict(body=k.manifest.name, enabled=k.enabled, power_uncertain=k.power_uncertain,
+             faulted=k.faulted, line=state_line(k),
              joints_deg=np.round(np.degrees(st.q), 2).tolist(),
              tool=dict(base=np.round(tool[:3, 3], 4).tolist(),
                        **{name: np.round(k.world.from_base(name, tool[:3, 3]), 4).tolist()
