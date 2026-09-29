@@ -357,6 +357,31 @@ def test_a_body_that_raises_faults_the_kernel_but_the_loop_goes_on():
     loop.join(2.0)
 
 
+def test_a_fault_with_torque_off_keeps_it_off_until_an_operator_resets():
+    """On the reBot a parameter read timed out with torque off (2026-09-28) and the kernel faulted. A later enable
+    switched the motors on all the same, under a kernel that then refused every job. Enable waits for the reset."""
+    fail = threading.Event()
+
+    def flaky(fn):
+        def read():
+            if fail.is_set():
+                fail.clear()
+                raise OSError("parameter 0x7019 not received within 300ms")
+            return fn()
+        return read
+    k, stop, loop = _looping({"read": flaky})
+    fail.set()
+    _until(lambda: k.faulted)
+    with pytest.raises(Refused, match="faulted"):
+        k.enable()
+    assert not k.enabled and not k.body.enabled
+    k.reset()
+    k.enable()
+    assert k.enabled
+    stop.set()
+    loop.join(2.0)
+
+
 
 def test_torque_noise_does_not_read_as_contact_and_real_contact_still_does():
     """A real reBot's loaded joints read +-0.5-1 Nm from one tick to the next while holding still (2026-09-27): a

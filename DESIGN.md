@@ -107,9 +107,13 @@ Near term, in order:
    time go into the flight record, so failures point at a node.
 2. **Success criteria and evaluation.** Checkable task predicates, and `wu eval`: run a plan many times on the
    twin with poses and heights varied, and report success rate, cycle time and the failing node.
-3. **A physics twin fitted from real runs.** A MuJoCo body alongside the kinematic one, with parameters an
-   agent tunes by replaying recorded tapes: mass errors, friction, contact thresholds from torque noise,
-   heat rates, surface heights from touchdowns. Joint torques are evidence a video cannot give.
+3. **A physics twin fitted from real runs.** Joint torques are evidence a video cannot give. `wu fit` does the
+   first part: links' masses and centres of mass and joints' friction, fitted from flight records and checked
+   on records it did not see. A workcell's `fit` puts the result into contact checks, rehearsals and the reBot's
+   feedforward. On the reBot it halved the elbow's torque error and the tool's sag at holds
+   ([hardware record](docs/hardware-2026-09-28.md)). Next: the torque the position loop applies instead of the
+   biased readings, heat rates per motor, surface heights from touchdowns, and a MuJoCo body alongside the
+   kinematic one.
 4. **Evidence packages.** Every incident bundled with its tape window, events, camera clip and plan node, and
    every run recording what the policy was given: tools, views, twin, and human interventions.
 5. **Cameras and pointing.** `wu look` already draws the tool, the known boxes and a plan's path onto

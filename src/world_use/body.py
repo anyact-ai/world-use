@@ -122,7 +122,10 @@ class JointState:
 @runtime_checkable
 class Body(Protocol):
     """The I/O contract. The kernel calls it from one thread at a time: once its control loop runs, only that
-    thread (hardware drivers are rarely safe to call from two at once)."""
+    thread (hardware drivers are rarely safe to call from two at once).
+
+    A body that computes gravity itself (a feedforward, a simulator's torques) may also take `use_fit(model)`: a
+    model fitted from the robot's flight records (fit.py), which it then weighs the links by."""
     manifest: Manifest
 
     def connect(self) -> JointState:

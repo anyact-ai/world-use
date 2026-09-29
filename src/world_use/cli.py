@@ -15,6 +15,7 @@ every line ends up in a model's context.
     wu home-route '<steps>'     the way home from here ('[]' = fold straight back); wu home runs it
     wu record                   write the flight record so far (tape, summary, world), without stopping
     wu calibrate CAMERA         find where a camera is from the arm: say where you see the tool point, 6-8 times
+    wu fit RUN...               fit the robot's link masses and joint friction from flight records (no daemon)
     wu stop | events | enable | release | down
     wu mcp                      the same verbs as MCP tools, over stdio
 
@@ -116,6 +117,10 @@ def main(argv=None) -> int:
     p.add_argument("--points", type=int, default=8, help="corners of the box to visit (6-8)")
     p.add_argument("--spread", type=float, help="half-width of the box, m (default: the largest that passes)")
     p.add_argument("--wait", type=float, default=60.0)
+    p = sub.add_parser("fit", help="fit the robot's model (link masses, friction) from flight records")
+    p.add_argument("runs", nargs="+", type=Path, help="flight record folders")
+    p.add_argument("--body", help="the robot the records are from (default: what their summaries say)")
+    p.add_argument("--out", type=Path, default=Path("fit.json"))
     sub.add_parser("status")
     sub.add_parser("card")
     for name in ("run", "check"):
@@ -173,6 +178,8 @@ def main(argv=None) -> int:
     try:
         if a.cmd == "up":
             return cmd_up(a)
+        if a.cmd == "fit":
+            return cmd_fit(a)
         if a.cmd == "mcp":
             try:
                 from .mcp_server import serve
@@ -274,6 +281,22 @@ def _dispatch(a, c: Client):
             value = a.value
         return c.world(fact=dict(key=a.key, value=value, source=a.source))
     return getattr(c, a.cmd)()
+
+
+def cmd_fit(a) -> int:
+    from . import bodies, fit
+    from .kinematics import Chain
+    runs = [r for r in a.runs if (r / "tape.npz").exists()]
+    if not runs:
+        print("no flight records among those paths (a record is a folder with tape.npz)", file=sys.stderr)
+        return 1
+    manifest = bodies.manifests()[a.body] if a.body else fit.robot_of(runs)
+    model = fit.fit(runs, manifest)
+    model.save(a.out)
+    print(json.dumps(model.to_dict()) if a.json else
+          model.describe(Chain(manifest.urdf, manifest.tool_link)) + f"\nwritten to {a.out}; use it with "
+          f"`fit = \"{a.out}\"` in the workcell")
+    return 0
 
 
 def _vec(text: str) -> list[float]:

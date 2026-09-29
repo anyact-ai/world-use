@@ -184,6 +184,7 @@ class Kernel:
         self.held_at: float | None = None          # where the fingers closed on something, known to the world or not
         self.grip_start: float | None = None       # the gripper as the session found it: home puts it back
         self.residuals = Residuals(m.rate_hz)      # torque the model does not explain: contact checks judge against it
+        self.fit = None                            # a model fitted from flight records (fit.py), once one is in use
         self.still = 0                             # ticks the command has not changed for
         self._last_q_cmd = np.zeros(0)
         self._loop_thread: threading.Thread | None = None     # set by loop(): from then on the body's only caller
@@ -209,7 +210,7 @@ class Kernel:
         return st
 
     def enable(self):
-        """Torque on at the measured pose. Nothing if it is on already."""
+        """Torque on at the measured pose. Nothing if it is on already; refused while the kernel is faulted."""
         self._on_loop(self._enable)
 
     def release(self):
@@ -222,6 +223,9 @@ class Kernel:
                           "restart the daemon")
         if self.enabled:
             return
+        if self.faulted:              # a fault with torque off (a failed read, say) is not cleared by switching on
+            raise Refused("the kernel is faulted: an operator must reset it before the torque comes on", "faulted",
+                          "check the hardware, then reset")
         try:                          # not under the lock: an engage takes a second or two, and status must answer
             self.body.enable()
         except Exception as e:
@@ -442,6 +446,31 @@ class Kernel:
                         + (f"; {doubt}" if doubt else "") + ")", i, float(dev[i]), float(limit[i]))
         return None
 
+    def use_fit(self, model):
+        """Judge torque by a model fitted from this robot's flight records (fit.py) instead of the URDF alone: its
+        links' masses and centres of mass for gravity everywhere (contact checks, load limits, rehearsals), and its
+        friction at the commanded velocity. A body that computes gravity itself (the reBot's feedforward, the
+        simulator's torques) takes it too. While the control loop runs, the change happens between two ticks."""
+        if model.body != self.manifest.name:
+            raise ValueError(f"that model was fitted for {model.body!r}, not {self.manifest.name!r}")
+        self._on_loop(lambda: self._use_fit(model))
+        self.emit("fit", model.headline())
+
+    def _use_fit(self, model):
+        with self.lock:
+            model.apply(self.chain)
+            use = getattr(self.body, "use_fit", None)
+            if use is not None:
+                use(model)
+            self.fit = model
+            self.residuals.clear()              # readings judged by the old model say nothing about the new one
+
+    def expected_torque(self, q) -> np.ndarray:
+        """Joint torque the model explains at q: the arm's own weight and, with a fitted model, friction at the
+        commanded velocity. A contact check judges the rest."""
+        tau = self.chain.gravity(q)
+        return tau if self.fit is None else tau + self.fit.friction_torque(self.cmd.dq)
+
     def touched(self, kind: str, message: str):
         e = self.emit(kind, message)
         self.last_touch = e["seq"]
@@ -482,7 +511,7 @@ class Kernel:
         st = self.body.read()
         self.state = st
         if self.enabled and st.tau is not None:
-            self.residuals.push(np.asarray(st.tau, float) - self.chain.gravity(st.q))
+            self.residuals.push(np.asarray(st.tau, float) - self.expected_torque(st.q))
         now = self.clock.now()
         self.heat.update(now, st.temp, self.enabled)
         with self.lock:
