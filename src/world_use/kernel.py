@@ -159,6 +159,7 @@ class Kernel:
                              f"manifest has {self.manifest.n}")
         self.world = world or World()
         self.clock = clock or RealClock(self.manifest.rate_hz)
+        self.t0 = self.clock.now()
         m = self.manifest
         self.timing = Timing(m.rate_hz, m.speed, m.auto_accel, m.min_move_s)
         self.ik_weights = ik_weights
@@ -166,8 +167,10 @@ class Kernel:
         self.run_dir = Path(run_dir) if run_dir else None
         if self.run_dir:
             self.run_dir.mkdir(parents=True, exist_ok=True)
-        self.events = EventLog(self.run_dir / "events.jsonl" if self.run_dir else None)
+        self.events = EventLog(self.run_dir / "events.jsonl" if self.run_dir else None,
+                               clock=self.clock.now, t0=self.t0)
         self.tape = Tape(m.n)
+        self.tape.mark_power(0.0, False)
         self.heat = Heat()
         self.lock = threading.RLock()
         self.jobs: dict[int, Job] = {}
@@ -204,7 +207,6 @@ class Kernel:
                 self.world.add_frame(name, T, source=f"{self.manifest.name}, at session start")
         if "work" not in self.world.frames:
             self.world.add_frame("work", np.eye(4), source="default: the base frame")
-        self.t0 = self.clock.now()
         self.emit("connected", f"{self.manifest.name} connected at joints (deg) "
                   f"{np.round(np.degrees(self.q_start), 1).tolist()}")
         for w in getattr(self.body, "warnings", []):
@@ -229,6 +231,7 @@ class Kernel:
         if self.enabled:
             return
         self.power_uncertain = True
+        self.tape.mark_power(self.clock.now() - self.t0, True)
         try:                          # not under the lock: an engage takes a second or two, and status must answer
             self.body.enable()
             self.enabled = True
@@ -267,6 +270,7 @@ class Kernel:
                 raise
             self.enabled = False
             self.power_uncertain = False
+            self.tape.mark_power(self.clock.now() - self.t0, False)
         self.emit("released", "torque off")
 
     def _on_loop(self, fn: Callable[[], object]):
@@ -314,9 +318,10 @@ class Kernel:
         """Write the flight record so far (tape, summary, world; events are written as they happen), without
         closing: a run can be studied while it goes on. Returns the summary."""
         rate = self.manifest.rate_hz
+        until = self.clock.now() - self.t0
         if not self.run_dir:
-            return dict(body=self.manifest.name, **self.tape.summary(rate))
-        summary = dict(body=self.manifest.name, **self.tape.save(self.run_dir / "tape.npz", rate))
+            return dict(body=self.manifest.name, **self.tape.summary(rate, until=until))
+        summary = dict(body=self.manifest.name, **self.tape.save(self.run_dir / "tape.npz", rate, until=until))
         summary["events"] = self.events.seq
         save_summary(self.run_dir / "summary.json", summary)
         with self.lock:                                  # the control thread moves held boxes about
@@ -574,7 +579,8 @@ class Kernel:
         self.still = self.still + 1 if np.array_equal(self.cmd.q, self._last_q_cmd) else 0
         self._last_q_cmd = self.cmd.q.copy()
         moving = bool(job is not None and not job.finished and job.status == "running" and job.behavior.moves)
-        self.tape.add(now - self.t0, self.enabled, moving, job.id if job else 0, self.cmd.q, st.q, st.tau, st.temp,
+        self.tape.add(now - self.t0, self.enabled or self.power_uncertain, moving, job.id if job else 0,
+                      self.cmd.q, st.q, st.tau, st.temp,
                       self.cmd.gripper, st.gripper, st.gripper_tau)
 
     def _start(self, job: Job, now: float):
@@ -656,8 +662,7 @@ class Kernel:
         if rest is None or rest.holds(self.state.q):
             # at rest, switching torque off moves nothing, and it is how a motor cools fastest
             self._cancel_queue("motor hot")
-            self.body.disable()
-            self.enabled = False
+            self._release()
             self.emit("hot", f"{trip.message}: torque released at rest to cool", "alarm")
             return
         try:

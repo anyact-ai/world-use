@@ -145,7 +145,7 @@ class Body(Protocol):
 
     def disable(self) -> None:
         """Switch torque off. The kernel only calls this where the manifest says it is safe. If it raises, the
-        kernel counts torque as still on and keeps commanding."""
+        kernel treats power as unconfirmed, faults, and suspends commands until a successful release."""
 
     def close(self) -> None:
         """Release the connection. Must not switch torque off: that is disable()'s job."""
