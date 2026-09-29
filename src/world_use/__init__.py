@@ -10,7 +10,7 @@ The model decides; the kernel keeps the robot safe, fast and legible while it do
     print(check(Plan().line(up=0.05).spec(), k))   # rehearse on a twin first
     k.run({"do": "line", "up": 0.05})
 """
-from . import bodies
+from . import bodies, fit
 from .behaviors import Behavior, Outcome, build, register
 from .body import Body, GripperSpec, JointSpec, JointState, Manifest, Rest
 from .errors import Refused
@@ -22,4 +22,4 @@ from .world import World
 __version__ = "0.2.0"
 __all__ = ["Behavior", "Body", "GripperSpec", "JointSpec", "JointState", "Kernel", "Manifest", "Outcome", "Plan",
            "RealClock", "Refused", "Report", "Rest", "VirtualClock", "World", "bodies", "build", "card", "check",
-           "incident", "register", "state_line", "status", "twin"]
+           "fit", "incident", "register", "state_line", "status", "twin"]

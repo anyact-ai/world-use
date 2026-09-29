@@ -1,9 +1,10 @@
 """SimBody: a kinematic twin of any manifest, good enough to rehearse plans and to test the kernel.
 
 Joints follow commands with a short lag. Measured torque is the arm's own gravity load plus servo stiffness
-times tracking error, so pressing on something looks like it does on a real position-controlled arm. Surfaces
-in the world push the tool back. Objects stop the gripper at their width and ride along once gripped. Motors
-heat while they carry load. It is not a physics engine: nothing tips, slides or bounces.
+times tracking error, so pressing on something looks like it does on a real position-controlled arm. With a model
+fitted from the real robot's records (use_fit), the links weigh what it says and the joints have its friction.
+Surfaces in the world push the tool back. Objects stop the gripper at their width and ride along once gripped.
+Motors heat while they carry load. It is not a physics engine: nothing tips, slides or bounces.
 """
 import numpy as np
 
@@ -35,6 +36,12 @@ class SimBody:
         self.thermal = {**THERMAL, **manifest.thermal}
         self.enabled, self.t = False, 0.0
         self.dt = 1.0 / manifest.rate_hz
+        self.friction = None              # joint velocities -> friction torque, from a fitted model (use_fit)
+
+    def use_fit(self, model):
+        """Weigh the links and feel friction as a model fitted from the real robot's records says (fit.py)."""
+        model.apply(self.chain)
+        self.friction = model.friction_torque
 
     # -- Body contract ----------------------------------------------------------------------------
     def connect(self) -> JointState:
@@ -61,8 +68,11 @@ class SimBody:
             self._cool(np.zeros(self.manifest.n), off=True)
             return self._state(np.zeros(self.manifest.n), None)
         a = min(1.0, self.dt / self.lag) if self.lag > 0 else 1.0
+        before = self.q
         self.q = self._push_back(self.q + a * (self.q_cmd - self.q))
         tau = self.chain.gravity(self.q) + self.K * (self.q_cmd - self.q)
+        if self.friction is not None:
+            tau = tau + self.friction((self.q - before) / self.dt)
         if self.noise:
             tau = tau + self.rng.normal(0, self.noise, len(tau))
         grip_tau = self._gripper(a)

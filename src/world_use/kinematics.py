@@ -191,6 +191,39 @@ class Chain:
             g[i] = G * (axis[0] * r[1] - axis[1] * r[0])
         return g
 
+    @property
+    def carried_links(self) -> list[str]:
+        """Links with an inertial that some joint holds up: the ones whose weight shows in joint torque."""
+        carried = set().union(*(self._carried[j.name] for j in self.active))
+        return [link for link in self.links if link in carried]
+
+    def gravity_regressor(self, q, links) -> np.ndarray:
+        """n x 4k matrix Y with gravity(q) = Y @ phi, phi being each of the k links' [mass, mass * centre of mass
+        (its own frame)]: holding torque is linear in those, so recorded torques can fit them (see fit.py)."""
+        F = self.link_frames(q)
+        Y = np.zeros((self.n, 4 * len(links)))
+        for i, j in enumerate(self.active):
+            if j.type == "prismatic":
+                continue                            # a prismatic joint only feels the carried mass: not fitted here
+            axis = F[j.child][:3, :3] @ j.axis
+            carried = self._carried[j.name]
+            for c, link in enumerate(links):
+                if link not in carried:
+                    continue
+                arm = F[link][:3, 3] - F[j.child][:3, 3]
+                Y[i, 4 * c] = G * (axis[0] * arm[1] - axis[1] * arm[0])
+                R = F[link][:3, :3]
+                Y[i, 4 * c + 1:4 * c + 4] = G * (axis[0] * R[1] - axis[1] * R[0])
+        return Y
+
+    def set_links(self, links: dict[str, tuple[float, np.ndarray | list[float]]]):
+        """Replace links' masses and centres of mass (in their own frames), e.g. with values fitted from records."""
+        for name, (mass, com) in links.items():
+            if name not in self.links:
+                raise KeyError(f"no link {name!r} with an inertial in this URDF")
+            self.links[name] = (float(mass), np.asarray(com, float))
+        self._carried_mass = [sum(self.links[link][0] for link in self._carried[j.name]) for j in self.active]
+
     def potential(self, q) -> float:
         F = self.link_frames(q)
         return sum(m * G * (F[link] @ np.append(c, 1.0))[2] for link, (m, c) in self.links.items() if link in F)

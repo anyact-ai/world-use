@@ -27,6 +27,7 @@ import numpy as np
 from . import bodies, calibrate, cameras, views
 from .behaviors import REGISTRY
 from .errors import Refused, explain
+from .fit import load as load_fit
 from .kernel import Kernel
 from .plan import Report
 from .worker import Rehearser
@@ -376,21 +377,27 @@ WORKCELLS = Path(__file__).parent / "workcells"
 
 
 def load_workcell(path: Path | None) -> dict:
-    """A workcell file (TOML): body, body options, boxes, cameras, facts and operator overrides. Boxes and facts
-    are added after connecting, so they may use frames the body defines (like "work"). A bare name ("block")
-    means one of the workcells that ship with world-use."""
+    """A workcell file (TOML): body, body options, boxes, cameras, facts, operator overrides and the robot model
+    fitted from its records (`fit`, a path from the workcell's folder). Boxes and facts are added after connecting,
+    so they may use frames the body defines (like "work"). A bare name ("block") means one of the workcells that
+    ship with world-use."""
     if path is None:
         return {}
     path = Path(path)
     if not path.exists() and (WORKCELLS / f"{path.name}.toml").exists():
         path = WORKCELLS / f"{path.name}.toml"
     with open(path, "rb") as f:
-        return tomllib.load(f)
+        cell = tomllib.load(f)
+    if "fit" in cell:
+        cell["fit"] = str(path.parent / cell["fit"])
+    return cell
 
 
 def apply_workcell(cell: dict, k: Kernel, truth: World | None = None):
-    """Boxes, facts and overrides from a workcell. With a simulator's truth world, boxes go there as well, and a box
-    marked `known = false` goes only there: part of the scene the policy has to discover."""
+    """Boxes, facts, overrides and a fitted robot model from a workcell. With a simulator's truth world, boxes go
+    there as well, and a box marked `known = false` goes only there: part of the scene the policy has to discover."""
+    if "fit" in cell:
+        k.use_fit(load_fit(cell["fit"]))
     for b in cell.get("box", []):
         b = dict(b)
         known = b.pop("known", True)

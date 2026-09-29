@@ -69,3 +69,12 @@ def test_reach_reproduces_the_joint_motion_validated_on_hardware():
 def _work(q, forward, up):
     T = MANIFEST.frames(CHAIN, q)["work"]
     return forward * T[:3, 0] + up * T[:3, 2]
+
+
+def test_gravity_is_linear_in_each_links_mass_and_first_moment():
+    """So recorded torques can fit them (fit.py)."""
+    chain = Chain(MANIFEST.urdf, MANIFEST.tool_link)
+    links = list(chain.links)
+    phi = np.concatenate([[m, *(m * c)] for m, c in (chain.links[name] for name in links)])
+    for q in np.random.default_rng(3).uniform(-1.5, 1.5, (5, chain.n)):
+        assert np.allclose(chain.gravity_regressor(q, links) @ phi, chain.gravity(q), atol=1e-9)

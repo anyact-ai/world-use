@@ -88,7 +88,8 @@ MANIFEST = Manifest(
         "so it ends a few degrees off straight down (3.6 from rest).",
     ),
     hardware_notes=(
-        "Forward/up moves end 2-5 mm low (the elbow carries about 15% more than the URDF says).",
+        "Forward/up moves end 2-5 mm low (the elbow carries about 15% more than the URDF says); with a model fitted "
+        "from the arm's records (`wu fit`, workcell `fit`) holds end within about 3 mm, mostly high.",
         "After base turns the tool can stop a few mm short sideways: the base sticks and slips (friction).",
         "Joint torque strays 1-3 Nm from the gravity model over a 10 cm move (friction and hysteresis, not mass), "
         "so a long guarded move can stop on nothing: line to about 2 cm short of the expected contact, then guard "
@@ -132,6 +133,12 @@ class ReBotBody:
         if self._last is None:
             raise RuntimeError("the reBot is not connected")
         return self._last
+
+    def use_fit(self, model):
+        """Gravity feedforward from a model fitted to this arm's flight records (world_use.fit) instead of the URDF
+        alone. At the reBot's elbow the URDF left up to 1 Nm to the position loop, which held it up to 7.5 mrad low."""
+        model.apply(self.chain)
+        self._ff_key = None
 
     # -- Body contract ----------------------------------------------------------------------------
     def connect(self) -> JointState:

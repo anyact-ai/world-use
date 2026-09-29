@@ -235,6 +235,8 @@ def card(k, reach=None) -> str:
         lines.append(f"cameras: {', '.join(cams)}. `wu look NAME` saves an image and prints its path.")
     if k.enabled and k.active is None:
         lines.append((reach or reach_line)(k))
+    if k.fit is not None:
+        lines.append(f"torque model: {k.fit.headline()}; contact checks, load limits and rehearsals use it.")
     lines += [f"note: {n}" for n in m.notes]
     lines += [f"hardware: {n}" for n in m.hardware_notes]
     return "\n".join(lines)

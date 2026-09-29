@@ -394,7 +394,7 @@ class ContactSense:
         if k.residuals.samples:
             self.bias, noise = k.residuals.baseline()
         else:                         # a heat emergency may start home before any reading: judge from this one
-            self.bias, noise = np.asarray(st.tau, float) - k.chain.gravity(st.q), np.zeros(k.manifest.n)
+            self.bias, noise = np.asarray(st.tau, float) - k.expected_torque(st.q), np.zeros(k.manifest.n)
         self.floor = self.NOISE_K * noise
         rest = k.manifest.rest
         self.stops = [] if rest is None else [(i, rest.q[i]) for i in rest.stops]
@@ -402,7 +402,7 @@ class ContactSense:
 
     def deviation(self, k: Kernel) -> np.ndarray:
         st = k.state
-        self.hist.append(np.asarray(st.tau, float) - k.chain.gravity(st.q))
+        self.hist.append(np.asarray(st.tau, float) - k.expected_torque(st.q))
         med = np.median(np.array(self.hist), axis=0)
         on = [i for i, stop in self.stops if abs(st.q[i] - stop) < self.STOP_ZONE]
         self.bias[on] = med[on]

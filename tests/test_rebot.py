@@ -188,3 +188,25 @@ def test_an_unconfirmed_switch_off_says_so(fake, monkeypatch):
         body.enable()
     assert "joint5" in " ".join(e.value.__notes__) and "energised" in " ".join(e.value.__notes__)
     assert body.enabled                                   # counted as on: nothing was confirmed off for j5
+
+
+def test_a_fitted_model_sets_the_gravity_feedforward(fake):
+    """The URDF under-weighs the reBot's forearm; the position loop then carries the rest as sag. A fit from the
+    arm's records (world_use.fit) goes into the feedforward instead."""
+    from world_use.fit import Model
+    fake(np.append(Q_REST, 1.0))
+    body = rebot.ReBotBody()
+    body.connect()
+    body.enable()
+    q = np.radians([20, 55, 54, -19, 0, 0])
+    body.command(q, np.zeros(6), 1.0)
+    urdf = np.array([m.last[4] for m in body.motors[:6]])
+    links = {name: (m, list(c)) for name, (m, c) in CHAIN.links.items()}
+    m, c = links["link3"]
+    links["link3"] = (1.2 * m, list(c))
+    body.use_fit(Model(rebot.MANIFEST.name, links, [(0.0, 0.0)] * 6))
+    body.command(q, np.zeros(6), 1.0)
+    fitted = np.array([m.last[4] for m in body.motors[:6]])
+    heavier = Chain(rebot.MANIFEST.urdf, rebot.MANIFEST.tool_link)
+    heavier.set_links({"link3": links["link3"]})
+    assert np.allclose(fitted, heavier.gravity(q)) and fitted[2] > urdf[2] + 0.2
