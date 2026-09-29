@@ -141,7 +141,7 @@ def test_grip_on_an_object_reports_where_the_fingers_met_it(lifted):
     k = lifted
     tool = k.chain.fk(k.state.q)[:3, 3]
     k.body.world.add_box("block", "object", center=tool, size=[0.03, 0.012, 0.03], grip_width=0.012)
-    out = k.run({"do": "grip", "start": 3.0, "expect": [0.4, 1.0], "squeeze": 0.1})
+    out = k.run({"do": "grip", "start": 3.0, "expect": [0.4, 1.0], "squeeze": 0.05})
     assert out.ok, out.message
     assert abs(out.data["contact_at"] - (0.05 + 0.012 / 0.020)) < 0.08
     assert out.data["holding_effort"] < -0.5
