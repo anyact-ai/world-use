@@ -16,7 +16,8 @@ compared to the robot, so decide in phases, not in single small steps.
    read the image. The tool point (magenta cross), the work axes (F, L, U) and the boxes the kernel knows
    (green outlines) are drawn on it, so you can see whether its world matches the scene.
    `wu look side --plan '<plan>'` also draws the plan's tool path in blue.
-3. `wu status` is one line: what is running, where the tool is, the gripper, joint torques, the hottest motor.
+3. `wu status` is one line: the adapter, what is running, the tool, gripper, torques, and hottest motor.
+   `wu status --json` includes `session.mode` (`simulation` or `hardware`). Confirm the intended session.
 4. Think with the torque off. With torque on, motors heat even while holding still (on the reBot the elbow
    gains about 8 C per minute, folded or raised), so work out the whole next phase before `wu enable`.
 5. If the task involves contact you have not seen work before, describe your strategy to the human in two
@@ -34,6 +35,10 @@ compared to the robot, so decide in phases, not in single small steps.
    check, `wu run --checked` runs that same plan without pasting it again.) The exit status is the outcome: 0
    done, 4 refused or surprise (and so on), 5 waiting at a checkpoint. So `wu run '...' && wu home` stops where
    the robot did instead of carrying on after a surprise.
+   Checked runs require an idle robot. If another job is active or the scene changes during the check, wait
+   and retry from the new state. `--no-check` skips whole-plan rehearsal; an earlier step may have moved before
+   a later one is refused. A simulated contact surprise is reported as a warning and may still run, because
+   the model can be incomplete; read that warning. A rehearsal fault never runs.
 3. **At a checkpoint** the arm holds and the job waits: `wu look` at the named camera, then
    `wu answer JOB yes` (any other answer ends the plan so you can decide what to do instead). `wu answer`
    waits until the next checkpoint or the end of the plan.
@@ -45,12 +50,14 @@ compared to the robot, so decide in phases, not in single small steps.
 | status | meaning | the robot |
 |---|---|---|
 | done | it did what the step said and what you expected | holds where it ended |
-| refused | a limit would have been broken; the message names each one and what would pass | never moved |
+| refused | a limit or admission check failed | an admission refusal starts nothing; a refusal during execution holds, and earlier steps may have run |
 | surprise | something differed from the plan: contact where none was expected, no contact where one was, the gripper closing on nothing or on the wrong size | holds where it really is; anything queued is cancelled |
 | stopped | you or the operator stopped it, or a motor got too hot | holds |
-| faulted | hardware trouble; the operator has to reset it | holds |
+| faulted | hardware or behavior failure; the operator has to resolve it and reset | requests a hold when feedback and the driver permit; rejects new jobs |
 
 A surprise also marks remembered facts as stale (`wu status` shows them): re-check before relying on them.
+The daemon keeps running when your client disconnects. An accepted plan continues until it finishes,
+reaches a checkpoint, or is stopped. Disconnecting is not a stop command.
 
 ## Vocabulary
 
@@ -84,6 +91,12 @@ A plain list is a sequence; the first step that does not end "done" ends the who
 - `wu fact door.angle_deg 24 --source "side camera, 14:02"` records a measurement with its source. Facts go stale
   after a surprise. Record what you measured, not what you assume.
 - In a simulation the cameras show the simulator's scene, which may hold things the kernel does not know yet.
+- A `slow` zone requires a positive `speed` in m/s, for example
+  `wu box careful slow 0.32,0,0.30 0.20,0.20,0.20 --set speed=0.02`.
+  Plans crossing it above that tool speed are refused; increase their duration.
+- Keep-out checks use padded link segments from the first joint to the tool, at every planned pose and
+  every measured tick. The base pedestal, fingers, payloads, and self-collision are outside that model.
+  Surfaces constrain the tool point, not the whole arm. Leave clearance for geometry the model omits.
 
 ## Cameras
 
@@ -101,7 +114,8 @@ A plain list is a sequence; the first step that does not end "done" ends the who
 
 ## Contact
 
-- Intended contact uses `touchdown` or `guarded`: slow, and stopped the moment the joints feel it.
+- Intended contact uses `touchdown` or `guarded`: slow, stopping when filtered torque crosses a threshold.
+  Detection has latency and depends on sensing, noise, and the fitted model; it is not an instantaneous stop.
 - Every other motion also stops on unexpected contact, with a looser threshold. Treat that as information.
 - Inside a `fragile` zone (glass, for example) both thresholds drop sharply.
 - If the world knows a surface is there, a guarded move plans only 2 cm past it. Reaching the end without
@@ -127,6 +141,8 @@ A plain list is a sequence; the first step that does not end "done" ends the who
 - `wu home` runs the home route, so it needs one set first (`[]` if the way back is clear). `wu release` switches
   torque off, which is only allowed at the rest pose; `wu down` does that and stops the daemon, printing how much
   of the powered time the robot moved.
+- If status says motor power is unconfirmed, treat the arm as energized. New jobs and reset are refused.
+  An operator must resolve the hardware state; release requires fresh feedback at rest before reset is allowed.
 
 ## Limits you cannot change
 

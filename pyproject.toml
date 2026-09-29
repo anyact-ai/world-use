@@ -1,7 +1,7 @@
 [project]
 name = "world-use"
 version = "0.2.0"
-description = "Run frontier models as robot policies: a safety kernel, checked plans and compact context for LLM-operated robots."
+description = "Robot control for AI agents: checked plans, a persistent runtime, and compact execution feedback."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.14"
