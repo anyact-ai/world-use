@@ -88,6 +88,9 @@ print(k.run(p.spec()))      # then run it
   set when a motor overheats, and only if nothing has been touched since the route was set.
 - **Tracks heat and records everything**: minutes until the hottest motor reaches its limit, in every state
   line; tape at the control rate, events, pictures, world, and how much of the powered time the robot moved.
+- **Learns the robot from its records**: `wu fit runs/*` fits the links' masses and the joints' friction from
+  flight records and says how well that predicts runs it did not see. A workcell's `fit` line puts the result
+  into contact checks, rehearsals and, on the reBot, the gravity feedforward.
 
 It is a helper, not a certified safety system. Keep a person at the power switch.
 
