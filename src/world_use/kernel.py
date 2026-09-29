@@ -175,6 +175,7 @@ class Kernel:
         self._ids = itertools.count(1)
         self._stop: str | None = None
         self.enabled = self.faulted = False
+        self.power_uncertain = False             # an incomplete enable/disable must never look like torque off
         self.cameras: dict = {}                     # name -> camera, when a daemon owns some (the card lists them)
         self.last_touch = 0                        # event seq of the last contact (0 = none this session)
         self.home_route: tuple[list, int] | None = None   # (specs, event seq when set)
@@ -221,36 +222,50 @@ class Kernel:
         if self._loop_thread is not None and not self._loop_thread.is_alive():
             raise Refused("the control loop has stopped, so nothing would command the motors", "no_loop",
                           "restart the daemon")
-        if self.enabled:
-            return
         if self.faulted:              # a fault with torque off (a failed read, say) is not cleared by switching on
             raise Refused("the kernel is faulted: an operator must reset it before the torque comes on", "faulted",
                           "check the hardware, then reset")
+        if self.enabled:
+            return
+        self.power_uncertain = True
         try:                          # not under the lock: an engage takes a second or two, and status must answer
             self.body.enable()
+            self.enabled = True
+            st = self.body.read()
         except Exception as e:
+            with self.lock:
+                self.faulted = True
+                self._cancel_queue("enable failed; motor power is unconfirmed")
             self.emit("enable_failed", explain(e), "warn" if isinstance(e, Refused) else "alarm")
             raise
-        st = self.body.read()
         with self.lock:
             self.state = st
             self.cmd = Command(np.asarray(st.q, float).copy(), np.zeros(self.manifest.n), st.gripper)
             self.residuals.clear()                 # readings from before a release say nothing about now
             self.enabled = True
+            self.power_uncertain = False
         self.emit("enabled", "torque on")
 
     def _release(self):
         with self.lock:
-            if not self.enabled:
+            if not self.enabled and not self.power_uncertain:
                 return
-            if self.active is not None:
+            if self.active is not None or self.queue:
                 raise Refused("a job is running; stop it first", "busy")
+            # A failed enable may have left an old reading behind. Never release on that evidence.
+            self.state = self.body.read()
             rest = self.manifest.rest
             if rest is not None and not rest.holds(self.state.q):
                 raise Refused("the arm is not at its rest pose: releasing torque here would drop it", "not_at_rest",
                               "go home first")
-            self.body.disable()
+            self.power_uncertain = True
+            try:
+                self.body.disable()
+            except Exception:
+                self.faulted = True
+                raise
             self.enabled = False
+            self.power_uncertain = False
         self.emit("released", "torque off")
 
     def _on_loop(self, fn: Callable[[], object]):
@@ -339,6 +354,9 @@ class Kernel:
     def reset(self):
         """Operator: clear a fault after checking the hardware."""
         with self.lock:
+            if self.power_uncertain:
+                raise Refused("motor power is unconfirmed: release at a freshly measured rest pose first",
+                              "power_uncertain")
             self.faulted = False
         self.emit("reset", "fault cleared by operator", "warn")
 
@@ -532,7 +550,8 @@ class Kernel:
                 elif self.enabled:
                     self.hold_here()
             # a job starts once there is a torque baseline to judge contact against (0.1 s after switching on)
-            if self.active is None and self.queue and self.enabled and (st.tau is None or self.residuals.ready):
+            if (self.active is None and self.queue and self.enabled and not self.faulted
+                    and not self.power_uncertain and (st.tau is None or self.residuals.ready)):
                 self._start(self.queue.popleft(), now)
             job = self.active
         if job is not None and job.status in ("running", "waiting"):
@@ -546,7 +565,7 @@ class Kernel:
             if out is not None:
                 with self.lock:
                     self._end(job, out)
-        if self.enabled:
+        if self.enabled and not self.power_uncertain:
             self.body.command(self.cmd.q, self.cmd.dq, self.cmd.gripper, self.cmd.gripper_v)
         self.still = self.still + 1 if np.array_equal(self.cmd.q, self._last_q_cmd) else 0
         self._last_q_cmd = self.cmd.q.copy()
@@ -572,6 +591,8 @@ class Kernel:
         self.emit("started", f"job {job.id}: {job.behavior.describe()}", job=job.id)
 
     def _end(self, job: Job, out: Outcome):
+        if out.status == "faulted":
+            self.faulted = True
         job.outcome, job.status, job.t_end = out, out.status, time.time()
         if self.active is job:
             self.active = None
@@ -591,6 +612,7 @@ class Kernel:
             self._end(j, Outcome("cancelled", j.behavior.kind, f"not started: {why}"))
 
     def _on_trip(self, trip: Trip, now: float):
+        self._cancel_queue(f"watchdog: {trip.message}")
         if trip.isolate:                             # gripper only: freeze it where it is, the arm carries on
             self.cmd.gripper, self.cmd.gripper_v = self.state.gripper, 0.0
             self.emit("gripper_trip", trip.message, "warn")
@@ -603,7 +625,7 @@ class Kernel:
                 where = f"step {seq.i + 1}/{len(seq.steps)}: " if isinstance(seq, Sequence) else ""
                 self._end(job, Outcome("surprise", step.kind, where + trip.message, hint="look at the gripper"))
             return
-        if trip.kind == "hot":
+        if trip.kind == "hot" and not self.faulted and not self.power_uncertain:
             self._on_hot(trip, now)
             return
         self.hold_here()

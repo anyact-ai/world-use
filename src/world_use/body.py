@@ -1,7 +1,7 @@
 """Body: what a robot is (its manifest) and the small I/O contract every robot adapter implements.
 
 An adapter only moves joints and reports what it measures. Planning, limits, watchdogs, behaviors and
-logging live in the kernel, so a new arm needs a manifest and five methods.
+logging live in the kernel, so a new arm needs a manifest and six methods.
 """
 import math
 from collections.abc import Callable
@@ -133,7 +133,8 @@ class Body(Protocol):
 
     def enable(self) -> None:
         """Switch torque on at the measured pose, without a jump. If it raises, every motor is off again, or the
-        error names those it could not confirm off: the kernel counts torque as off either way."""
+        error names those it could not confirm off. The kernel treats a failed transition as unconfirmed power
+        until disable succeeds at a freshly measured rest pose."""
 
     def read(self) -> JointState:
         """Latest measurement. Called once per control tick."""
