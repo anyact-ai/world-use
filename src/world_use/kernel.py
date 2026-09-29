@@ -209,7 +209,7 @@ class Kernel:
         return st
 
     def enable(self):
-        """Torque on at the measured pose. Nothing if it is on already."""
+        """Torque on at the measured pose. Nothing if it is on already; refused while the kernel is faulted."""
         self._on_loop(self._enable)
 
     def release(self):
@@ -222,6 +222,9 @@ class Kernel:
                           "restart the daemon")
         if self.enabled:
             return
+        if self.faulted:              # a fault with torque off (a failed read, say) is not cleared by switching on
+            raise Refused("the kernel is faulted: an operator must reset it before the torque comes on", "faulted",
+                          "check the hardware, then reset")
         try:                          # not under the lock: an engage takes a second or two, and status must answer
             self.body.enable()
         except Exception as e:
