@@ -93,13 +93,13 @@ class Rehearser:
                               "rehearsal_timeout", "split the plan into shorter phases") from None
         raise AssertionError("unreachable")
 
-    def check(self, spec, k, timeout_s: float = 900.0) -> plan.Report:
+    def check(self, spec, k, timeout_s: float = 900.0, *, snap: plan.Snapshot | None = None) -> plan.Report:
         """plan.check, in the worker."""
         if isinstance(spec, plan.Plan):
             spec = spec.spec()
-        snap = plan.snapshot(k)
+        snap = snap or plan.snapshot(k)
         if self._here(snap):
-            return plan.check(spec, k, timeout_s)
+            return plan.rehearse(spec, plan.twin_from(snap, k.manifest), timeout_s)
         return self._call(k, _check, snap, spec, timeout_s)
 
     def reach_line(self, k) -> str:

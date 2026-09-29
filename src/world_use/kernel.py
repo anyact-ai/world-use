@@ -83,6 +83,7 @@ class Job:
     t_start: float | None = None
     t_end: float | None = None
     attention: threading.Event = field(default_factory=threading.Event)   # set on waiting or finished
+    admission: Callable[[], None] | None = None    # revalidate a checked plan immediately before its first tick
 
     @property
     def finished(self) -> bool:
@@ -324,14 +325,17 @@ class Kernel:
         return summary
 
     # -- requests (any thread) ---------------------------------------------------------------------
-    def submit(self, spec) -> Job:
+    def submit(self, spec, admission: Callable[[], None] | None = None) -> Job:
         """Queue a behavior. A malformed spec is refused here; limits are checked when it starts."""
         behavior = build(spec)
         with self.lock:
+            if admission is not None:
+                admission()
             job = Job(next(self._ids), behavior, spec if not isinstance(spec, Behavior) else spec.spec())
+            job.admission = admission
             self.jobs[job.id] = job
-            if self.faulted:
-                self._end(job, Outcome("refused", behavior.kind, "the kernel is faulted: an operator must reset it",
+            if self.faulted or self.power_uncertain:
+                self._end(job, Outcome("refused", behavior.kind, "the kernel is faulted or motor power is unconfirmed",
                                        hint="check the hardware, then reset"))
             elif not self.enabled:
                 self._end(job, Outcome("refused", behavior.kind, "torque is off: enable first", hint="enable"))
@@ -579,6 +583,8 @@ class Kernel:
         self.rebias()
         self.envelope.context = job.behavior.describe()
         try:
+            if job.admission is not None:
+                job.admission()
             job.behavior.start(self)
         except Refused as e:
             self._end(job, Outcome("refused", job.behavior.kind, str(e), dict(rule=e.rule, **e.data), hint=e.hint))
