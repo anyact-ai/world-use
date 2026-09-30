@@ -337,8 +337,12 @@ class Kernel:
                     f.set_exception(e)
 
     def close(self) -> dict:
-        """Close the connection (never switches torque off by itself) and write the flight record."""
-        self.body.close()
+        """Close the connection (never switches torque off by itself) and write the flight record. An adapter
+        that fails to close (unplugged already) is reported, not raised: the record matters more."""
+        try:
+            self.body.close()
+        except Exception as e:
+            self.emit("adapter", f"closing the connection failed ({e}); the flight record is written anyway", "warn")
         if self.journal:
             self.journal.close()
         summary = self.save_record()

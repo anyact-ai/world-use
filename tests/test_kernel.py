@@ -811,6 +811,21 @@ def test_grasp_lifts_past_the_turn_height_before_it_shifts(lifted):
     assert out.ok and out.data["tries"] in (2, 3), out.message
 
 
+def test_the_flight_record_is_written_when_the_adapter_fails_to_close(tmp_path):
+    from world_use import Kernel, VirtualClock, World, bodies
+    world = World()
+    body = bodies.make("sim", world)
+    k = Kernel(body, world, VirtualClock(100), run_dir=tmp_path)
+    k.connect()
+
+    def unplugged():
+        raise OSError("pcan uninitialize failed: PCAN_ERROR_ILLHW")
+    body.close = unplugged
+    k.close()
+    assert (tmp_path / "summary.json").exists() and (tmp_path / "tape.npz").exists()
+    assert any(e["kind"] == "adapter" and "ILLHW" in e["message"] for e in k.events.since(0))
+
+
 def test_grasp_needs_a_start_width_to_reopen_to(lifted):
     out = lifted.run({"do": "grasp", "expect": [0.4, 1.0]})
     assert out.status == "refused" and "start" in out.message
