@@ -827,6 +827,54 @@ def test_the_flight_record_is_written_when_the_adapter_fails_to_close(tmp_path):
     assert any(e["kind"] == "adapter" and "ILLHW" in e["message"] for e in k.events.since(0))
 
 
-def test_grasp_needs_a_start_width_to_reopen_to(lifted):
-    out = lifted.run({"do": "grasp", "expect": [0.4, 1.0]})
-    assert out.status == "refused" and "start" in out.message
+@pytest.mark.parametrize(("phase", "nested"), [("grip", False), ("gripper", True), ("lines", True)])
+def test_a_gripper_trip_ends_the_grasp_without_retrying(lifted, monkeypatch, phase, nested):
+    from dataclasses import replace
+
+    k = lifted
+    spec = {"do": "grasp", "start": 1.0, "search_mm": [[6, 0]]}
+    job = k.submit([[spec], {"do": "gripper", "to": 3.0}] if nested else spec)
+    grasp = job.behavior.steps[0].steps[0] if nested else job.behavior
+    for _ in range(3000):
+        k.tick()
+        k.clock.wait()
+        if job.status == "running" and grasp.current is not None and grasp.current.kind == phase:
+            break
+    else:
+        pytest.fail(f"grasp did not reach {phase}")
+    retries = sum(e["kind"] == "grasp_retry" for e in k.events.since(0))
+    read = k.body.read
+    monkeypatch.setattr(k.body, "read", lambda: replace(read(), gripper_tau=k.manifest.gripper.tau_max + 1))
+    k.tick()
+    assert job.status == "surprise" and k.active is None
+    assert k.cmd.gripper == k.state.gripper and k.cmd.gripper_v == 0
+    frozen = k.cmd.gripper
+    for _ in range(5):
+        k.clock.wait()
+        k.tick()
+    assert k.cmd.gripper == pytest.approx(frozen)
+    assert sum(e["kind"] == "grasp_retry" for e in k.events.since(0)) == retries
+
+
+@pytest.mark.parametrize(("sensed", "reading"), [(False, None), (True, None), (True, float("nan"))])
+def test_hold_effort_requires_sensing_and_a_finite_reading(lifted, monkeypatch, sensed, reading):
+    from dataclasses import replace
+
+    k = lifted
+    if not sensed:
+        k.manifest = replace(k.manifest, sensing=k.manifest.sensing - {"gripper_effort"})
+    read = k.body.read
+    monkeypatch.setattr(k.body, "read", lambda: replace(read(), gripper_tau=reading))
+    before = k.cmd.gripper
+    out = k.run({"do": "grasp", "start": 3.0, "hold_effort": 0.4})
+    assert out.status == "refused" and "sensing" in out.message
+    assert k.cmd.gripper == before and not k.faulted
+    assert not any(e["kind"] == "grasp_retry" for e in k.events.since(0))
+
+
+def test_grasp_on_a_robot_without_a_gripper_is_refused(k):
+    from dataclasses import replace
+
+    k.manifest = replace(k.manifest, gripper=None)
+    out = k.run({"do": "grasp", "start": 1.0})
+    assert out.status == "refused" and "no gripper" in out.message and not k.faulted

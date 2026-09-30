@@ -733,7 +733,7 @@ class Kernel:
             step = job.behavior if job is not None else None
             while isinstance(step, Sequence) and step.current is not None:     # the step a plan is on
                 step = step.current
-            if job is not None and step is not None and step.kind in ("gripper", "grip"):
+            if job is not None and step is not None and step.kind in ("gripper", "grip", "grasp"):
                 seq = job.behavior
                 where = f"step {seq.i + 1}/{len(seq.steps)}: " if isinstance(seq, Sequence) else ""
                 self._end(job, Outcome("surprise", step.kind, where + trip.message, hint="look at the gripper"))

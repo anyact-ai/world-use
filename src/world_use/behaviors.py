@@ -642,7 +642,7 @@ class Grip(Behavior):
     speed      closing speed, native units per second (default 0.3)
     min        close no further than this, native units (default: fully closed)
     hold_effort  least gripper effort (absolute) that counts as a firm hold once squeezed; less is a surprise, a grip on
-               an edge or a taper that would slip on the lift (default: not checked; the card gives a body's range)
+               an edge or a taper that would slip on the lift (default: not checked; requires gripper_effort sensing)
     """
     kind = "grip"
     example = {"do": "grip", "start_mm": 60, "expect_mm": [35, 45]}
@@ -673,6 +673,8 @@ class Grip(Behavior):
         self.hold = None if p.get("hold_effort") is None else float(p["hold_effort"])
         if self.hold is not None and not (np.isfinite(self.hold) and 0 < self.hold <= g.tau_max):
             raise Refused(f"grip hold_effort must be finite and in (0, {g.tau_max}]", "gripper_limit")
+        if self.hold is not None and "gripper_effort" not in k.manifest.sensing:
+            raise Refused("hold_effort requires gripper_effort sensing", "sensing")
         for name, value, limit in (("speed", speed, g.v_max), ("effort", self.effort, g.tau_max),
                                    ("lag", self.lag, g.track_tol)):
             if not np.isfinite(value) or not 0 < value <= limit:
@@ -692,6 +694,8 @@ class Grip(Behavior):
 
     def tick(self, k):
         g, st, p = k.manifest.gripper, k.state, self.params
+        if self.hold is not None and (st.gripper_tau is None or not np.isfinite(st.gripper_tau)):
+            raise Refused("hold_effort needs a finite gripper effort reading; sensing is unavailable", "sensing")
         if self.phase == "open":
             if self.pre is not None and self.pre.tick(k) is None:
                 return None
@@ -780,15 +784,12 @@ class Grasp(Behavior):
 
     def start(self, k):
         p = self.params
-        if "start_mm" not in p and "start" not in p:
-            raise Refused("grasp needs start_mm (or start): every retry reopens to it", "spec")
+        validate(self.kind, p)
+        if k.manifest.gripper is None:
+            raise Refused("this robot has no gripper", "no_gripper")
         search = p.get("search_mm", [[6, 0], [-6, 0], [0, 6], [0, -6]])
-        if not all(isinstance(o, (list, tuple)) and len(o) == 2 for o in search):
-            raise Refused("search_mm must be a list of [across, along] pairs, mm", "spec")
         self.offsets = [np.asarray(o, float) / 1000 for o in search]
         self.lift = float(p.get("lift_mm", 8.0)) / 1000
-        if not np.isfinite(self.lift) or not 0 < self.lift <= 0.05:
-            raise Refused("grasp lift_mm must be in (0, 50]", "spec")
         self.grip = {key: p[key] for key in self.GRIP if key in p}
         opens = k.tool[:3, :3] @ np.asarray(k.manifest.gripper.opens_along, float)
         along = np.array([opens[0], opens[1], 0.0])
