@@ -23,6 +23,8 @@ check); 4 refused, surprise, stopped, faulted or cancelled, or a check that woul
 checkpoint (`wu answer`); 6 still running when the wait ran out (`wu job ID --wait 60`); 2 the daemon refused the
 request; 3 no daemon. `--json` works before or after the command.
 """
+from __future__ import annotations
+
 import argparse
 import json
 import os

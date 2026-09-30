@@ -11,6 +11,8 @@ Its rules are the lessons of running a slow policy on real hardware:
 - Once the control loop runs, only its thread talks to the body. Requests from other threads (switching torque
   on or off) are handed to it and waited for, so a driver is never called from two threads at once.
 """
+from __future__ import annotations
+
 import itertools
 import json
 import queue
@@ -209,6 +211,7 @@ class Kernel:
         self.held_at: float | None = None          # where the fingers closed on something, known to the world or not
         self.grip_start: float | None = None       # the gripper as the session found it: home puts it back
         self.residuals = Residuals(m.rate_hz)      # torque the model does not explain: contact checks judge against it
+        self.planner = None                        # a daemon's snapshot worker; embedded callers plan inline
         self.fit = None                            # a model fitted from flight records (fit.py), once one is in use
         self.still = 0                             # ticks the command has not changed for
         self._last_q_cmd = np.zeros(0)
@@ -665,11 +668,17 @@ class Kernel:
         thermal = job is self._thermal_home
         if thermal:
             self._thermal_home = None
+        if self.active is job:
+            self.active = None
+        if thermal and out.ok:
+            try:
+                self._release()                 # thermal completion includes confirmed torque-off
+            except Exception as e:
+                out = Outcome("faulted", job.behavior.kind, f"thermal return could not release: {explain(e)}",
+                              hint="treat the arm as energized; resolve motor power before reset")
         if out.status == "faulted":
             self.faulted = True
         job.outcome, job.status, job.t_end = out, out.status, time.time()
-        if self.active is job:
-            self.active = None
         level = "info" if out.ok else ("alarm" if out.status == "faulted" else "warn")
         self.emit("finished", f"job {job.id} {out.status}: {out.message}", level, job=job.id, status=out.status)
         if not out.ok:
@@ -681,7 +690,6 @@ class Kernel:
         job.attention.set()
         if thermal:
             if out.ok:
-                self._release()                  # finish even if the temperature fell below the trip meanwhile
                 self.emit("hot", "thermal return complete: torque released at rest to cool", "alarm")
             else:
                 self.set_home_route(None, "thermal return did not finish; inspect the scene before retrying")

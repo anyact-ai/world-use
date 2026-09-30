@@ -3,6 +3,8 @@
 Pure math, sampled at the control rate. A path is an (N, n) array of joint positions, one row per tick,
 starting one tick after the current pose and ending exactly at the goal.
 """
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 import numpy as np

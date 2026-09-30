@@ -1,4 +1,6 @@
 """Validate built-in plan data before queueing; robot-specific limits remain in each behavior."""
+from __future__ import annotations
+
 import math
 from numbers import Real
 

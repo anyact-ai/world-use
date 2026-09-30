@@ -10,6 +10,8 @@ The model decides; the kernel keeps the robot safe, fast and legible while it do
     print(check(Plan().line(up=0.05).spec(), k))   # rehearse on a twin first
     k.run({"do": "line", "up": 0.05})
 """
+from __future__ import annotations
+
 from . import bodies, fit
 from .behaviors import Behavior, Outcome, build, register
 from .body import Body, GripperSpec, JointSpec, JointState, Manifest, Rest

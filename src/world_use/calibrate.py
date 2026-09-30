@@ -7,6 +7,8 @@ focal length: left free on the simulator the focal length came out 36% wrong. So
 the camera is said to have (its workcell fov_deg, else 60 deg) and says how much it did. On the simulator, with
 answers scattered by 12 px, what it then drew in the workspace landed 7-9 px from where it belongs.
 """
+from __future__ import annotations
+
 import re
 from dataclasses import dataclass, field
 

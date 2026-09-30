@@ -17,6 +17,8 @@ expect on the next run, and `wu fit` prints it next to the URDF's.
 
     wu fit runs/2026*                 # writes fit.json; a workcell's `fit = "fit.json"` puts it to use
 """
+from __future__ import annotations
+
 import json
 from dataclasses import dataclass, field
 from datetime import datetime

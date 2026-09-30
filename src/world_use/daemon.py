@@ -9,6 +9,8 @@ server all use. It also owns the cameras.
 With a simulated body the daemon keeps two worlds: the simulator's truth, and the kernel's model of it. A workcell
 box is in both unless it says `known = false`; what a policy adds (`wu box`) goes into the model only.
 """
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
@@ -62,6 +64,7 @@ class Daemon:
         # rehearsals and reach probes run in a worker process: in this one they took the control loop's ticks
         self.rehearser = rehearser if rehearser is not None else Rehearser()
         self._own_rehearser = rehearser is None
+        kernel.planner = self.rehearser
         self.control = threading.Thread(target=self.k.loop, args=(self.stop_loop,), name="control", daemon=True)
 
     def start(self):

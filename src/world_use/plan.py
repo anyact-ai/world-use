@@ -9,7 +9,9 @@
 
 Any registered behavior is a method (p.grip(...), p.checkpoint(...)); plugins' behaviors appear automatically.
 """
-from dataclasses import dataclass, field
+from __future__ import annotations
+
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -142,6 +144,18 @@ def snapshot(k: Kernel) -> Snapshot:
             held_at=k.held_at, grip_start=k.grip_start,
             ik_weights=None if k.ik_weights is None else list(k.ik_weights),
             fit=None if k.fit is None else k.fit.to_dict())
+
+
+def same_start(s: Snapshot, k: Kernel) -> bool:
+    """A prepared path is tied to its command, limits and scene. Allow encoder noise and held-object settling."""
+    current = snapshot(k)
+    world = current.world
+    if world.get("held") == s.world.get("held") and world.get("held"):
+        name = world["held"]["name"]
+        if name in world["boxes"] and name in s.world["boxes"]:
+            world["boxes"][name]["pose"] = s.world["boxes"][name]["pose"]
+    return (replace(current, q=s.q, gripper=s.gripper, temp=s.temp) == s
+            and np.allclose(current.q, s.q, atol=0.01, rtol=0))
 
 
 def twin_from(s: Snapshot, manifest: Manifest | None = None) -> Kernel:

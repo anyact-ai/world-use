@@ -33,16 +33,15 @@ def test_the_same_report_as_in_process(rehearser, lifted):
     assert rehearser.reach_line(lifted) == views.reach_line(lifted)
 
 
-def test_a_body_the_worker_cannot_rebuild_is_rehearsed_here(rehearser, monkeypatch):
-    here = []
-    rehearse = plan.rehearse
-    monkeypatch.setattr(plan, "rehearse", lambda *a, **kw: here.append(1) or rehearse(*a, **kw))
+def test_a_body_the_worker_cannot_rebuild_is_refused(rehearser):
     custom = dataclasses.replace(MANIFEST, name="a custom arm")            # not in bodies.manifests()
     world = World()
     k = Kernel(SimBody(custom, world, q=Q_REST, gripper=1.0), world, VirtualClock(100.0))
     k.connect()
     k.enable()
-    assert rehearser.check(PLAN, k).ok and here
+    with pytest.raises(Refused, match="cannot rebuild"):
+        rehearser.check(PLAN, k)
+    assert plan.check(PLAN, k).ok          # still available for embedded offline extensions
 
 
 def test_a_worker_that_dies_is_replaced():
@@ -67,3 +66,50 @@ def test_a_rehearsal_that_runs_too_long_is_refused_and_the_worker_replaced():
         assert r.check(PLAN, k).ok
     finally:
         r.close()
+
+
+def test_preparation_keeps_feedback_and_stop_responsive(k):
+    from concurrent.futures import Future
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    pending = Future()
+    k.planner = SimpleNamespace(prepare=lambda spec, robot: (pending, plan.snapshot(robot)))
+    job = k.submit([{"do": "line", "up": 0.03}])
+    for _ in range(50):
+        k.tick()
+        k.clock.wait()
+    assert job.status == "running" and not job.behavior.moves
+    assert len(k.tape) == 50 and k.feedback_at == pytest.approx(k.clock.now() - k.clock.dt)
+    assert np.allclose(k.cmd.q, k.q_start)
+    k.stop("operator stop during planning")
+    k.tick()
+    assert job.status == "stopped" and not pending.done()
+
+
+def test_prepared_path_is_refused_after_scene_change(k, rehearser):
+    from types import SimpleNamespace
+
+    k.planner = SimpleNamespace(prepare=lambda spec, robot: rehearser.prepare(spec, robot))
+    job = k.submit({"do": "line", "up": 0.03})
+    while job.status == "queued":
+        k.tick()
+        k.clock.wait()
+    job.behavior._pending.result(timeout=10)
+    k.world.add_box("new obstacle", "keep_out", [1, 1, 1], [.1, .1, .1])
+    k.tick()
+    assert job.status == "refused" and "changed" in job.outcome.message
+
+
+def test_execution_paths_are_prepared_outside_the_control_process(daemon, monkeypatch):
+    from world_use.behaviors import Line
+
+    def fail_here(*args):
+        raise AssertionError("planning on the control thread")
+
+    monkeypatch.setattr(Line, "plan", fail_here)
+    _, c = daemon
+    r = c.run([{"do": "line", "up": 0.06},
+               {"do": "guarded", "up": 0.01, "expect_contact": False}], check=False, wait=10)
+    assert r["status"] == "done", r

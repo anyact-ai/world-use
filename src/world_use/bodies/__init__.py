@@ -1,4 +1,6 @@
 """Bodies: robot adapters. `make(name)` builds one: "sim" (a twin of the reBot), "sim:<robot>", or "<robot>"."""
+from __future__ import annotations
+
 from ..body import Manifest
 
 

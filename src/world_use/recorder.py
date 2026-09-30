@@ -3,6 +3,8 @@
 The summary answers the questions that decide whether a policy is worth running on hardware: how long were
 the motors on, how much of that time did the robot actually move, how hot did it get.
 """
+from __future__ import annotations
+
 import json
 import threading
 from pathlib import Path

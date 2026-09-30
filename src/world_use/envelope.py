@@ -1,6 +1,8 @@
 """The envelope: limits every motion stays inside. Paths are checked whole before anything moves; measured
 state is checked on every tick while it moves. A policy can tighten it; loosening needs an operator override,
 which is scoped, has a reason, and shows up in the log."""
+from __future__ import annotations
+
 from dataclasses import dataclass
 from itertools import pairwise
 

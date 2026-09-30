@@ -1,4 +1,6 @@
 """Small rigid-body helpers. Poses are 4x4 homogeneous matrices; everything is SI (m, rad)."""
+from __future__ import annotations
+
 import numpy as np
 
 

@@ -17,6 +17,8 @@ Workcell entry (positions in the work frame, metres):
     look_at = [0.30, 0.0, 0.15]                    # what the image centre shows,
     fov_deg = 55                                   # and its horizontal field of view
 """
+from __future__ import annotations
+
 import subprocess
 import time
 import urllib.request

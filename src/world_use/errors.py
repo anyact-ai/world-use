@@ -1,4 +1,5 @@
 """A refused step: it starts no motion; earlier steps in a running plan may have moved."""
+from __future__ import annotations
 
 
 class Refused(ValueError):

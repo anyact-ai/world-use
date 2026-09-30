@@ -1,4 +1,6 @@
 """Python client for the daemon's JSON API (stdlib only). The CLI and the MCP server are thin layers on it."""
+from __future__ import annotations
+
 import json
 import os
 import urllib.error
