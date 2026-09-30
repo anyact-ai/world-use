@@ -1,21 +1,20 @@
 # Working on world-use
 
-world-use is a small robot runtime for agents. Keep it easy to install, understand,
-and use for a first useful task. `CLAUDE.md` is a symlink to this file; edit this file.
+Keep world-use easy to install, understand, and use for a first robot task.
+`CLAUDE.md` is a symlink to this file; edit this file.
 
 ## Design
 
-- Solve the requested problem at the layer that owns it. Prefer a direct change
-  over another wrapper, fallback, or configuration switch.
-- Add an abstraction or dependency when a current use case needs it. Hypothetical
-  future robots, providers, or workflows do not justify a framework today.
-- Validate at boundaries. Internal code should rely on established contracts;
-  avoid repeated defensive checks and exception handling that conceals failures.
-- Remove superseded code, tests, and docs as part of the change. Keep compatibility
-  paths only for an identified supported API or consumer, with a reason.
+- Fix the cause in the layer that owns it. Prefer the simplest coherent design,
+  even when replacing a flawed path takes a larger diff.
+- Add abstractions, dependencies, configuration, or fallback paths for concrete
+  needs in the requested work. Avoid scaffolding for hypothetical future uses.
+- Keep cleanup within the affected area. Remove superseded internals and their
+  obsolete tests and docs together; do not keep unused compatibility shims.
+  Preserve supported public contracts and call out intentional breaking changes.
 - Read [DESIGN.md](DESIGN.md) for runtime changes and [the adapter guide](docs/adapters.md)
   for new bodies. Keep robot control and safety enforcement in the kernel, and
-  expensive planning off the control thread.
+  expensive planning off the live control thread.
 
 ## Tests and checks
 
@@ -28,27 +27,26 @@ uv run ty check src
 uv run pytest
 ```
 
-- Test observable behavior, reproduced bugs, and consequential failure paths.
-  Each new test should catch a distinct regression; extend existing cases where
-  possible. Use simulation and fake drivers for development.
-- Avoid tests that mirror implementation details, mock away the behavior under
-  test, or pin documentation wording. Preserve coverage of power, fault, and
-  recovery behavior when simplifying code.
-- Run affected tests while iterating; use the full suite for runtime or cross-cutting
-  changes. For prose-only edits, check links and examples. Repeat checks when new
-  changes, failures, or a concrete unresolved concern justify it.
+- Add tests where existing coverage does not protect the changed behavior or bug.
+  Each should catch a distinct regression. Prefer observable outcomes to private
+  call sequences; avoid tests that reproduce the implementation or pin doc wording.
+- Use simulation and fake drivers. Preserve coverage of power, faults, and recovery
+  when simplifying code.
+- Start with affected tests and applicable lint/type checks; broaden when shared
+  behavior changes. For prose-only edits, review links and command accuracy.
+  Once relevant checks pass, stop unless new edits or evidence justify another run.
 
 ## Documentation and review
 
 - Update the existing source of truth. Keep the README focused on setup and useful
-  examples; link to details. Delete stale explanations instead of appending caveats.
-- Write direct, concrete prose. Avoid hype, repeated summaries, and narrating code
-  the reader can see. Comments should explain constraints or reasons.
-- Keep plans, progress reports, and test logs out of the repo unless requested.
+  examples; link to details. Replace outdated guidance when behavior changes.
+- Write direct, concrete prose. Document public contracts and non-obvious constraints;
+  skip hype, repeated summaries, and comments that narrate code the reader can see.
+- Keep task diaries and generated review reports out of the repo unless requested.
   Preserve evidence behind published experimental claims; distinguish simulated
   results from hardware measurements.
-- Keep commits coherent. PR descriptions should explain the problem, resulting
-  behavior, and relevant validation in a few sentences.
+- Keep commits coherent. Explain the problem, resulting behavior, and relevant
+  validation in PRs; scale detail to the change.
 
 Keep this file short. Add durable guidance for recurring mistakes; replace stale
 instructions rather than accumulating rules after every task.
