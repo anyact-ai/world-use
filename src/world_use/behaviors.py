@@ -641,6 +641,8 @@ class Grip(Behavior):
     lag        how far the gripper may fall behind its command before that counts as contact (default 0.1)
     speed      closing speed, native units per second (default 0.3)
     min        close no further than this, native units (default: fully closed)
+    hold_effort  least gripper effort (absolute) that counts as a firm hold once squeezed; less is a surprise, a grip on
+               an edge or a taper that would slip on the lift (default: not checked; the card gives a body's range)
     """
     kind = "grip"
     example = {"do": "grip", "start_mm": 60, "expect_mm": [35, 45]}
@@ -668,6 +670,9 @@ class Grip(Behavior):
         self.squeeze = float(p.get("squeeze", g.squeeze))
         self.effort, self.lag = float(p.get("effort", 0.6)), float(p.get("lag", 0.1))
         self.floor = float(p.get("min", g.closed))
+        self.hold = None if p.get("hold_effort") is None else float(p["hold_effort"])
+        if self.hold is not None and not (np.isfinite(self.hold) and 0 < self.hold <= g.tau_max):
+            raise Refused(f"grip hold_effort must be finite and in (0, {g.tau_max}]", "gripper_limit")
         for name, value, limit in (("speed", speed, g.v_max), ("effort", self.effort, g.tau_max),
                                    ("lag", self.lag, g.track_tol)):
             if not np.isfinite(value) or not 0 < value <= limit:
@@ -724,6 +729,12 @@ class Grip(Behavior):
         a = g.aperture(contact)
         if a is not None:
             data["aperture_mm"] = round(1000 * a, 1)
+        if self.hold is not None and st.gripper_tau is not None and abs(st.gripper_tau) < self.hold:
+            k.gripped(contact, attach=False)        # it may hold something all the same: going home must not let go
+            return self.surprise(f"weak grip: {abs(st.gripper_tau):.2f} of effort squeezed at {contact:.2f} {g.unit}"
+                                 f"{_mm(g, contact)}, less than the {self.hold:.2f} a firm hold needs",
+                                 expected=self.hold, observed=round(abs(st.gripper_tau), 2),
+                                 hint="the fingers met an edge or a taper: open, move a little and grip again", **data)
         if self.expect is not None and not self.expect[0] <= contact <= self.expect[1]:
             lo, hi = self.expect
             mm = p.get("expect_mm")
@@ -748,15 +759,16 @@ class Grasp(Behavior):
     surprise after the last offset, holding where it tried last.
 
     expect_mm, start_mm  as for grip (start_mm is required: each retry reopens to it)
-    squeeze, effort, lag, speed, min  as for grip
+    squeeze, effort, lag, speed, min, hold_effort  as for grip (a weak grip is a miss too)
     search_mm  [[across, along], ...] offsets from where the grasp began, mm: across the jaws (the direction the
                fingers are thin in) and along them (the way they open), both level (default: 6 mm each way across,
                then 6 mm each way along)
-    lift_mm    how far to lift before shifting (default 8)
+    lift_mm    how far to lift before shifting (default 8; more where the base may only turn higher up, as the
+               shift turns it)
     """
     kind = "grasp"
     example = {"do": "grasp", "start_mm": 30, "expect_mm": [10, 22], "search_mm": [[6, 0], [-6, 0]]}
-    GRIP = ("expect_mm", "expect", "start_mm", "start", "squeeze", "effort", "lag", "speed", "min")
+    GRIP = ("expect_mm", "expect", "start_mm", "start", "squeeze", "effort", "lag", "speed", "min", "hold_effort")
 
     @property
     def moves(self):
@@ -789,12 +801,18 @@ class Grasp(Behavior):
         self.current: Behavior | None = None
 
     def _shift(self, k, offset):
-        """One smooth motion from the current offset to the next: up, across, down."""
+        """One smooth motion from the current offset to the next: up, across, down. A sideways move turns the base,
+        so where the body only turns above a height the lift goes at least that high (corners rounded above it)."""
         d = (offset - self.at)[0] * self.across + (offset - self.at)[1] * self.along
         fwd, left, _ = k.world.frame("work").axes if "work" in k.world.frames else np.eye(3)
         self.at = offset
-        return Lines(legs=[[0.0, 0.0, self.lift], [float(d @ fwd), float(d @ left), 0.0], [0.0, 0.0, -self.lift]],
-                     blend=min(0.004, self.lift / 2))
+        lift, blend = self.lift, min(0.004, self.lift / 2)
+        need = k.envelope.turn_height()
+        if need is not None:
+            p = k.chain.fk(k.cmd.q)[:3, 3]
+            up = float(k.world.from_base("work", p)[2]) if "work" in k.world.frames else float(p[2])
+            lift = max(lift, need + blend + 0.002 - up)
+        return Lines(legs=[[0.0, 0.0, lift], [float(d @ fwd), float(d @ left), 0.0], [0.0, 0.0, -lift]], blend=blend)
 
     def tick(self, k):
         while True:

@@ -83,7 +83,9 @@ MANIFEST = Manifest(
         "With torque on, the elbow (j3) carries about 7 Nm, its continuous rating, even folded at rest (the adapter "
         "supports the arm's weight in every pose): it heats about 8 C per minute from cold and cools only with "
         "torque off. Decide with torque off; act in bursts.",
-        "Gripper opening is roughly 20 mm per rad (approximate); holding shows as -1.4..-2.2 Nm of gripper effort.",
+        "Gripper opening is roughly 20 mm per rad (approximate); holding shows as -0.45..-2.2 Nm of gripper effort "
+        "(a 13-17 mm chess pawn: -0.45..-0.7; one that slipped out: -0.25..-0.35), so grip and grasp take "
+        "hold_effort 0.4 to catch a weak grip.",
         "The work frame points where the arm points at rest: forward, left, up. It stays fixed for the session.",
         "Nose-down (move_to with point \"down\") is reachable low and near: about U+0.04 to +0.12 with the tool "
         "F+0.14 to +0.26 in front of the base. That is below the turn height, where the wrist and base may not turn, "

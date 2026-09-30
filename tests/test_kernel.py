@@ -784,6 +784,33 @@ def test_grasp_that_finds_nothing_is_a_surprise_after_its_last_try(lifted):
     assert out.status == "surprise" and out.data["tries"] == 2 and "after 2 tries" in out.message
 
 
+def test_a_weak_grip_is_a_surprise_and_grasp_retries_it(lifted):
+    k = lifted
+    tool = k.chain.fk(k.state.q)[:3, 3]
+    k.body.world.add_box("block", "object", center=tool, size=[0.004, 0.004, 0.03], grip_width=0.012, frame="base")
+    firm = k.run({"do": "grip", "start": 3.0, "expect": [0.4, 1.0]})
+    assert firm.ok and firm.data["holding_effort"] is not None
+    k.run({"do": "gripper", "to": 3.0})
+    weak = k.run({"do": "grip", "start": 3.0, "hold_effort": 2 * abs(firm.data["holding_effort"])})
+    assert weak.status == "surprise" and "weak grip" in weak.message, weak.message
+    k.run({"do": "gripper", "to": 3.0})
+    out = k.run({"do": "grasp", "start": 3.0, "hold_effort": 2 * abs(firm.data["holding_effort"]), "search_mm": [[4, 0]]})
+    assert out.status == "surprise" and out.data["tries"] == 2 and "weak grip" in out.message
+    assert any(e["kind"] == "grasp_retry" and "weak grip" in e["message"] for e in k.events.since(0))
+
+
+def test_grasp_lifts_past_the_turn_height_before_it_shifts(lifted):
+    k = lifted
+    tool = k.chain.fk(k.state.q)[:3, 3]
+    up = float(k.world.from_base("work", tool)[2])
+    k.envelope.override("turn_height", up + 0.03, "the base may only turn 3 cm higher")    # 8 mm would not do
+    along = np.cross(_across(k), [0.0, 0.0, 1.0])                  # sideways: a shift this way turns the base
+    k.body.world.add_box("block", "object", center=tool + 0.04 * along, size=[0.004, 0.004, 0.03],
+                         grip_width=0.012, frame="base")
+    out = k.run({"do": "grasp", "start": 3.0, "expect": [0.4, 1.0], "search_mm": [[0, 40], [0, -40]]})
+    assert out.ok and out.data["tries"] in (2, 3), out.message
+
+
 def test_grasp_needs_a_start_width_to_reopen_to(lifted):
     out = lifted.run({"do": "grasp", "expect": [0.4, 1.0]})
     assert out.status == "refused" and "start" in out.message
