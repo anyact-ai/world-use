@@ -18,6 +18,7 @@ import numpy as np
 from . import geometry, motion
 from .envelope import TURN_EPS
 from .errors import Refused
+from .validation import validate
 from .world import DIRECTIONS, along, heading
 
 if TYPE_CHECKING:
@@ -859,6 +860,8 @@ def build(spec) -> Behavior:
     if kind not in REGISTRY:
         raise Refused(f"unknown behavior {kind!r}; known: {sorted(REGISTRY)}", "spec")
     label = spec.pop("label", None)
+    if REGISTRY[kind].__module__ == __name__:
+        validate(kind, spec)
     if kind == "seq":
         return Sequence(spec.pop("steps"), label, **spec)
     return REGISTRY[kind](label, **spec)

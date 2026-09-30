@@ -37,8 +37,9 @@ def rotation_log(R: np.ndarray) -> np.ndarray:
     if angle < 1e-9:
         return np.zeros(3)
     if np.pi - angle < 1e-6:                          # 180 deg: take the axis from the diagonal
-        axis = np.sqrt(np.clip((np.diag(R) + 1) / 2, 0, None))
-        axis *= np.sign(np.array([1.0, R[0, 1] + 1e-12, R[0, 2] + 1e-12]))
+        i = int(np.argmax(np.diag(R)))
+        axis = (R + R.T)[:, i] / 4
+        axis[i] = (R[i, i] + 1) / 2
         return axis / np.linalg.norm(axis) * angle
     w = np.array([R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]]) / (2 * np.sin(angle))
     return w * angle

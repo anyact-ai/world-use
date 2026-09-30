@@ -440,20 +440,13 @@ class Kernel:
         if carry:
             fold.append({"do": "joints", "target_deg": {str(i + 1): float(np.degrees(q0[i])) for i in sorted(carry)},
                          "label": "fold"})
-        plan = self._home_steps(route[0]) + [f for f in fold if self._differs(f)]
+        plan = self._home_steps(route[0]) + fold
         g = self.manifest.gripper       # a gripper left open past pi comes back a turn low on the reBot
-        if (g is not None and self.grip_start is not None and self.held_at is None and self.cmd.gripper is not None
-                and abs(self.cmd.gripper - self.grip_start) > 0.02):     # never while it holds something
+        if g is not None and self.grip_start is not None and self.held_at is None:  # never while holding
             lo, hi = sorted((g.closed, g.open))
             plan.append({"do": "gripper", "to": round(float(np.clip(self.grip_start, lo, hi)), 3),
                          "label": "gripper as it was found"})
         return plan
-
-    def _differs(self, spec) -> bool:
-        goal = self.cmd.q.copy()
-        for k, v in spec["target_deg"].items():
-            goal[int(k) - 1] = np.radians(v)
-        return bool(np.abs(goal - self.cmd.q).max() > 1e-4)
 
     # -- services for behaviors (control thread) ---------------------------------------------------
     def set(self, q, dq=None):
@@ -609,10 +602,11 @@ class Kernel:
         with self.lock:
             self._track_held()
             if self.enabled:
-                trip = self.envelope.watch(st, self.cmd.q, self.cmd.gripper)
+                trip = self.envelope.watch(st, self.cmd.q, self.cmd.gripper,
+                                           self.active is not None and self.active is self._thermal_home)
                 b = self.active.behavior if self.active is not None and self.active.status == "running" else None
-                if trip is None and b is not None and b.moves and not b.senses_contact:
-                    trip = self._collision()
+                if (trip is None or trip.kind == "hot") and b is not None and b.moves and not b.senses_contact:
+                    trip = self._collision() or trip
                 if trip:
                     self._on_trip(trip, now)
                 self._heat_warnings(st)
@@ -773,7 +767,10 @@ class Kernel:
         """Submit and tick until it ends (scripts, tests, twin checks). Not for use while a loop thread runs."""
         if self._loop_thread is not None and self._loop_thread.is_alive():
             raise RuntimeError("the control loop is running: submit() the job and wait for it instead")
-        job = self.submit(spec)
+        try:
+            job = self.submit(spec)
+        except Refused as e:
+            return Outcome("refused", "spec", str(e), hint=e.hint)
         deadline = self.clock.now() + timeout_s
         while not job.finished:
             self.tick()

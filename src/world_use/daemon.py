@@ -194,7 +194,7 @@ class Daemon:
                                   "wait until idle, then retry so the plan is checked from the new state")
 
             report = self.rehearser.check(spec, k, snap=snap)
-            if report.refused or report.outcome.status == "faulted":
+            if report.refused or report.outcome.status not in ("done", "surprise"):
                 text = ("refused in rehearsal, so nothing moved:\n" + str(report) + "\n"
                         + self.rehearser.reach_line(k))
                 return 200, dict(id=None, status="refused", incident=text, rehearsal=report.to_dict(),
