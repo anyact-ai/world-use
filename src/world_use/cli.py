@@ -146,6 +146,10 @@ def main(argv=None) -> int:
     p.add_argument("runs", nargs="+", type=Path, help="flight record folders")
     p.add_argument("--body", help="the robot the records are from (default: what their summaries say)")
     p.add_argument("--out", type=Path, default=Path("fit.json"))
+    p = sub.add_parser("demo", help="run the scripted block task in simulation, with a success check")
+    p.add_argument("--out", type=Path, default=Path("runs/block-demo"))
+    p.add_argument("--scenario", choices=["nominal", "shifted", "missing", "misplaced"], default="nominal")
+    p.add_argument("--no-video", action="store_true")
     sub.add_parser("status")
     sub.add_parser("card")
     sub.add_parser("policy", help="print the installed agent brief (no daemon needed)")
@@ -201,6 +205,11 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     c = Client(a.url)
     try:
+        if a.cmd == "demo":
+            from .examples.pick_place import run
+            result = run(a.out, a.scenario, video=not a.no_video)
+            print(json.dumps(result, indent=2))
+            return 0 if result["success"] and result["torque_off"] else 4
         if a.cmd in ("inspect", "replay"):
             from . import records
             if a.cmd == "inspect":
@@ -258,6 +267,9 @@ def main(argv=None) -> int:
             print(f"error: {e}", file=sys.stderr)
         return 2
     except OSError as e:
+        if a.cmd in ("demo", "inspect", "replay", "fit", "policy"):
+            print(f"{a.cmd}: {e}", file=sys.stderr)
+            return 2
         print(f"cannot reach the daemon at {a.url} ({e}); start it with: wu up", file=sys.stderr)
         return 3
 

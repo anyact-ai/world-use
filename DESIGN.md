@@ -78,7 +78,7 @@ The core has six concepts:
 |---|---|
 | **Body** | A manifest (joints, limits, gripper, rest pose, sensing, notes) and six adapter methods: connect, enable, read, command, disable, close. |
 | **World** | Frames, boxes (surfaces, objects, keep-out, fragile and slow zones) and facts with their sources. |
-| **Behavior** | Anything that moves the robot, under one contract: `start` plans and may refuse; `tick` runs one control step and returns an outcome when done. A line, a guarded touchdown, a grip, a checkpoint and a whole plan are all behaviors. |
+| **Behavior** | Anything that moves the robot, under one contract: `start` prepares and may refuse; `tick` runs one control step and returns an outcome when done. A line, a guarded touchdown, a grip, a checkpoint and a whole plan are all behaviors. |
 | **Event** | One numbered stream of everything that happened. |
 | **View** | State rendered for a reader: the state line, the status, an incident, the embodiment card, a camera picture with the world drawn on it. |
 | **Kernel** | The only code that talks to the body. Each tick: read, watch, advance the behavior, command, record. |
@@ -104,6 +104,16 @@ includes the interval from an enable attempt through confirmed disable, conserva
 and ramp intervals. Events and tape rows share a monotonic clock and origin. `moving_s` measures elapsed time
 in a motion behavior, not independently detected physical movement.
 
+Motion preparation uses the same snapshot worker as rehearsal. While it computes a path,
+the control thread keeps reading, checking limits and holding. Before playback, it verifies
+that the command, scene and limits still match. Each step is prepared from its own current
+state, including after contact or a checkpoint. Embedded virtual-clock runs prepare inline.
+The worker never falls back silently to CPU-heavy work on the control thread.
+
+Records include startup state, plans and structured outcomes. A background journal saves
+incremental telemetry once per second; offline inspection can recover committed chunks
+without the daemon. See the [record format](docs/records.md).
+
 ## Two loops, one runtime
 
 Agentic Robotics work such as [Graph-as-Policy](https://arxiv.org/abs/2607.05369) shows the strongest results
@@ -127,28 +137,22 @@ so a laptop and a low-cost arm are enough.
 
 ## Where it goes
 
-Near term, in order:
+Start with repeatable tasks on one arm. The [block example](examples/pick-place) gives
+new users a complete run, a separate success predicate, controlled scene variations,
+and a recovery to inspect. More useful tasks and a second concrete adapter will test
+the design better than a larger abstraction layer.
 
-1. **Success criteria and evaluation.** Checkable task predicates, and `wu eval`: run a plan many times on the
-   twin with poses and heights varied, and report task success, cycle time, interventions, and failing steps.
-   Completing every command is not enough to establish that the task succeeded.
-2. **Graphs.** Add branches, bounded retries, and tunable parameters where repeated task failures call for them.
-   Keep outcomes and timing attached to each node so a larger program remains inspectable.
-3. **A physics twin fitted from real runs.** Joint torques are evidence a video cannot give. `wu fit` does the
-   first part: links' masses and centres of mass and joints' friction, fitted from flight records and checked
-   on records it did not see. A workcell's `fit` puts the result into contact checks, rehearsals and the reBot's
-   feedforward. On the reBot it halved the elbow's torque error and the tool's sag at holds
-   ([hardware record](docs/hardware-2026-09-28.md)). Next: the torque the position loop applies instead of the
-   biased readings, heat rates per motor, surface heights from touchdowns, and a MuJoCo body alongside the
-   kinematic one.
-4. **Evidence packages.** Every incident bundled with its tape window, events, camera clip and plan node, and
-   every run recording what the policy was given: tools, views, twin, and human interventions.
-5. **Cameras and pointing.** `wu look` already draws the tool, the known boxes and a plan's path onto
-   calibrated pictures, a simulator renders its scene, and `wu calibrate` finds where a camera is from the arm and
-   the policy's answers (a 360 camera's pose too, through its cuts). Next: calibration checked at every session
-   start, and clicks in a calibrated image turned into positions.
-6. **More ways in.** The MCP server ships beside the CLI (`wu mcp`). Next: a console where a person can stop,
-   nudge and approve, and skills compatible with the open robot-skill libraries growing around this work.
+Near-term work should follow experiments:
 
-Further out: learned policies (VLAs) as behaviors, a streaming interface for models fast enough to steer
-continuously, and flight records exported as training data.
+- Improve camera setup and estimation where users lose time getting a trustworthy scene.
+- Fit the twin from recorded hardware behavior. `wu fit` already estimates link masses,
+  centres of mass and friction; richer contact, thermal models and a physics adapter need
+  measurements to justify them.
+- Compare model-authored plans and live checkpoint decisions on the same tasks, keeping
+  prompts, observations, interventions and measured outcomes with the records.
+- Try two arms in simulation when a task needs cooperation, before introducing scheduling
+  or a multi-robot graph API.
+
+Branches, retries, reusable skills and learned policies belong where repeated tasks need
+them. A hosted service, broad plugin system and large benchmark suite are later choices,
+not prerequisites for a useful robot harness.

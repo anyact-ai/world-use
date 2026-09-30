@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<robot name="planar-example">
+  <link name="base"/><link name="upper"/><link name="forearm"/><link name="tool"/>
+  <joint name="shoulder" type="revolute">
+    <parent link="base"/><child link="upper"/><origin xyz="0 0 0.2"/><axis xyz="0 0 1"/>
+    <limit lower="-2.5" upper="2.5" effort="2" velocity="0.8"/>
+  </joint>
+  <joint name="elbow" type="revolute">
+    <parent link="upper"/><child link="forearm"/><origin xyz="0.2 0 0"/><axis xyz="0 0 1"/>
+    <limit lower="-2.5" upper="2.5" effort="2" velocity="0.8"/>
+  </joint>
+  <joint name="tip" type="fixed">
+    <parent link="forearm"/><child link="tool"/><origin xyz="0.15 0 0"/>
+  </joint>
+</robot>
