@@ -114,6 +114,10 @@ For physical hardware, use the [reBot setup guide](docs/rebot.md). Keep an opera
 at the motor-supply switch. A stopped job still holds with torque; a raised arm
 without brakes cannot simply be released.
 
+For another arm, supply a robot description and a small driver in your own package.
+The same configuration feeds execution, simulation and recorded replay. The
+[adapter guide](docs/adapters.md) includes a runnable two-joint example.
+
 ## Develop
 
 ```sh

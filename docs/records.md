@@ -7,26 +7,29 @@ wu replay runs/YOUR-RUN --out replay.gif --speed 3
 ```
 
 Both commands run offline. Replay reconstructs measured joints and the recorded
-world model with the installed robot geometry. It does not operate a robot or
+world model with the saved robot geometry. It does not operate a robot or
 re-run the plan. Original camera observations remain under `views/`; the rendered
-replay is labeled separately. Use the matching package/model version when geometry
-has changed.
+replay is labeled separately. New records include the robot description and URDF,
+so they remain usable after moving the run folder or uninstalling its driver.
+Older records without a saved model use the installed built-in geometry.
 
 A run contains:
 
 | File | Contents |
 | --- | --- |
 | `session.json` | Format/package version, source and URDF hashes, adapter, startup configuration, initial world/command/measurement snapshot, fitted model |
+| `robot.urdf` | The geometry used by this run; its limits and gripper description are in `session.json` |
 | `events.jsonl` | Submitted plan JSON, structured outcomes, checkpoint questions/answers, contacts, world changes, view paths and annotations |
 | `tape/*.npz` | Incremental telemetry chunks; `power.npz` keeps power transitions |
 | `tape.npz` | Complete telemetry at the last explicit save or normal close |
 | `summary.json`, `world.json` | Summary and world model at the last explicit save or normal close |
 | `views/` | Saved camera observations |
 
-Telemetry is flushed once per second on a background thread. A process kill may
+Events and telemetry are flushed once per second on a background thread. A process kill may
 lose the current interval and an unfinished event line; it should not lose earlier
 committed chunks. `inspect`, `replay`, and fitting read the newer of the complete
-tape and the chunks. `status --json` reports recording errors. This is local file
+tape and the chunks. `status --json` reports recording errors; storage failures do
+not fault the robot or prevent release and shutdown. This is local file
 persistence, not a guarantee against storage-device failure.
 
 Record the context an integration knows, without coupling the runtime to a model SDK:

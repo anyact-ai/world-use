@@ -109,9 +109,11 @@ the control thread keeps reading, checking limits and holding. Before playback, 
 that the command, scene and limits still match. Each step is prepared from its own current
 state, including after contact or a checkpoint. Embedded virtual-clock runs prepare inline.
 The worker never falls back silently to CPU-heavy work on the control thread.
+Snapshots carry the robot description and resolved world frames. The worker builds
+a twin from those data without importing the hardware driver or a body registry.
 
 Records include startup state, plans and structured outcomes. A background journal saves
-incremental telemetry once per second; offline inspection can recover committed chunks
+events and incremental telemetry once per second; offline inspection can recover committed chunks
 without the daemon. See the [record format](docs/records.md).
 
 ## Two loops, one runtime
