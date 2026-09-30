@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import pairwise
+from numbers import Real
 
 import numpy as np
 
@@ -47,6 +48,8 @@ class Envelope:
             self.overrides[key] = dict(value=value, reason=reason, was=self.max_excursion)
             self.max_excursion = value
         elif key == "turn_height":
+            if isinstance(value, bool) or not isinstance(value, Real) or not np.isfinite(value):
+                raise ValueError("turn_height must be a finite number")
             was = None if self.m.turn_clearance is None else self._turn_height(self.m.turn_clearance[1])
             self.overrides[key] = dict(value=float(value), reason=reason, was=was)
         else:
