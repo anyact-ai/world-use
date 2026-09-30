@@ -12,12 +12,9 @@ from collections.abc import Callable
 from .cli import help_text, job_text
 from .client import DEFAULT_URL, Client, DaemonError
 
-INSTRUCTIONS = (
-    "You drive a robot. A kernel underneath plans, checks and executes every motion and holds still whenever "
-    "something unexpected happens. Read `card` once. Plan a phase as a list of steps (`help` lists them) and `run` "
-    "it: it is rehearsed first, and if the kernel would refuse any step, nothing moves and every problem is listed. "
-    "Answer checkpoints with `answer`; `look` at a camera when you need to see. Distances are metres in the work "
-    "frame: forward, left, up. The robot is slow to heat and fast to act: think with torque off, act in phases.")
+INSTRUCTIONS = ("Read the policy tool or world-use://policy resource before operating the robot, then card and status. "
+                "Plans use metres in the work frame. Every powered hold heats the motors. "
+                "Use job to wait for a submitted run and inspect its final outcome.")
 
 
 def build(url: str = DEFAULT_URL):
@@ -38,6 +35,31 @@ def build(url: str = DEFAULT_URL):
         except OSError as e:
             return f"cannot reach the daemon at {url} ({e}); start it with: wu up"
 
+    @server.resource("world-use://policy")
+    def policy_resource() -> str:
+        from . import policy_text
+        return policy_text()
+
+    @server.tool()
+    def policy() -> str:
+        """The complete installed operating brief. Read before operating a robot."""
+        return policy_resource()
+
+    @server.tool()
+    def job(job: int, wait_s: float = 60.0) -> dict | str:
+        """Wait for a run to finish or ask a question; returns its structured outcome, even after completion."""
+        return call(lambda: c.job(job, wait=wait_s))
+
+    @server.tool()
+    def reset() -> str:
+        """Clear a fault after the operator resolves it; unconfirmed motor power still blocks reset."""
+        return call(lambda: c.reset()["line"])
+
+    @server.tool()
+    def shutdown() -> dict | str:
+        """Release at rest, save the record, and stop the daemon. Refused while raised or busy."""
+        return call(c.shutdown)
+
     @server.tool()
     def card() -> str:
         """What this robot is and can do: joints, gripper, which way the tool points, the frames, the surfaces and
@@ -45,18 +67,17 @@ def build(url: str = DEFAULT_URL):
         return call(c.card)
 
     @server.tool()
-    def status() -> str:
-        """One line: the running job, the tool position (work frame), gripper, joint torques, the hottest motor."""
-        return call(lambda: c.status()["line"])
+    def status() -> dict | str:
+        """Structured session, power, job and feedback state, plus a concise human-readable line."""
+        return call(c.status)
 
     @server.tool()
-    def run(plan: list[dict] | dict | None = None, wait_s: float = 60.0, rehearse: bool = True,
-            checked: bool = False) -> str:
+    def run(plan: list[dict] | dict, wait_s: float = 60.0, rehearse: bool = True) -> str:
         """Run a plan: a list of steps, e.g. [{"do": "line", "up": 0.05}, {"do": "grip", "expect_mm": [35, 45]}].
         Rehearsed on a twin first; if any step would break a limit nothing moves and every problem is listed.
-        checked=true runs the plan the last `check` rehearsed. Returns the outcome and the state line, or the
+        Returns the outcome and the state line, or the
         question a checkpoint is waiting on."""
-        return call(lambda: job_text(c.run(plan, wait=wait_s, check=rehearse, checked=checked)))
+        return call(lambda: job_text(c.run(plan, wait=wait_s, check=rehearse)))
 
     @server.tool()
     def check(plan: list[dict] | dict) -> str:

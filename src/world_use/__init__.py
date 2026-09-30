@@ -23,3 +23,9 @@ __version__ = "0.2.0"
 __all__ = ["Behavior", "Body", "GripperSpec", "JointSpec", "JointState", "Kernel", "Manifest", "Outcome", "Plan",
            "RealClock", "Refused", "Report", "Rest", "VirtualClock", "World", "bodies", "build", "card", "check",
            "fit", "incident", "register", "state_line", "status", "twin"]
+
+
+def policy_text() -> str:
+    """The operating brief shipped with this version of the runtime."""
+    from importlib.resources import files
+    return files("world_use").joinpath("POLICY.md").read_text()

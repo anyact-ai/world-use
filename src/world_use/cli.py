@@ -6,7 +6,6 @@ every line ends up in a model's context.
     wu status                   one line: job, tool position, gripper, torques, heat
     wu look [CAMERA]            save a picture, with the tool and the known boxes drawn on it; prints its path
     wu run '<spec>'|file        rehearse, then run; waits up to --wait seconds, then prints the outcome
-    wu run --checked            run the plan the last `wu check` rehearsed, without pasting it again
     wu check '<spec>'|file      rehearse only: the forecast, nothing real moves
     wu answer JOB yes|no|...    answer a checkpoint question
     wu world | wu box ...       what the kernel knows about the scene; tell it about a surface or object
@@ -139,13 +138,13 @@ def main(argv=None) -> int:
     p.add_argument("--out", type=Path, default=Path("fit.json"))
     sub.add_parser("status")
     sub.add_parser("card")
+    sub.add_parser("policy", help="print the installed agent brief (no daemon needed)")
     for name in ("run", "check"):
         p = sub.add_parser(name)
-        p.add_argument("spec", nargs="?" if name == "run" else None, help="JSON spec or a file containing one")
+        p.add_argument("spec", help="JSON spec or a file containing one")
         if name == "run":
             p.add_argument("--wait", type=float, default=60.0, help="seconds to wait for the outcome")
             p.add_argument("--no-check", action="store_true", help="skip the rehearsal")
-            p.add_argument("--checked", action="store_true", help="run the plan the last `wu check` rehearsed")
     p = sub.add_parser("look", help="save a picture from a camera and print its path")
     p.add_argument("camera", nargs="?")
     p.add_argument("--plan", help="draw this plan's tool path on the picture (JSON spec or file)")
@@ -192,6 +191,10 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     c = Client(a.url)
     try:
+        if a.cmd == "policy":
+            from . import policy_text
+            print(policy_text())
+            return 0
         if a.cmd == "up":
             return cmd_up(a)
         if a.cmd == "fit":
@@ -247,9 +250,7 @@ def _dispatch(a, c: Client):
     if a.cmd == "card":
         return c.card()
     if a.cmd == "run":
-        if a.spec is None and not a.checked:
-            raise SystemExit("wu run '<plan>' (or wu run --checked, for the plan the last wu check rehearsed)")
-        return c.run(None if a.checked else _spec(a.spec), wait=a.wait, check=not a.no_check, checked=a.checked)
+        return c.run(_spec(a.spec), wait=a.wait, check=not a.no_check)
     if a.cmd == "calibrate":
         return c.calibrate(a.camera, a.points, a.spread, a.wait)
     if a.cmd == "look":

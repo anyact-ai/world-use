@@ -203,8 +203,8 @@ def card(k, reach=None) -> str:
     lines = [f"# {m.name}" + (" (simulated)" if sim else ""),
              f"{m.n} joints, control at {m.rate_hz:.0f} Hz; senses: {', '.join(sorted(m.sensing))}."]
     if sim:
-        lines.append("This is a simulation: the joints follow commands exactly, with no sag or noise. Lines marked "
-                     "'hardware:' describe the real robot.")
+        lines.append("This is a simulation: the joints follow commands with a small lag and approximate contact. "
+                     "Lines marked 'hardware:' describe the real robot.")
     lines.append("joints (deg): " + "; ".join(f"j{i + 1} {j.name} {np.degrees(j.lower):.0f}..{np.degrees(j.upper):.0f}"
                                           for i, j in enumerate(m.joints)))
     if m.gripper:

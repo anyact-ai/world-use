@@ -14,11 +14,24 @@ def test_mcp_tools_drive_the_daemon(daemon):
 
     async def session():
         names = {t.name for t in await server.list_tools()}
-        assert {"card", "status", "run", "check", "answer", "look", "world", "add_box", "help", "stop"} <= names
+        assert {"card", "status", "run", "check", "answer", "look", "world", "add_box", "help", "stop",
+                "policy", "job", "reset", "shutdown"} <= names
+        r = await server.call_tool("policy", {})
+        assert "power_uncertain" in r.content[0].text
+        assert "world-use://policy" in {str(r.uri) for r in await server.list_resources()}
         r = await server.call_tool("status", {})
         assert "idle" in r.content[0].text
-        r = await server.call_tool("run", {"plan": [{"do": "line", "up": 0.03, "duration": 1.0}], "wait_s": 10})
-        assert "job 1 done" in r.content[0].text
+        assert "power_uncertain" in r.content[0].text
+        r = await server.call_tool("run", {"plan": [{"do": "line", "up": 0.03, "duration": 1.0}], "wait_s": 0})
+        assert "job 1" in r.content[0].text
+        r = await server.call_tool("job", {"job": 1, "wait_s": 10})
+        assert '"status": "done"' in r.content[0].text
+        r = await server.call_tool("job", {"job": 1, "wait_s": 0})
+        assert '"outcome"' in r.content[0].text
+        r = await server.call_tool("reset", {})
+        assert not r.is_error
+        r = await server.call_tool("run", {"plan": {"do": "hold", "seconds": 0.1}, "wait_s": 10})
+        assert "job 2 done" in r.content[0].text
         r = await server.call_tool("look", {"camera": "side"})
         assert {x.type for x in r.content} == {"text", "image"}
         r = await server.call_tool("run", {"plan": {"do": "teleport"}})

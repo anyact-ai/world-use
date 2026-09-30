@@ -41,10 +41,10 @@ class Client:
     def card(self) -> str:
         return self._call("GET", "/card")["card"]
 
-    def run(self, spec=None, wait: float = 0.0, check: bool = True, checked: bool = False) -> dict:
+    def run(self, spec, wait: float = 0.0, check: bool = True) -> dict:
         """Rehearse (unless check=False), then run. A plan the kernel would refuse comes back refused, unmoved.
-        checked=True runs the plan the last `check` rehearsed."""
-        return self._call("POST", "/run", dict(spec=spec, wait=wait, check=check, checked=checked))
+        Each submission includes its own plan."""
+        return self._call("POST", "/run", dict(spec=spec, wait=wait, check=check))
 
     def job(self, job_id: int, wait: float = 0.0) -> dict:
         return self._call("GET", f"/jobs/{job_id}?wait={wait}")

@@ -27,7 +27,7 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 
 from . import bodies, calibrate, cameras, views
-from .behaviors import REGISTRY
+from .behaviors import REGISTRY, build
 from .errors import Refused, explain
 from .fit import load as load_fit
 from .kernel import Kernel
@@ -54,7 +54,6 @@ class Daemon:
         self.shots = 0
         self.calibrations: dict[int, dict] = {}         # job id -> camera, picture size and, once solved, the result
         self._solving = threading.Lock()
-        self.checked = None                              # the last plan `check` rehearsed: `run --checked` runs it
         self.stop_loop = threading.Event()
         self.done = threading.Event()                    # set once the shutdown reply has gone out
         self._closing = threading.Lock()                 # held once a shutdown has begun
@@ -115,15 +114,12 @@ class Daemon:
             return 404, dict(error=f"no route {method} /{path.strip('/')}")
         if route == ["run"]:
             if body.get("checked"):
-                if self.checked is None:
-                    raise Refused("no plan has been checked yet", "spec", "check one first, or give the plan")
-                return self._run(self.checked, wait, bool(body.get("check", True)))
+                raise Refused("submit the plan explicitly; checked plans are no longer shared between clients", "spec")
             return self._run(body["spec"], wait, bool(body.get("check", True)))
         if route == ["look"]:
             return 200, self.look(body.get("camera"), body.get("spec"), bool(body.get("grid")))
         if route == ["check"]:
             report = self.rehearser.check(body["spec"], k)
-            self.checked = body["spec"]
             return 200, dict(report.to_dict(), text=str(report))
         if route == ["answer"]:
             k.answer(int(body["job"]), body["answer"])
@@ -162,6 +158,7 @@ class Daemon:
 
     def _run(self, spec, wait: float, rehearse: bool) -> tuple[int, dict]:
         """Rehearse an idle snapshot, then admit only while that snapshot is still current."""
+        build(spec)                  # malformed plans are request errors, before rehearsal or queueing
         k = self.k
         report: Report | None = None
         admission = None

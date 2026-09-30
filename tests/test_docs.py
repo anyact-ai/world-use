@@ -7,6 +7,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_the_policy_brief_lists_every_step():
-    table = (ROOT / "POLICY.md").read_text()
+    table = (ROOT / "src/world_use/POLICY.md").read_text()
     missing = [kind for kind in REGISTRY if kind != "seq" and f"| {kind} |" not in table]
     assert not missing, f"POLICY.md's vocabulary table lacks {missing}"

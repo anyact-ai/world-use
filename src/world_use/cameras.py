@@ -321,10 +321,7 @@ def equirect_from_config(cfg: dict, world) -> EquirectCut:
 # -- drawing ------------------------------------------------------------------------------------------
 
 def _font(size: int):
-    try:
-        return ImageFont.load_default(size=size)
-    except TypeError:                                  # Pillow < 10.1
-        return ImageFont.load_default()
+    return ImageFont.load_default(size=size)
 
 
 def _corners(box) -> np.ndarray:

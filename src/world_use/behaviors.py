@@ -123,7 +123,7 @@ def _speed_timing(k: Kernel, speed=None):
 
 
 class Joints(PathBehavior):
-    """Joint-space move: each joint turns straight to its target. The only step that changes the gripper's angle.
+    """Joint-space move: each joint turns straight to its target. Also changes the gripper's angle.
 
     target_deg  {joint number: degrees}, joints numbered from 1
     delta_deg   {joint number: degrees to add}

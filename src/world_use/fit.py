@@ -238,10 +238,6 @@ def _solve(A, y, prior, scale, free: int) -> np.ndarray:
         fixed[negative] = True
 
 
-def _rms_by_joint(err, joint, n) -> dict[int, float]:
-    return {i: float(np.sqrt(np.mean(err[joint == i] ** 2))) for i in range(n) if (joint == i).sum() >= 10}
-
-
 def fit(run_dirs, manifest) -> Model:
     """Fit a model for `manifest` from the flight records in run_dirs (see the module docstring)."""
     chain = Chain(manifest.urdf, manifest.tool_link)
