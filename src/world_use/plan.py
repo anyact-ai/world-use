@@ -19,6 +19,7 @@ import numpy as np
 from . import motion
 from .behaviors import REGISTRY, Outcome
 from .body import Manifest
+from .config import manifest_data, manifest_from_data
 from .errors import Refused
 from .geometry import rotation_log
 from .kernel import Kernel, VirtualClock
@@ -112,7 +113,7 @@ class Report:
 @dataclass(frozen=True)
 class Snapshot:
     """A robot's kernel as plain data: all a twin needs, so a rehearsal can run in another process."""
-    body: str | None                  # the manifest's name in bodies.manifests(); None if it is not registered
+    model: dict                      # complete robot description; no driver imports in the worker
     world: dict
     q: list[float]                    # measured: the twin starts where the robot really is
     gripper: float | None
@@ -131,11 +132,10 @@ class Snapshot:
 
 def snapshot(k: Kernel) -> Snapshot:
     """k's state as plain data, taken under its lock so it is consistent."""
-    from . import bodies
     with k.lock:
         st, env, route = k.state, k.envelope, k.home_route
         return Snapshot(
-            body=next((name for name, m in bodies.manifests().items() if m is k.manifest), None),
+            model=manifest_data(k.manifest),
             world=deepcopy(k.world.to_dict()), q=np.asarray(st.q, float).tolist(), gripper=st.gripper,
             temp=None if st.temp is None else np.asarray(st.temp, float).tolist(),
             q_cmd=np.asarray(k.cmd.q, float).tolist(), grip_cmd=k.cmd.gripper,
@@ -161,12 +161,9 @@ def same_start(s: Snapshot, k: Kernel) -> bool:
 
 def twin_from(s: Snapshot, manifest: Manifest | None = None) -> Kernel:
     """A simulated kernel at the snapshot's state: same manifest, world, limits, session start and home route."""
-    from . import bodies
     from .bodies.sim import SimBody
     if manifest is None:
-        if s.body is None:
-            raise ValueError("this snapshot's body is not registered, so its manifest must be given")
-        manifest = bodies.manifests()[s.body]
+        manifest = manifest_from_data(s.model)
     world = World.from_dict(s.world)
     body = SimBody(manifest, world, q=s.q, gripper=s.gripper, temp_c=s.temp)
     t = Kernel(body, world, VirtualClock(manifest.rate_hz), ik_weights=s.ik_weights, auto_answer=True)

@@ -174,6 +174,8 @@ class Kernel:
         if self.chain.n != self.manifest.n:
             raise ValueError(f"URDF chain to {self.manifest.tool_link} has {self.chain.n} joints; "
                              f"manifest has {self.manifest.n}")
+        if [j.name for j in self.manifest.joints] != self.chain.joint_names:
+            raise ValueError(f"manifest joints must follow URDF chain order: {self.chain.joint_names}")
         self.world = world or World()
         self.clock = clock or RealClock(self.manifest.rate_hz)
         self.t0 = self.clock.now()

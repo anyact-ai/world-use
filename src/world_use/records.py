@@ -8,6 +8,7 @@ import numpy as np
 from PIL import ImageDraw, ImageFont
 
 from . import bodies, cameras
+from .config import manifest_from_data
 from .kinematics import Chain
 from .recorder import Tape, load_tape
 from .world import World
@@ -62,15 +63,25 @@ def describe(record: dict) -> str:
     return "\n".join(lines)
 
 
+def robot_of(folder: Path | str):
+    """Use the recorded model; retain support for older records of built-in robots."""
+    folder = Path(folder)
+    meta = json.loads((folder / "session.json").read_text())
+    if model := meta.get("initial", {}).get("model"):
+        return manifest_from_data(model, folder)
+    manifest = bodies.manifests().get(meta.get("adapter"))
+    if manifest is None:
+        raise ValueError("this older record has no robot description; replay requires a known built-in robot")
+    return manifest
+
+
 def replay(folder: Path | str, output: Path | str, fps: int = 12, speed: float = 1.0) -> Path:
     """Render measured joints and the recorded world model to a GIF, at an explicit playback speed."""
     folder, output = Path(folder), Path(output)
     if not 1 <= fps <= 60 or not 0 < speed <= 100:
         raise ValueError("fps must be 1..60 and speed must be greater than 0 and at most 100")
     meta = json.loads((folder / "session.json").read_text())
-    manifest = bodies.manifests().get(meta.get("adapter"))
-    if manifest is None:
-        raise ValueError("replay needs the recorded body's registered manifest")
+    manifest = robot_of(folder)
     a = load_tape(folder)
     if not len(a.get("t", [])):
         raise ValueError("this record has no committed telemetry")

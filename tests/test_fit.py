@@ -138,15 +138,20 @@ def test_the_card_says_which_torque_model_is_in_use():
 
 
 def test_wu_fit_finds_the_robot_from_the_records_and_writes_the_model(records, tmp_path, capsys):
-    assert fit.robot_of(records) is MANIFEST
+    recorded = fit.robot_of(records)
+    assert recorded.joints == MANIFEST.joints and recorded.urdf.read_bytes() == MANIFEST.urdf.read_bytes()
     out = tmp_path / "fit.json"
     assert cli.main(["fit", *map(str, records), str(tmp_path / "no-record"), "--out", str(out)]) == 0
     text = capsys.readouterr().out
     assert "each record predicted by a fit made without it" in text and f'fit = "{out}"' in text
     assert fit.load(out).records == ["a", "b", "c"]
-    (records[0] / "summary.json").write_text(json.dumps({"body": "another arm"}))
+    path = records[0] / "session.json"
+    original = path.read_text()
+    other = json.loads(original)
+    other["initial"]["model"]["name"] = "another arm"
+    path.write_text(json.dumps(other))
     try:
         with pytest.raises(ValueError, match="one robot at a time"):
             fit.robot_of(records)
     finally:
-        (records[0] / "summary.json").write_text(json.dumps({"body": MANIFEST.name}))
+        path.write_text(original)

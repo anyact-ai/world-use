@@ -1,0 +1,13 @@
+body = "planar:PlanarBody"
+robot = "planar.toml"
+
+[body_options]
+start = [0.0, 0.5] # Options belong to the driver constructor.
+
+[simulation]
+start_deg = [0.0, 28.65] # Used by --body sim instead of the driver options.
+
+[[frame]]
+name = "work"
+origin = [0.0, 0.0, 0.0]
+rpy_deg = [0.0, 0.0, 0.0]

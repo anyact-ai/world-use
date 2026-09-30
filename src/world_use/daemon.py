@@ -19,7 +19,6 @@ import sys
 import tempfile
 import threading
 import time
-import tomllib
 from dataclasses import replace
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -30,6 +29,7 @@ import numpy as np
 
 from . import bodies, calibrate, cameras, views
 from .behaviors import REGISTRY, build
+from .config import load_robot, load_workcell
 from .errors import Refused, explain
 from .fit import load as load_fit
 from .kernel import Kernel
@@ -49,8 +49,10 @@ class Daemon:
         self.host, self.port = host, port
         from .bodies.sim import SimBody
         adapter = next((name for name, m in bodies.manifests().items() if m is kernel.manifest), "custom")
-        self.session = session or session_identity(
-            f"sim:{adapter}" if isinstance(kernel.body, SimBody) else adapter, {})
+        self.session = session or dict(
+            adapter=f"sim:{adapter}" if isinstance(kernel.body, SimBody) else adapter,
+            mode="simulation" if getattr(kernel.body, "simulated", False) else "hardware",
+            workcell_digest=hashlib.sha256(b"{}").hexdigest())
         self.cameras = dict(cams or {})
         kernel.cameras = self.cameras                    # the card lists them
         kernel.record_session(session=self.session, config=config or {})
@@ -418,35 +420,19 @@ def _plain(o):
     return str(o)
 
 
-WORKCELLS = Path(__file__).parent / "workcells"
-
-
 def session_identity(name: str, cell: dict) -> dict:
     """The selected adapter and startup configuration, distinct from the robot manifest and live world."""
-    adapter = "sim:rebot" if name == "sim" else name
+    adapter = "sim:rebot" if name == "sim" and "robot" not in cell else name
     config = dict(cell)
-    if "fit" in config:
-        config["fit_sha256"] = hashlib.sha256(Path(config["fit"]).read_bytes()).hexdigest()
+    for key in ("fit", "robot"):
+        if key in config:
+            config[f"{key}_sha256"] = hashlib.sha256(Path(config[key]).read_bytes()).hexdigest()
+    if "robot" in config:
+        model = load_robot(config["robot"])
+        config["urdf_sha256"] = hashlib.sha256(model.urdf.read_bytes()).hexdigest()
     digest = hashlib.sha256(json.dumps(config, sort_keys=True, default=str).encode()).hexdigest()
-    return dict(adapter=adapter, mode="simulation" if adapter.startswith("sim:") else "hardware",
+    return dict(adapter=adapter, mode="simulation" if bodies.simulated(name) else "hardware",
                 workcell_digest=digest)
-
-
-def load_workcell(path: Path | None) -> dict:
-    """A workcell file (TOML): body, body options, boxes, cameras, facts, operator overrides and the robot model
-    fitted from its records (`fit`, a path from the workcell's folder). Boxes and facts are added after connecting,
-    so they may use frames the body defines (like "work"). A bare name ("block") means one of the workcells that
-    ship with world-use."""
-    if path is None:
-        return {}
-    path = Path(path)
-    if not path.exists() and (WORKCELLS / f"{path.name}.toml").exists():
-        path = WORKCELLS / f"{path.name}.toml"
-    with open(path, "rb") as f:
-        cell = tomllib.load(f)
-    if "fit" in cell:
-        cell["fit"] = str((path.parent / cell["fit"]).resolve())
-    return cell
 
 
 def apply_workcell(cell: dict, k: Kernel, truth: World | None = None):
@@ -454,6 +440,14 @@ def apply_workcell(cell: dict, k: Kernel, truth: World | None = None):
     there as well, and a box marked `known = false` goes only there: part of the scene the policy has to discover."""
     if "fit" in cell:
         k.use_fit(load_fit(cell["fit"]))
+    from .geometry import rpy
+    for frame in cell.get("frame", []):
+        T = np.eye(4)
+        T[:3, 3] = frame.get("origin", [0, 0, 0])
+        T[:3, :3] = rpy(*np.radians(frame.get("rpy_deg", [0, 0, 0])))
+        k.world.add_frame(frame["name"], T, source="workcell")
+    if truth is not None:
+        truth.frames.update(k.world.frames)
     for b in cell.get("box", []):
         b = dict(b)
         known = b.pop("known", True)
@@ -490,10 +484,31 @@ def make_cameras(cell: dict, k: Kernel, body, truth: World | None) -> dict[str, 
     return cams
 
 
+def make_body(name: str, cell: dict, world: World | None = None):
+    model = load_robot(cell["robot"]) if "robot" in cell else None
+    options = dict(cell.get("body_options", {}))
+    if name == "sim" or name.startswith("sim:"):
+        # Keep existing simulation workcells working. A hardware driver's options never go to SimBody.
+        selected = cell.get("body", "sim")
+        if selected != "sim" and not selected.startswith("sim:"):
+            options = {}
+        if options.keys() & cell.get("simulation", {}).keys():
+            raise ValueError("simulation options must not be repeated in body_options")
+        options.update(cell.get("simulation", {}))
+        if "start_deg" in options:
+            if "q" in options:
+                raise ValueError("simulation: choose start_deg or q, not both")
+            options["q"] = np.radians(options.pop("start_deg"))
+    try:
+        return bodies.make(name, world, manifest=model, **options)
+    except TypeError as e:
+        raise ValueError(f"{name} options: {e}") from e
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="world-use daemon: owns one robot and serves the policy API")
-    ap.add_argument("--body", help="sim | sim:<robot> | rebot (default: the workcell's, else sim)")
-    ap.add_argument("--workcell", type=Path, help="TOML file with body options, boxes and facts")
+    ap.add_argument("--body", help="sim | sim:<built-in> | rebot | module:Class (default: workcell's, else sim)")
+    ap.add_argument("--workcell", help="TOML file with robot, connection options and scene")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--runs", type=Path, default=Path("runs"), help="where flight records go")
     ap.add_argument("--enable", action="store_true", help="switch torque on right away")
@@ -502,12 +517,9 @@ def main(argv=None):
     cell = load_workcell(a.workcell)
     name = a.body or cell.get("body", "sim")
     world = World()
-    simulated = name.startswith("sim")
-    truth = World() if simulated else None            # the simulator's scene; `world` is the kernel's model of it
-    options = dict(cell.get("body_options", {}))
-    if simulated and "start_deg" in options:
-        options["q"] = np.radians(options.pop("start_deg"))
-    body = bodies.make(name, truth if simulated else world, **options)
+    # Only the built-in twin renders cameras and simulates contacts with the truth world.
+    truth = World() if name == "sim" or name.startswith("sim:") else None
+    body = make_body(name, cell, truth)
     run_dir = a.runs / f"{datetime.now():%Y%m%d-%H%M%S-%f}-{name.replace(':', '-')}"
     k = Kernel(body, world, run_dir=run_dir)
     k.connect()
@@ -537,4 +549,7 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (ValueError, KeyError, TypeError, OSError) as e:
+        sys.exit(f"world-use startup: {explain(e)}")

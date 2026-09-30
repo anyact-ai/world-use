@@ -242,9 +242,15 @@ def session_record(k, **context) -> dict:
         source.update(str(path.relative_to(root)).encode())
         source.update(path.read_bytes())
     snap = snapshot(k)
-    return dict(format_version=1, created_at=datetime.now(UTC).isoformat(), package_version=__version__,
+    initial = asdict(snap)
+    urdf = Path(k.manifest.urdf).read_bytes()
+    if k.run_dir:
+        _atomic(k.run_dir / "robot.urdf", lambda f: f.write(urdf))
+        initial["model"]["urdf"] = "robot.urdf"
+    return dict(format_version=2, created_at=datetime.now(UTC).isoformat(), package_version=__version__,
                 source_sha256=source.hexdigest(),
-                adapter=next((n for n, m in bodies.manifests().items() if m is k.manifest), None),
+                adapter=next((n for n, m in bodies.manifests().items() if m is k.manifest),
+                             f"{type(k.body).__module__}:{type(k.body).__qualname__}"),
                 body=k.manifest.name, mode="simulation" if getattr(k.body, "simulated", False) else "hardware",
-                urdf_sha256=hashlib.sha256(Path(k.manifest.urdf).read_bytes()).hexdigest(),
-                initial=asdict(snap), **context)
+                urdf_sha256=hashlib.sha256(urdf).hexdigest(),
+                initial=initial, **context)

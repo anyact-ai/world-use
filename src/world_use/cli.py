@@ -84,7 +84,7 @@ def cmd_up(a):
     from .daemon import load_workcell, session_identity
 
     c = Client(a.url)
-    cell = load_workcell(Path(a.workcell) if a.workcell else None)
+    cell = load_workcell(a.workcell)
     wanted = session_identity(a.body or cell.get("body", "sim"), cell)
 
     def connected():
@@ -113,11 +113,14 @@ def cmd_up(a):
     if a.workcell:
         args += ["--workcell", a.workcell if not Path(a.workcell).exists() else str(Path(a.workcell).resolve())]
     with open(log_dir / "daemon.log", "a") as log:
-        subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+        process = subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                   start_new_session=True)
     for _ in range(100):
         time.sleep(0.1)
         if c.alive():
             return connected()
+        if process.poll() is not None:
+            break
     print(f"the daemon did not come up; see {log_dir / 'daemon.log'}", file=sys.stderr)
     return 1
 
@@ -149,7 +152,7 @@ def main(argv=None) -> int:
     p.add_argument("--wait", type=float, default=60.0)
     p = sub.add_parser("fit", help="fit the robot's model (link masses, friction) from flight records")
     p.add_argument("runs", nargs="+", type=Path, help="flight record folders")
-    p.add_argument("--body", help="the robot the records are from (default: what their summaries say)")
+    p.add_argument("--body", help="built-in robot name or robot TOML file (default: the recorded model)")
     p.add_argument("--out", type=Path, default=Path("fit.json"))
     p = sub.add_parser("demo", help="run the scripted block task in simulation, with a success check")
     p.add_argument("--out", type=Path, default=Path("runs/block-demo"))
@@ -342,12 +345,14 @@ def _dispatch(a, c: Client):
 
 def cmd_fit(a) -> int:
     from . import bodies, fit
+    from .config import load_robot
     from .kinematics import Chain
-    runs = [r for r in a.runs if (r / "tape.npz").exists()]
+    runs = [r for r in a.runs if (r / "tape.npz").exists() or any((r / "tape").glob("[0-9]*.npz"))]
     if not runs:
-        print("no flight records among those paths (a record is a folder with tape.npz)", file=sys.stderr)
+        print("no recorded telemetry among those paths", file=sys.stderr)
         return 1
-    manifest = bodies.manifests()[a.body] if a.body else fit.robot_of(runs)
+    manifest = fit.robot_of(runs) if not a.body else (
+        bodies.manifests()[a.body] if a.body in bodies.manifests() else load_robot(a.body))
     model = fit.fit(runs, manifest)
     model.save(a.out)
     print(json.dumps(model.to_dict()) if a.json else
@@ -387,7 +392,8 @@ def help_text(c: Client, step: str | None = None) -> str:
 def _summary(s: dict) -> str:
     share = s.get("moving_share")
     return (f"powered {s.get('powered_s', 0)} s, moving {s.get('moving_s', 0)} s"
-            + (f" ({100 * share:.0f}%)" if share is not None else "") + f"; max temps {s.get('max_temp_c')}")
+            + (f" ({100 * share:.0f}%)" if share is not None else "") + f"; max temps {s.get('max_temp_c')}"
+            + (f"; recording failed: {s['recording_error']}" if s.get("recording_error") else ""))
 
 
 if __name__ == "__main__":

@@ -5,18 +5,16 @@ from pathlib import Path
 
 import numpy as np
 
-from world_use import JointSpec, JointState, Kernel, Manifest, VirtualClock, World, check
-
-MANIFEST = Manifest("Planar example", Path(__file__).with_suffix(".urdf"), "tool",
-                    (JointSpec("shoulder", -2.5, 2.5), JointSpec("elbow", -2.5, 2.5)))
+from world_use import JointState, Kernel, VirtualClock, World, check
+from world_use.config import load_robot
 
 
 class PlanarBody:
-    manifest = MANIFEST
     simulated = True
 
-    def __init__(self):
-        self.q = np.array([0.0, 0.5])
+    def __init__(self, manifest=None, start=(0.0, 0.5)):
+        self.manifest = manifest or load_robot(Path(__file__).with_suffix(".toml"))
+        self.q = np.asarray(start, float).copy()
         self.target = self.q.copy()
         self.on = False
         self.t = 0.0
@@ -44,7 +42,8 @@ class PlanarBody:
 
 
 def main():
-    k = Kernel(PlanarBody(), World(), VirtualClock(MANIFEST.rate_hz))
+    body = PlanarBody()
+    k = Kernel(body, World(), VirtualClock(body.manifest.rate_hz))
     k.connect()
     k.enable()
     phase = {"do": "joints", "delta_deg": {"1": 10, "2": -5}}

@@ -32,10 +32,6 @@ def _serve(conn):
             parent.join()
             os._exit(0)
         threading.Thread(target=orphaned, daemon=True).start()
-    from . import bodies
-    from .kinematics import Chain
-    for m in bodies.manifests().values():
-        Chain(m.urdf, m.tool_link)
     conn.send((os.getpid(), _signature()))
     try:
         while (request := conn.recv()) is not None:
@@ -125,8 +121,8 @@ class Rehearser:
 
     def _snapshot(self, k, snap=None):
         snap = snap or plan.snapshot(k)
-        if snap.body is None or self._steps != _signature():
-            raise Refused("the worker cannot rebuild this body or its behaviors", "worker_extension",
+        if self._steps != _signature():
+            raise Refused("the worker cannot rebuild these behaviors", "worker_extension",
                           "register the extension in an importable module; use plan.check for embedded offline work")
         return snap
 
