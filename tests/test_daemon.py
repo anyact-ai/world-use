@@ -55,6 +55,7 @@ def test_malformed_spec_is_a_409_with_the_reason(client):
 
 def test_a_refusal_prints_as_json_when_json_is_asked_for(client, capsys):
     import json
+
     from world_use import cli
     capsys.readouterr()
     assert cli.main(["--url", client.url, "--json", "run", '{"do": "teleport"}']) == 2

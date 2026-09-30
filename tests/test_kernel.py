@@ -794,7 +794,8 @@ def test_a_weak_grip_is_a_surprise_and_grasp_retries_it(lifted):
     weak = k.run({"do": "grip", "start": 3.0, "hold_effort": 2 * abs(firm.data["holding_effort"])})
     assert weak.status == "surprise" and "weak grip" in weak.message, weak.message
     k.run({"do": "gripper", "to": 3.0})
-    out = k.run({"do": "grasp", "start": 3.0, "hold_effort": 2 * abs(firm.data["holding_effort"]), "search_mm": [[4, 0]]})
+    strict = 2 * abs(firm.data["holding_effort"])
+    out = k.run({"do": "grasp", "start": 3.0, "hold_effort": strict, "search_mm": [[4, 0]]})
     assert out.status == "surprise" and out.data["tries"] == 2 and "weak grip" in out.message
     assert any(e["kind"] == "grasp_retry" and "weak grip" in e["message"] for e in k.events.since(0))
 
