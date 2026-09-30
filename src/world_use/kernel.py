@@ -184,11 +184,10 @@ class Kernel:
         self.run_dir = Path(run_dir) if run_dir else None
         if self.run_dir:
             self.run_dir.mkdir(parents=True, exist_ok=True)
-        self.events = EventLog(self.run_dir / "events.jsonl" if self.run_dir else None,
-                               clock=self.clock.now, t0=self.t0)
+        self.events = EventLog(keep=None if self.run_dir else 5000, clock=self.clock.now, t0=self.t0)
         self.tape = Tape(m.n)
         self.tape.mark_power(0.0, False)
-        self.journal = Journal(self.tape, self.run_dir) if self.run_dir else None
+        self.journal = Journal(self.tape, self.run_dir, events=self.events) if self.run_dir else None
         self.heat = Heat()
         self.lock = threading.RLock()
         self.jobs: dict[int, Job] = {}
@@ -339,15 +338,17 @@ class Kernel:
     def close(self) -> dict:
         """Close the connection (never switches torque off by itself) and write the flight record."""
         self.body.close()
-        if self.journal:
-            self.journal.close()
-        summary = self.save_record()
         self.emit("closed", "connection closed")
-        self.events.close()
-        return summary
+        try:
+            if self.journal:
+                self.journal.close()
+            return self.save_record()
+        except OSError as e:
+            return dict(body=self.manifest.name, recording_error=str(e),
+                        **self.tape.summary(self.manifest.rate_hz, until=self.clock.now() - self.t0))
 
     def save_record(self) -> dict:
-        """Write the flight record so far (tape, summary, world; events are written as they happen), without
+        """Write the flight record so far (tape, summary, world and events), without
         closing: a run can be studied while it goes on. Returns the summary."""
         rate = self.manifest.rate_hz
         until = self.clock.now() - self.t0
