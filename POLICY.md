@@ -20,9 +20,10 @@ compared to the robot, so decide in phases, not in single small steps.
    `wu status --json` includes `session.mode` (`simulation` or `hardware`). Confirm the intended session.
 4. Think with the torque off. With torque on, motors heat even while holding still (on the reBot the elbow
    gains about 8 C per minute, folded or raised), so work out the whole next phase before `wu enable`.
-   Prepare a clear return route too. Before ending a turn, waiting for a human reply, or doing extended analysis,
-   return to rest and confirm `enabled: false` and `power_uncertain: false` after release. A finished or stopped
-   job still leaves torque on. Do not leave a raised arm holding while waiting asynchronously.
+   Prepare a clear return route too. Brief observations, reasoning, and supervised checkpoints are part of a
+   live phase; they do not require homing after every action. Before ending a turn, leaving the session
+   unattended, or handing off for an open-ended reply, return to rest and confirm `enabled: false` and
+   `power_uncertain: false` after release. A finished or stopped job still leaves torque on.
 5. If the task involves contact you have not seen work before, describe your strategy to the human in two
    lines and ask for a sanity check. Physical intuition about friction, magnets and compliance is where a
    person helps most. If nobody is there to ask, take the most conservative version of the plan.
@@ -45,7 +46,8 @@ compared to the robot, so decide in phases, not in single small steps.
 3. **At a checkpoint** the arm holds and the job waits: `wu look` at the named camera, then
    `wu answer JOB yes` (any other answer ends the plan so you can decide what to do instead). `wu answer`
    waits until the next checkpoint or the end of the plan. These are brief, actively supervised inspection
-   pauses. If a human reply is needed, resolve motor power first; a checkpoint is not a safe parking state.
+   pauses; a present operator can answer during the live session. Before leaving it waiting for an open-ended
+   reply, resolve motor power. A checkpoint is not a safe parking state.
 4. **On anything but "done"** read the incident: what was expected, what was observed, a hint, the state.
    Do not resend the same command. Change something: measure, adjust a number, look, or ask the human.
 

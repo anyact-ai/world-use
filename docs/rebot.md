@@ -28,7 +28,9 @@ it is not a general escape route. If a power transition fails, status reports un
 motor power. The operator must resolve it and release at a freshly measured rest pose
 before resetting the fault.
 
-Do this before pausing for a human reply, too. A raised arm holding at a checkpoint continues to heat.
+Do this before leaving the session unattended or waiting for an open-ended reply, too. Brief supervised
+checkpoints remain part of normal operation; there is no automatic homing after each action.
+A raised arm holding at a checkpoint continues to heat.
 If the scene changes, clear the old route with `wu home-route 'null'` and resolve motor power immediately.
 When returning is blocked, the operator must support the arm and switch off its **48 V motor supply**.
 USB disconnection, `wu stop`, and terminating the controller do not remove motor power.
