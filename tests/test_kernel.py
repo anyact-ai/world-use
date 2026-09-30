@@ -251,9 +251,82 @@ def test_hot_motor_goes_home_along_a_valid_route_and_otherwise_holds_and_alarms(
     for _ in range(6000):
         k2.tick()
         k2.clock.wait()
-        if k2.active is None and np.allclose(k2.cmd.q, HOME, atol=1e-4):
+        if not k2.enabled:
             break
     assert np.allclose(k2.cmd.q, HOME, atol=1e-4)
+    assert not k2.enabled and not k2.power_uncertain and not k2.body.enabled
+
+
+@pytest.mark.parametrize("step", [
+    {"do": "checkpoint", "ask": "is the path clear?"},
+    {"do": "hold"},
+    {"do": "hold", "seconds": 3600},
+    {"do": "guarded", "up": 0.02},
+])
+@pytest.mark.parametrize("nested", [False, True])
+def test_home_routes_refuse_waits_and_contact_steps_even_when_nested(k, step, nested):
+    route = [{"do": "seq", "steps": [[step]]}] if nested else [step]
+    with pytest.raises(Refused, match="not allowed in a home route"):
+        k.set_home_route(route)
+    assert k.home_route is None
+
+
+def test_home_route_is_a_snapshot_and_can_be_cleared(lifted):
+    route = [{"do": "seq", "steps": [{"do": "line", "up": 0.01}]}]
+    lifted.set_home_route(route)
+    route[0]["steps"][0] = {"do": "checkpoint", "ask": "wait forever"}
+    plan = lifted.home_plan()
+    assert plan[0]["steps"][0]["do"] == "line"
+    plan[0]["steps"].clear()
+    assert lifted.home_plan()[0]["steps"]
+    lifted.set_home_route(None, "operator moved objects into the return path")
+    with pytest.raises(Refused, match="no home route"):
+        lifted.home_plan()
+
+
+def test_a_legacy_blocking_home_route_cannot_start_a_thermal_return(lifted, monkeypatch):
+    from world_use.envelope import Trip
+
+    lifted.home_route = ([{"do": "checkpoint", "ask": "clear?"}], lifted.events.seq + 1)
+    monkeypatch.setattr(lifted.envelope, "watch", lambda *args: Trip("hot", "motor too hot"))
+    q = lifted.cmd.q.copy()
+    lifted.tick()
+    assert lifted.active is None and lifted.enabled
+    assert np.allclose(lifted.cmd.q, q, atol=1e-6)
+    assert any("Operator must resolve power now" in e["message"] for e in lifted.events.since(0))
+
+
+def test_a_user_label_cannot_bypass_thermal_return_and_cooling_does_not_cancel_release(lifted, monkeypatch):
+    from world_use.envelope import Trip
+
+    lifted.set_home_route([])
+    job = lifted.submit({"do": "hold", "label": "home: motor hot"})
+    for _ in range(20):
+        lifted.tick()
+        lifted.clock.wait()
+    assert job.status == "running"
+    monkeypatch.setattr(lifted.envelope, "watch", lambda *args: Trip("hot", "motor too hot"))
+    lifted.tick()
+    assert job.status == "stopped" and lifted.active is not None
+    monkeypatch.setattr(lifted.envelope, "watch", lambda *args: None)
+    for _ in range(3000):
+        lifted.tick()
+        lifted.clock.wait()
+        if not lifted.enabled:
+            break
+    assert not lifted.enabled and not lifted.power_uncertain and not lifted.body.enabled
+
+
+def test_a_failed_thermal_return_is_not_retried_automatically(lifted, monkeypatch):
+    from world_use.envelope import Trip
+
+    lifted.set_home_route([{"do": "line", "up": 100}])  # motion admission will refuse this
+    monkeypatch.setattr(lifted.envelope, "watch", lambda *args: Trip("hot", "motor too hot"))
+    for _ in range(20):
+        lifted.tick()
+        lifted.clock.wait()
+    assert lifted.active is None and lifted.home_route is None and lifted.enabled
+    assert len([j for j in lifted.jobs.values() if j.behavior.label == "home: motor hot"]) == 1
 
 
 def test_no_heat_forecast_until_the_switch_on_transient_has_passed(lifted):

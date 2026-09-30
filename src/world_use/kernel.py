@@ -19,12 +19,27 @@ import time
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import CancelledError, Future
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
-from .behaviors import STATUSES, Behavior, ContactSense, Outcome, Residuals, Sequence, build, fragile_dtau
+from .behaviors import (
+    STATUSES,
+    Behavior,
+    ContactSense,
+    Gripper,
+    Joints,
+    Line,
+    Lines,
+    MoveTo,
+    Outcome,
+    Residuals,
+    Sequence,
+    build,
+    fragile_dtau,
+)
 from .body import Body, JointState
 from .envelope import MARGIN, Envelope, Trip
 from .errors import Refused, explain
@@ -183,6 +198,7 @@ class Kernel:
         self.cameras: dict = {}                     # name -> camera, when a daemon owns some (the card lists them)
         self.last_touch = 0                        # event seq of the last contact (0 = none this session)
         self.home_route: tuple[list, int] | None = None   # (specs, event seq when set)
+        self._thermal_home: Job | None = None
         self._hot_alarm_t = -np.inf
         self._warned: set[int] = set()
         self._sense: ContactSense | None = None    # collision check for every move (guarded moves add their own)
@@ -369,14 +385,31 @@ class Kernel:
             self.faulted = False
         self.emit("reset", "fault cleared by operator", "warn")
 
-    def set_home_route(self, specs: list, note: str = "") -> None:
+    @staticmethod
+    def _home_steps(specs: list) -> list:
+        """Emergency returns must not depend on answers, holds, contact, or arbitrary plugin behavior."""
+        def check(step):
+            if type(step) is Sequence:
+                for child in step.steps:
+                    check(child)
+            elif type(step) not in (Joints, Line, Lines, MoveTo, Gripper):
+                raise Refused(f"{step.kind} is not allowed in a home route; use only motion and gripper steps",
+                              "home_route_step", "resolve questions before setting the route; use null to clear it")
+
+        if not isinstance(specs, list):
+            raise Refused("a home route must be a list of steps, or null to clear it", "home_route_step")
+        route = build(specs)
+        check(route)
+        return deepcopy(route.spec()["steps"])
+
+    def set_home_route(self, specs: list | None, note: str = "") -> None:
         """The policy's way out from here, checked against the scene it can see now. [] = fold straight home.
-        It stays valid until something is touched."""
-        for s in specs:
-            build(s)
+        It stays valid until something is touched. None clears it when the scene changes."""
+        steps = None if specs is None else self._home_steps(specs)
         with self.lock:
-            self.home_route = (list(specs), self.events.seq + 1)
-        self.emit("home_route", f"home route set ({len(specs)} moves, then fold)" + (f": {note}" if note else ""))
+            self.home_route = None if steps is None else (steps, self.events.seq + 1)
+        message = "home route cleared" if steps is None else f"home route set ({len(steps)} moves, then fold)"
+        self.emit("home_route", message + (f": {note}" if note else ""))
 
     def home_plan(self) -> list:
         """Route + fold back to the session's start pose, or Refused if nothing valid is known."""
@@ -402,7 +435,7 @@ class Kernel:
         if carry:
             fold.append({"do": "joints", "target_deg": {str(i + 1): float(np.degrees(q0[i])) for i in sorted(carry)},
                          "label": "fold"})
-        plan = route[0] + [f for f in fold if self._differs(f)]
+        plan = self._home_steps(route[0]) + [f for f in fold if self._differs(f)]
         g = self.manifest.gripper       # a gripper left open past pi comes back a turn low on the reBot
         if (g is not None and self.grip_start is not None and self.held_at is None and self.cmd.gripper is not None
                 and abs(self.cmd.gripper - self.grip_start) > 0.02):     # never while it holds something
@@ -603,6 +636,9 @@ class Kernel:
         self.emit("started", f"job {job.id}: {job.behavior.describe()}", job=job.id)
 
     def _end(self, job: Job, out: Outcome):
+        thermal = job is self._thermal_home
+        if thermal:
+            self._thermal_home = None
         if out.status == "faulted":
             self.faulted = True
         job.outcome, job.status, job.t_end = out, out.status, time.time()
@@ -617,6 +653,14 @@ class Kernel:
                 if stale:
                     self.emit("facts_stale", f"facts to re-check: {', '.join(stale)}", "warn")
         job.attention.set()
+        if thermal:
+            if out.ok:
+                self._release()                  # finish even if the temperature fell below the trip meanwhile
+                self.emit("hot", "thermal return complete: torque released at rest to cool", "alarm")
+            else:
+                self.set_home_route(None, "thermal return did not finish; inspect the scene before retrying")
+                self.emit("hot", "thermal return failed; torque may remain on. Operator must resolve power now.",
+                          "alarm")
 
     def _cancel_queue(self, why: str):
         while self.queue:
@@ -654,7 +698,7 @@ class Kernel:
             self.emit("trip", trip.message, "alarm" if status == "faulted" else "warn", trip=trip.kind)
 
     def _on_hot(self, trip: Trip, now: float):
-        if self.active is not None and self.active.behavior.label == "home: motor hot":
+        if self.active is not None and self.active is self._thermal_home:
             return                                    # already going home
         if self.active is not None:
             self._end(self.active, Outcome("stopped", self.active.behavior.kind, trip.message, dict(trip="hot")))
@@ -671,11 +715,13 @@ class Kernel:
             self.hold_here()
             if now - self._hot_alarm_t > 10.0:
                 self._hot_alarm_t = now
-                self.emit("hot", f"{trip.message} and {e}: holding. Send it home.", "alarm")
+                self.emit("hot", f"{trip.message} and {e}: holding with torque on. Operator must resolve power now; "
+                          "if no clear return is available, support the arm and cut its motor supply.", "alarm")
             return
         self.emit("hot", f"{trip.message}: going home along the home route", "alarm")
         job = Job(next(self._ids), build({"do": "seq", "steps": plan, "label": "home: motor hot"}), plan)
         self.jobs[job.id] = job
+        self._thermal_home = job
         self._start(job, now)
 
     def _heat_warnings(self, st: JointState):

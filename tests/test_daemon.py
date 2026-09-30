@@ -61,6 +61,16 @@ def test_checkpoint_round_trip(client):
     assert r["status"] == "done"
 
 
+def test_home_routes_reject_checkpoints_and_can_be_cleared_from_the_cli(client):
+    from world_use import cli
+
+    with pytest.raises(DaemonError, match="not allowed in a home route"):
+        client.home_route([{"do": "checkpoint", "ask": "clear?"}])
+    assert "ready" in client.home_route([])["home"]
+    assert cli.main(["--url", client.url, "home-route", "null"]) == 0
+    assert "not available" in client.status()["home"]
+
+
 def test_check_does_not_move_the_robot(client):
     before = client.status()["joints_deg"]
     r = client.check({"do": "line", "up": 0.05})
