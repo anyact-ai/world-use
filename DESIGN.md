@@ -52,7 +52,10 @@ methods as if they were the same measurement.
    and the model gets an incident report instead of a stream of numbers.
 5. **Idle means holding.** No idle timeouts that move. Holding still can heat motors and is not safe in every
    situation. A heat trip may use a home route the policy set, only if no contact has made it stale and the
-   kernel is not faulted. Without a route it holds and reports the problem.
+   kernel is not faulted. Home routes contain only built-in motion and gripper steps, with no waits or contact
+   operations. Completion includes torque release; a failed thermal return clears the route. Without a route
+   the kernel holds and alarms for immediate operator action. The policy must resolve motor power before
+   handing off asynchronously; software cannot safely release a raised, unsupported arm.
 6. **Monitor unexpected contact.** Joint torque is compared with what the arm's own weight explains;
    guarded moves use tighter thresholds, fragile zones tighter still. Filtering, sensing, and model error
    determine detection latency. The checks do not replace hardware protection or an operator.
@@ -93,8 +96,10 @@ self-collision are not represented. Surface checks sample the tool point. Slow z
 in m/s and refuse a path that needs a longer duration.
 
 An idle watchdog trip cancels queued jobs before another can start. Hardware and behavior faults latch until
-an operator resets them. An incomplete power transition stays visible as `power_uncertain`; commands are
-suspended, and release must succeed at a freshly measured rest pose before reset. Power-time accounting
+an operator resets them. An incomplete power transition or failed I/O while powered stays visible as
+`power_uncertain`; commands remain suspended across reconnection, and release must succeed at a freshly
+measured rest pose before reset. Status includes feedback age and read errors; cached values are marked stale.
+Adapters must preserve cached sample timestamps and raise on lost feedback. Power-time accounting
 includes the interval from an enable attempt through confirmed disable, conservatively counting uncertain
 and ramp intervals. Events and tape rows share a monotonic clock and origin. `moving_s` measures elapsed time
 in a motion behavior, not independently detected physical movement.

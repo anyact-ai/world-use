@@ -28,6 +28,16 @@ it is not a general escape route. If a power transition fails, status reports un
 motor power. The operator must resolve it and release at a freshly measured rest pose
 before resetting the fault.
 
+Do this before pausing for a human reply, too. A raised arm holding at a checkpoint continues to heat.
+If the scene changes, clear the old route with `wu home-route 'null'` and resolve motor power immediately.
+When returning is blocked, the operator must support the arm and switch off its **48 V motor supply**.
+USB disconnection, `wu stop`, and terminating the controller do not remove motor power.
+
+On lost or stale feedback, the runtime latches unconfirmed power and suspends commands. Reconnecting USB
+does not resume them. Status includes `feedback.age_s`, `feedback.stale`, and the last read error; displayed
+values may be cached. Recovery requires fresh rest-pose feedback and a successful release, or physical
+shutdown and a new session. Do not reset or restart while the arm may still be energized.
+
 ## macOS driver note
 
 This workaround was used with the pinned `motorbridge` 0.5.5 dependency and Python 3.14.
@@ -51,5 +61,6 @@ The CAN adapter also needs the MacCAN PCBUSB runtime (`libPCBUSB.dylib`), which 
 
 - [First runs and pick-and-place, September 27](hardware-2026-09-27.md)
 - [Model fitting and follow-up runs, September 28](hardware-2026-09-28.md)
+- [Prolonged hold and thermal-return failure, September 29](hardware-2026-09-29.md)
 
 These are development records on one arm, not reliability benchmarks.
