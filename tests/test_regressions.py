@@ -11,6 +11,7 @@ from world_use.geometry import axis_angle, interpolate_rotation, rotation_log
     {'do': 'hold', 'second': 1}, {'do': 'line', 'up': .01, 'duraton': 2},
     {'do': 'line', 'up': .01, 'speed': 0}, {'do': 'hold', 'seconds': float('nan')},
     {'do': 'lines', 'legs': []}, {'do': 'checkpoint'},
+    {'do': []}, {'do': 'hold', 'label': 5}, {'do': 'checkpoint', 'ask': 'ready?', 'expect': 1},
     [{'do': 'hold', 'seconds': .1}, {'do': 'gripper', 'apeture_mm': 60}],
 ])
 def test_bad_specs_are_rejected_before_queueing(k, spec):
@@ -65,3 +66,37 @@ def test_a_timed_out_rehearsal_is_not_submitted(daemon, monkeypatch):
     monkeypatch.setattr(d.rehearser, 'check', lambda *a, **kw: report)
     result = c.run(spec)
     assert result['status'] == 'refused' and not d.k.jobs
+
+
+def test_failed_thermal_release_is_not_reported_done(lifted, monkeypatch):
+    k = lifted
+    k.set_home_route([])
+    k.body.temp[:] = 81
+
+    def failed_disable():
+        raise OSError('one motor did not acknowledge disable')
+
+    monkeypatch.setattr(k.body, 'disable', failed_disable)
+    for _ in range(3000):
+        k.tick()
+        k.clock.wait()
+        if k.faulted:
+            break
+    job = list(k.jobs.values())[-1]
+    assert job.status == 'faulted' and 'could not release' in job.outcome.message
+    assert k.power_uncertain and k.home_route is None
+    assert not any('thermal return complete' in e['message'] for e in k.events.since(0))
+
+
+def test_plan_and_snapshot_do_not_share_mutable_input(k):
+    from world_use.plan import same_start, snapshot
+
+    spec = {'do': 'joints', 'delta_deg': {'1': 0}}
+    job = k.submit(spec)
+    spec['delta_deg']['1'] = 100
+    assert job.behavior.spec()['delta_deg']['1'] == 0
+    k.world.add_box('slow', 'slow', [1, 1, 1], [.1, .1, .1], speed=.01)
+    snap = snapshot(k)
+    k.world.boxes['slow'].params['speed'] = .1
+    assert snap.world['boxes']['slow']['params']['speed'] == .01
+    assert not same_start(snap, k)

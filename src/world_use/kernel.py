@@ -366,7 +366,7 @@ class Kernel:
     # -- requests (any thread) ---------------------------------------------------------------------
     def submit(self, spec, admission: Callable[[], None] | None = None) -> Job:
         """Queue a behavior. A malformed spec is refused here; limits are checked when it starts."""
-        behavior = build(spec)
+        behavior = build(spec if isinstance(spec, Behavior) else deepcopy(spec))
         with self.lock:
             if admission is not None:
                 admission()

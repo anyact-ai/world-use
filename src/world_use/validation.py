@@ -95,5 +95,7 @@ def validate(kind: str, p: dict):
             vector(leg, 'leg', 3)
     if kind == 'checkpoint' and 'ask' not in p:
         raise Refused('checkpoint needs ask', 'spec')
+    if kind == 'checkpoint' and p.get('expect') is not None and not isinstance(p['expect'], str):
+        raise Refused('checkpoint expect must be a string or null', 'spec')
     if kind == 'seq' and not isinstance(p.get('steps'), list):
         raise Refused('seq needs a list of steps', 'spec')

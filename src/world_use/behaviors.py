@@ -892,9 +892,13 @@ def build(spec) -> Behavior:
         raise Refused(f"a step must be a dict with a 'do' key or a list of steps, got {spec!r}", "spec")
     spec = dict(spec)
     kind = spec.pop("do")
+    if not isinstance(kind, str):
+        raise Refused("do must name a behavior", "spec")
     if kind not in REGISTRY:
         raise Refused(f"unknown behavior {kind!r}; known: {sorted(REGISTRY)}", "spec")
     label = spec.pop("label", None)
+    if label is not None and not isinstance(label, str):
+        raise Refused("label must be a string", "spec")
     if REGISTRY[kind].__module__ == __name__:
         validate(kind, spec)
     if kind == "seq":
