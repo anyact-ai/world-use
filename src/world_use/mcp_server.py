@@ -21,21 +21,23 @@ INSTRUCTIONS = ("Read the policy tool or world-use://policy resource before oper
 
 def build(url: str = DEFAULT_URL):
     from mcp.server.mcpserver import Image, MCPServer
+    from mcp.server.mcpserver.exceptions import ToolError
 
     c = Client(url)
     server = MCPServer("world-use", instructions=INSTRUCTIONS)
 
     def call(fn: Callable[[], object]):
-        """Errors come back as text a model can act on, never as a failed tool call."""
+        """Preserve the daemon's error as an MCP tool error, with actionable text."""
         try:
             return fn()
         except DaemonError as e:
             refused = e.body.get("refused")
             if refused:
-                return f"refused: {refused['message']}" + (f" (hint: {refused['hint']})" if refused.get("hint") else "")
-            return f"error: {e}"
+                raise ToolError(f"refused: {refused['message']}" + (
+                    f" (hint: {refused['hint']})" if refused.get("hint") else "")) from e
+            raise ToolError(f"error: {e}") from e
         except OSError as e:
-            return f"cannot reach the daemon at {url} ({e}); start it with: wu up"
+            raise ToolError(f"cannot reach the daemon at {url} ({e}); start it with: wu up") from e
 
     @server.resource("world-use://policy")
     def policy_resource() -> str:

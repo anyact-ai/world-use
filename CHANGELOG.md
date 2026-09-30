@@ -2,6 +2,12 @@
 
 ## 0.3.0 (unreleased)
 
+- Load robot descriptions and external drivers from workcell configuration. Rehearse
+  custom robots in the worker; save their models and URDFs for portable replay and fitting.
+- Resolve config paths relative to their files and reject unknown fields and invalid models.
+- Keep event persistence off the control thread; recording failures cannot block release.
+- Reject foreign HTTP hosts/origins and non-JSON commands. Preserve structured CLI JSON,
+  report MCP failures as tool errors, and explain malformed local inputs without tracebacks.
 - Validate action fields and values before queueing. Refuse incomplete rehearsals.
 - Keep collision and tracking checks active during a thermal return. Confirm release
   before reporting that return as complete.

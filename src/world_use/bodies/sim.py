@@ -26,7 +26,10 @@ class SimBody:
         self.chain = Chain(manifest.urdf, manifest.tool_link)
         self.world = world if world is not None else World()
         n = manifest.n
-        self.q = np.zeros(n) if q is None else np.asarray(q, float).copy()
+        initial = manifest.rest.q if manifest.rest else np.clip(np.zeros(n), manifest.lower, manifest.upper)
+        self.q = np.asarray(initial if q is None else q, float).copy()
+        if self.q.shape != (n,) or not np.isfinite(self.q).all():
+            raise ValueError(f"simulation q: expected {n} finite joint positions")
         self.q_cmd = self.q.copy()
         g = manifest.gripper
         self.grip = None if g is None else float(g.closed if gripper is None else gripper)
@@ -34,7 +37,11 @@ class SimBody:
         self.lag, self.K, self.noise = lag_s, stiffness, noise
         self.rng = np.random.default_rng(seed)
         self.ambient = ambient_c
-        self.temp = np.full(n, ambient_c) if temp_c is None else np.asarray(temp_c, float).copy()
+        self.temp = np.broadcast_to(ambient_c if temp_c is None else temp_c, (n,)).astype(float).copy()
+        if not np.isfinite(self.temp).all() or not np.isfinite(ambient_c):
+            raise ValueError("simulation temperature: expected finite values")
+        if any(not np.isfinite(x) or x < 0 for x in (lag_s, stiffness, noise)):
+            raise ValueError("simulation lag_s, stiffness and noise must be finite and nonnegative")
         self.thermal = {**THERMAL, **manifest.thermal}
         self.enabled, self.t = False, 0.0
         self.dt = 1.0 / manifest.rate_hz

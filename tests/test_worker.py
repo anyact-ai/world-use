@@ -33,15 +33,13 @@ def test_the_same_report_as_in_process(rehearser, lifted):
     assert rehearser.reach_line(lifted) == views.reach_line(lifted)
 
 
-def test_a_body_the_worker_cannot_rebuild_is_refused(rehearser):
+def test_custom_models_rehearse_without_registration(rehearser):
     custom = dataclasses.replace(MANIFEST, name="a custom arm")            # not in bodies.manifests()
     world = World()
     k = Kernel(SimBody(custom, world, q=Q_REST, gripper=1.0), world, VirtualClock(100.0))
     k.connect()
     k.enable()
-    with pytest.raises(Refused, match="cannot rebuild"):
-        rehearser.check(PLAN, k)
-    assert plan.check(PLAN, k).ok          # still available for embedded offline extensions
+    assert rehearser.check(PLAN, k).to_dict() == plan.check(PLAN, k).to_dict()
 
 
 def test_a_worker_that_dies_is_replaced():

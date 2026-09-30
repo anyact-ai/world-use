@@ -148,8 +148,21 @@ def _left_out(events: list[dict]) -> list[tuple[float, float]]:
 
 
 def robot_of(run_dirs):
-    """The registered manifest the records were made on, from their summaries."""
+    """The robot description in the records, including models supplied outside world-use."""
     from . import bodies
+    from .config import manifest_data
+    from .records import robot_of as recorded_robot
+
+    models = [recorded_robot(d) for d in run_dirs if (Path(d) / "session.json").exists()]
+    if len(models) == len(run_dirs) and models:
+        descriptions = []
+        for m in models:
+            data = manifest_data(m)
+            data["urdf"] = m.urdf.read_text()
+            descriptions.append(data)
+        if any(d != descriptions[0] for d in descriptions[1:]):
+            raise ValueError("records describe different robots; fit one robot at a time")
+        return models[0]
     names = {json.loads((Path(d) / "summary.json").read_text()).get("body") for d in run_dirs
              if (Path(d) / "summary.json").exists()} - {None}
     if len(names) != 1:

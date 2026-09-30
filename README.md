@@ -13,11 +13,6 @@ monitoring, and recording between agent calls.
 Start with one arm and a laptop. Use the CLI, Python, or MCP; the same plan format
 works in the included simulator and on a Seeed reBot.
 
-![Scripted block transfer in simulation, 3× playback](docs/assets/block-demo.gif)
-
-*The [reference task](examples/pick-place) picks up a block, transfers it, verifies
-placement, and returns to rest with torque off. Scripted simulation, no model calls.*
-
 Early development. Tested in simulation and on one physical arm. The
 [hardware records](docs/hardware-2026-09-27.md) describe what was tried and measured.
 
@@ -113,6 +108,10 @@ separate clearance. A passing rehearsal depends on what the world model knows.
 For physical hardware, use the [reBot setup guide](docs/rebot.md). Keep an operator
 at the motor-supply switch. A stopped job still holds with torque; a raised arm
 without brakes cannot simply be released.
+
+For another arm, supply a robot description and a small driver in your own package.
+The same configuration feeds execution, simulation and recorded replay. The
+[adapter guide](docs/adapters.md) includes a runnable two-joint example.
 
 ## Develop
 

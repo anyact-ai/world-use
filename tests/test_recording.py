@@ -7,6 +7,34 @@ from world_use import Kernel, VirtualClock, World, bodies
 from world_use.recorder import Tape
 
 
+def test_recording_failure_does_not_interrupt_motion_or_release(tmp_path, monkeypatch):
+    from world_use import recorder
+
+    world = World()
+    k = Kernel(bodies.make("sim", world), world, VirtualClock(100), run_dir=tmp_path)
+    k.connect()
+    k.enable()
+
+    def full_disk(*args, **kwargs):
+        raise OSError("disk full")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(recorder, "open", full_disk, raising=False)
+        with pytest.raises(OSError, match="disk full"):
+            k.journal.flush()
+        assert k.run({"do": "line", "up": .03}).ok
+        assert not k.faulted and not k.power_uncertain
+        assert k.run({"do": "line", "up": -.03}).ok
+        k.release()
+        assert not k.enabled
+        assert k.journal.error == "disk full"
+        assert k.close()["recording_error"] == "disk full"
+    k.save_record()
+    log = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert [e["seq"] for e in log] == list(range(1, k.events.seq + 1))
+    assert log[-1]["kind"] == "closed"
+
+
 def test_elapsed_durations_include_slow_control_ticks():
     tape = Tape(1)
     for t, moving in [(0, True), (0.01, True), (0.51, False), (1.01, False)]:

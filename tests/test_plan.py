@@ -79,7 +79,7 @@ def test_a_snapshot_is_plain_data_and_rehearses_the_same(lifted):
     spec = [{"do": "checkpoint", "ask": "clear?"}, {"do": "joints", "delta_deg": {"2": -60}},
             {"do": "joints", "delta_deg": {"2": 60}}, {"do": "touchdown", "max": 0.08}]
     s = pickle.loads(pickle.dumps(snapshot(k)))
-    assert s.body == "rebot"
+    assert s.model["name"] == k.manifest.name
     assert rehearse(spec, twin_from(s)).to_dict() == check(spec, k).to_dict()
 
 

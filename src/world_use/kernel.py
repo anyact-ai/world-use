@@ -174,6 +174,8 @@ class Kernel:
         if self.chain.n != self.manifest.n:
             raise ValueError(f"URDF chain to {self.manifest.tool_link} has {self.chain.n} joints; "
                              f"manifest has {self.manifest.n}")
+        if [j.name for j in self.manifest.joints] != self.chain.joint_names:
+            raise ValueError(f"manifest joints must follow URDF chain order: {self.chain.joint_names}")
         self.world = world or World()
         self.clock = clock or RealClock(self.manifest.rate_hz)
         self.t0 = self.clock.now()
@@ -184,11 +186,10 @@ class Kernel:
         self.run_dir = Path(run_dir) if run_dir else None
         if self.run_dir:
             self.run_dir.mkdir(parents=True, exist_ok=True)
-        self.events = EventLog(self.run_dir / "events.jsonl" if self.run_dir else None,
-                               clock=self.clock.now, t0=self.t0)
+        self.events = EventLog(keep=None if self.run_dir else 5000, clock=self.clock.now, t0=self.t0)
         self.tape = Tape(m.n)
         self.tape.mark_power(0.0, False)
-        self.journal = Journal(self.tape, self.run_dir) if self.run_dir else None
+        self.journal = Journal(self.tape, self.run_dir, events=self.events) if self.run_dir else None
         self.heat = Heat()
         self.lock = threading.RLock()
         self.jobs: dict[int, Job] = {}
@@ -337,21 +338,22 @@ class Kernel:
                     f.set_exception(e)
 
     def close(self) -> dict:
-        """Close the connection (never switches torque off by itself) and write the flight record. An adapter
-        that fails to close (unplugged already) is reported, not raised: the record matters more."""
+        """Close the connection (never switches torque off by itself) and write the flight record."""
         try:
             self.body.close()
         except Exception as e:
-            self.emit("adapter", f"closing the connection failed ({e}); the flight record is written anyway", "warn")
-        if self.journal:
-            self.journal.close()
-        summary = self.save_record()
+            self.emit("adapter", f"closing the connection failed ({e}); saving the flight record anyway", "warn")
         self.emit("closed", "connection closed")
-        self.events.close()
-        return summary
+        try:
+            if self.journal:
+                self.journal.close()
+            return self.save_record()
+        except OSError as e:
+            return dict(body=self.manifest.name, recording_error=str(e),
+                        **self.tape.summary(self.manifest.rate_hz, until=self.clock.now() - self.t0))
 
     def save_record(self) -> dict:
-        """Write the flight record so far (tape, summary, world; events are written as they happen), without
+        """Write the flight record so far (tape, summary, world and events), without
         closing: a run can be studied while it goes on. Returns the summary."""
         rate = self.manifest.rate_hz
         until = self.clock.now() - self.t0
