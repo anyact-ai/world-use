@@ -155,8 +155,10 @@ class Journal:
     Readers ignore unfinished temporary files. Process loss can lose the last interval; no database or
     crash handler is needed to read everything already committed. Memory remains available for live summaries.
     """
-    def __init__(self, tape: Tape, folder: Path, interval: float = 1.0):
+    def __init__(self, tape: Tape, folder: Path, interval: float = 1.0, *, events=None):
         self.tape, self.folder = tape, folder / "tape"
+        self.events = events
+        self.seq, self.offset = 0, 0
         self.folder.mkdir(exist_ok=True)
         self.row, self.part = 0, 0
         self.error: str | None = None
@@ -167,13 +169,33 @@ class Journal:
 
     def flush(self):
         with self._lock:
-            a = self.tape.since(self.row)
-            if a and len(a["t"]):
-                save_arrays(self.folder / f"{self.part:06d}.npz", a)
-                self.row += len(a["t"])
-                self.part += 1
-            save_arrays(self.folder / "power.npz", self.tape.power())
+            try:
+                self._flush()
+            except OSError as e:
+                self.error = str(e)
+                raise
             self.error = None
+
+    def _flush(self):
+        # Retry from the last complete batch after a partial write (e.g. a full disk).
+        from .events import _plain
+        events = self.events.since(self.seq) if self.events else []
+        if events:
+            path = self.folder.parent / "events.jsonl"
+            with open(path, "r+b" if path.exists() else "w+b") as f:
+                f.seek(self.offset)
+                f.truncate()
+                f.write("".join(json.dumps(e, default=_plain) + "\n" for e in events).encode())
+                f.flush()
+                os.fsync(f.fileno())
+                self.offset = f.tell()
+            self.seq = events[-1]["seq"]
+        a = self.tape.since(self.row)
+        if a and len(a["t"]):
+            save_arrays(self.folder / f"{self.part:06d}.npz", a)
+            self.row += len(a["t"])
+            self.part += 1
+        save_arrays(self.folder / "power.npz", self.tape.power())
 
     def _loop(self, interval):
         while not self._stop.wait(interval):
@@ -220,9 +242,15 @@ def session_record(k, **context) -> dict:
         source.update(str(path.relative_to(root)).encode())
         source.update(path.read_bytes())
     snap = snapshot(k)
-    return dict(format_version=1, created_at=datetime.now(UTC).isoformat(), package_version=__version__,
+    initial = asdict(snap)
+    urdf = Path(k.manifest.urdf).read_bytes()
+    if k.run_dir:
+        _atomic(k.run_dir / "robot.urdf", lambda f: f.write(urdf))
+        initial["model"]["urdf"] = "robot.urdf"
+    return dict(format_version=2, created_at=datetime.now(UTC).isoformat(), package_version=__version__,
                 source_sha256=source.hexdigest(),
-                adapter=next((n for n, m in bodies.manifests().items() if m is k.manifest), None),
+                adapter=next((n for n, m in bodies.manifests().items() if m is k.manifest),
+                             f"{type(k.body).__module__}:{type(k.body).__qualname__}"),
                 body=k.manifest.name, mode="simulation" if getattr(k.body, "simulated", False) else "hardware",
-                urdf_sha256=hashlib.sha256(Path(k.manifest.urdf).read_bytes()).hexdigest(),
-                initial=asdict(snap), **context)
+                urdf_sha256=hashlib.sha256(urdf).hexdigest(),
+                initial=initial, **context)

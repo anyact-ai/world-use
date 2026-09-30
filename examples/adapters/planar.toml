@@ -1,0 +1,19 @@
+name = "Planar example"
+urdf = "planar.urdf"
+tool_link = "tool"
+self_supporting = true # In-memory controller; no physical load.
+sensing = ["position"]
+
+[[joints]]
+name = "shoulder"
+lower = -2.5
+upper = 2.5
+v_max = 0.8
+a_max = 6.0
+
+[[joints]]
+name = "elbow"
+lower = -2.5
+upper = 2.5
+v_max = 0.8
+a_max = 6.0

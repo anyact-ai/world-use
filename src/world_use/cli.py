@@ -37,10 +37,15 @@ from .client import DEFAULT_URL, Client, DaemonError
 
 
 def _spec(text: str):
-    p = Path(text)
-    if not text.lstrip().startswith(("{", "[")) and p.exists():
-        text = p.read_text()
-    return json.loads(text)
+    if not text.lstrip().startswith(("{", "[")) and text != "null":
+        try:
+            text = Path(text).expanduser().read_text()
+        except OSError as e:
+            raise ValueError(f"cannot read JSON file: {e}") from e
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"invalid JSON at line {e.lineno}, column {e.colno}: {e.msg}") from e
 
 
 def job_text(d: dict) -> str:
@@ -79,7 +84,7 @@ def cmd_up(a):
     from .daemon import load_workcell, session_identity
 
     c = Client(a.url)
-    cell = load_workcell(Path(a.workcell) if a.workcell else None)
+    cell = load_workcell(a.workcell)
     wanted = session_identity(a.body or cell.get("body", "sim"), cell)
 
     def connected():
@@ -108,11 +113,14 @@ def cmd_up(a):
     if a.workcell:
         args += ["--workcell", a.workcell if not Path(a.workcell).exists() else str(Path(a.workcell).resolve())]
     with open(log_dir / "daemon.log", "a") as log:
-        subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+        process = subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                   start_new_session=True)
     for _ in range(100):
         time.sleep(0.1)
         if c.alive():
             return connected()
+        if process.poll() is not None:
+            break
     print(f"the daemon did not come up; see {log_dir / 'daemon.log'}", file=sys.stderr)
     return 1
 
@@ -144,7 +152,7 @@ def main(argv=None) -> int:
     p.add_argument("--wait", type=float, default=60.0)
     p = sub.add_parser("fit", help="fit the robot's model (link masses, friction) from flight records")
     p.add_argument("runs", nargs="+", type=Path, help="flight record folders")
-    p.add_argument("--body", help="the robot the records are from (default: what their summaries say)")
+    p.add_argument("--body", help="built-in robot name or robot TOML file (default: the recorded model)")
     p.add_argument("--out", type=Path, default=Path("fit.json"))
     p = sub.add_parser("demo", help="run the scripted block task in simulation, with a success check")
     p.add_argument("--out", type=Path, default=Path("runs/block-demo"))
@@ -246,6 +254,12 @@ def main(argv=None) -> int:
         r = _dispatch(a, c)
         if a.json:
             print(json.dumps(r, indent=1))
+        elif a.cmd == "look":
+            print(f"{r['path']}\n{r['camera']} camera, {r['size'][0]}x{r['size'][1]}: {r['drawn']}" + (
+                f"\n{r['check']}" if r.get("check") else ""))
+        elif a.cmd == "events":
+            print("\n".join(f"[{e['seq']}] {e['t']:>7.1f}s {e['level']:5s} {e['kind']}: {e['message']}"
+                            for e in r["events"]) or "(none)")
         elif isinstance(r, dict) and "id" in r and "status" in r:
             print(job_text(r))
         elif isinstance(r, dict) and "text" in r:
@@ -266,8 +280,11 @@ def main(argv=None) -> int:
         else:
             print(f"error: {e}", file=sys.stderr)
         return 2
+    except (ValueError, KeyError) as e:
+        print(f"{a.cmd}: {e}", file=sys.stderr)
+        return 2
     except OSError as e:
-        if a.cmd in ("demo", "inspect", "replay", "fit", "policy"):
+        if a.cmd in ("demo", "inspect", "replay", "fit", "policy", "up"):
             print(f"{a.cmd}: {e}", file=sys.stderr)
             return 2
         print(f"cannot reach the daemon at {a.url} ({e}); start it with: wu up", file=sys.stderr)
@@ -284,16 +301,14 @@ def _dispatch(a, c: Client):
     if a.cmd == "calibrate":
         return c.calibrate(a.camera, a.points, a.spread, a.wait)
     if a.cmd == "look":
-        r = c.look(a.camera, None if a.plan is None else _spec(a.plan), a.grid)
-        return f"{r['path']}\n{r['camera']} camera, {r['size'][0]}x{r['size'][1]}: {r['drawn']}" + (
-            f"\n{r['check']}" if r.get("check") else "")
+        return c.look(a.camera, None if a.plan is None else _spec(a.plan), a.grid)
     if a.cmd == "help":
         return help_text(c, a.step)
     if a.cmd == "world":
-        return c.world()["text"]
+        return c.world()
     if a.cmd == "box":
         if a.remove:
-            return c.remove(a.name)["line"]
+            return c.remove(a.name)
         if not (a.kind and a.center and a.size):
             raise SystemExit("wu box NAME KIND CENTER SIZE, e.g. wu box tray surface 0.32,0,0.14 0.3,0.4,0.02")
         extra = {}
@@ -304,7 +319,7 @@ def _dispatch(a, c: Client):
             except json.JSONDecodeError:
                 extra[key] = value
         return c.box(a.name, a.kind, _vec(a.center), _vec(a.size), frame=a.frame, yaw_deg=a.yaw, source=a.source,
-                     **extra)["line"]
+                     **extra)
     if a.cmd == "check":
         return c.check(_spec(a.spec))
     if a.cmd == "answer":
@@ -318,9 +333,7 @@ def _dispatch(a, c: Client):
     if a.cmd == "home-route":
         return c.home_route(_spec(a.steps), a.note)
     if a.cmd == "events":
-        r = c.events(a.since, a.wait)
-        return "\n".join(f"[{e['seq']}] {e['t']:>7.1f}s {e['level']:5s} {e['kind']}: {e['message']}"
-                         for e in r["events"]) or "(none)"
+        return c.events(a.since, a.wait)
     if a.cmd == "fact":
         try:
             value = json.loads(a.value)
@@ -332,12 +345,14 @@ def _dispatch(a, c: Client):
 
 def cmd_fit(a) -> int:
     from . import bodies, fit
+    from .config import load_robot
     from .kinematics import Chain
-    runs = [r for r in a.runs if (r / "tape.npz").exists()]
+    runs = [r for r in a.runs if (r / "tape.npz").exists() or any((r / "tape").glob("[0-9]*.npz"))]
     if not runs:
-        print("no flight records among those paths (a record is a folder with tape.npz)", file=sys.stderr)
+        print("no recorded telemetry among those paths", file=sys.stderr)
         return 1
-    manifest = bodies.manifests()[a.body] if a.body else fit.robot_of(runs)
+    manifest = fit.robot_of(runs) if not a.body else (
+        bodies.manifests()[a.body] if a.body in bodies.manifests() else load_robot(a.body))
     model = fit.fit(runs, manifest)
     model.save(a.out)
     print(json.dumps(model.to_dict()) if a.json else
@@ -377,7 +392,8 @@ def help_text(c: Client, step: str | None = None) -> str:
 def _summary(s: dict) -> str:
     share = s.get("moving_share")
     return (f"powered {s.get('powered_s', 0)} s, moving {s.get('moving_s', 0)} s"
-            + (f" ({100 * share:.0f}%)" if share is not None else "") + f"; max temps {s.get('max_temp_c')}")
+            + (f" ({100 * share:.0f}%)" if share is not None else "") + f"; max temps {s.get('max_temp_c')}"
+            + (f"; recording failed: {s['recording_error']}" if s.get("recording_error") else ""))
 
 
 if __name__ == "__main__":
