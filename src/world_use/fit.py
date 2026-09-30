@@ -165,14 +165,15 @@ def robot_of(run_dirs):
 def samples(run_dir, manifest) -> Samples | None:
     """The rows a record offers the fit, or None if it has none (never powered, or no torque sensing)."""
     run_dir = Path(run_dir)
-    tape, summary = run_dir / "tape.npz", run_dir / "summary.json"
-    if not tape.exists():
+    from .recorder import load_tape
+    from .records import events as read_events
+    summary = run_dir / "summary.json"
+    a = load_tape(run_dir)
+    if not len(a.get("t", [])):
         return None
     if summary.exists() and json.loads(summary.read_text()).get("body", manifest.name) != manifest.name:
         return None                                      # another robot's record
-    a = np.load(tape)
-    events = [json.loads(line) for line in (run_dir / "events.jsonl").read_text().splitlines() if line.strip()] \
-        if (run_dir / "events.jsonl").exists() else []
+    events = read_events(run_dir)
     t, q, tau, on = a["t"], a["q"], a["tau"], a["enabled"].astype(bool)
     if not on.any() or not np.isfinite(tau[on]).any():
         return None

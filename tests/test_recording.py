@@ -68,3 +68,77 @@ def test_failed_enable_counts_unconfirmed_power_even_without_ticks(k, monkeypatc
     s = k.save_record()
     assert s["ticks"] == 0 and s["powered_s"] == 2.5
     assert s["power_basis"] == "enable_attempt_to_confirmed_disable"
+
+
+def test_record_captures_plans_answers_outcomes_and_startup(daemon):
+    from world_use.records import inspect
+
+    d, c = daemon
+    spec = [{"do": "checkpoint", "ask": "block visible?"}, {"do": "hold", "seconds": .1}]
+    r = c.run(spec, wait=5)
+    c.answer(r["id"], "yes", wait=5)
+    c.record(context={"model": "test-policy", "input": "place the block"}, note="operator checked the scene")
+    record = inspect(d.k.run_dir)
+    assert record["session"]["initial"]["q_start"]
+    assert len(record["session"]["source_sha256"]) == 64
+    assert record["jobs"][1]["spec"]["steps"] == spec
+    assert record["jobs"][1]["outcome"]["status"] == "done"
+    assert {e["kind"] for e in record["observations"]} == {"answer", "annotation"}
+    assert record["observations"][-1]["data"]["context"]["model"] == "test-policy"
+
+
+def test_committed_record_survives_process_kill(tmp_path):
+    import subprocess
+    import sys
+
+    from world_use.records import inspect, replay
+
+    script = tmp_path / "record.py"
+    script.write_text('''
+import sys, time
+from pathlib import Path
+from world_use import Kernel, World, VirtualClock, bodies
+folder = Path(sys.argv[1])
+w = World()
+k = Kernel(bodies.make("sim", w), w, VirtualClock(100), run_dir=folder)
+k.connect()
+k.enable()
+k.run({"do": "hold", "seconds": 0.2})
+while not list((folder / "tape").glob("[0-9]*.npz")):
+    time.sleep(.01)
+print("persisted", flush=True)
+time.sleep(30)
+''')
+    folder = tmp_path / "run"
+    p = subprocess.Popen([sys.executable, str(script), str(folder)], stdout=subprocess.PIPE, text=True)
+    try:
+        assert p.stdout.readline().strip() == "persisted"
+        p.kill()
+        p.wait(timeout=5)
+        record = inspect(folder)
+        assert not (folder / "tape.npz").exists()
+        assert record["summary"]["ticks"] >= 20 and not record["closed"]
+        assert record["jobs"][1]["outcome"]["status"] == "done"
+        assert replay(folder, tmp_path / "replay.gif").stat().st_size > 1000
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait(timeout=5)
+
+
+def test_recovery_prefers_new_chunks_over_an_older_manual_save(tmp_path):
+    from world_use.recorder import Journal, load_tape
+
+    tape = Tape(1)
+    journal = Journal(tape, tmp_path, interval=60)
+    try:
+        tape.add(0, True, False, 1, [0], [0], None, None, None, None, None)
+        tape.save(tmp_path / "tape.npz", 100)
+        journal.flush()
+        tape.add(.01, True, False, 1, [1], [1], None, None, None, None, None)
+        journal.flush()
+        a = load_tape(tmp_path)
+        assert a["q"].ravel().tolist() == [0, 1]
+        assert not list(tmp_path.rglob(".writing-*"))
+    finally:
+        journal.close()

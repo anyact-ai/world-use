@@ -185,10 +185,10 @@ def build(url: str = DEFAULT_URL):
         return call(lambda: job_text(c.calibrate(camera, points, None, wait_s)))
 
     @server.tool()
-    def record() -> str:
+    def record(note: str = "", context: dict | None = None) -> str:
         """Write the flight record so far (tape, summary, world) without stopping anything; returns where."""
         def saved():
-            r = c.record()
+            r = c.record(note=note, context=context)
             s = r["summary"]
             return (f"{r['run']}: powered {s.get('powered_s', 0)} s, moving {s.get('moving_s', 0)} s, "
                     f"max temps {s.get('max_temp_c')}")

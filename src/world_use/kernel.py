@@ -14,7 +14,6 @@ Its rules are the lessons of running a slow policy on real hardware:
 from __future__ import annotations
 
 import itertools
-import json
 import queue
 import threading
 import time
@@ -49,7 +48,7 @@ from .errors import Refused, explain
 from .events import EventLog
 from .kinematics import Chain
 from .motion import Timing
-from .recorder import Tape, save_summary
+from .recorder import Journal, Tape, save_summary, session_record
 from .world import World
 
 TERMINAL = (*STATUSES, "cancelled")            # a queued job that never started ends "cancelled"
@@ -189,6 +188,7 @@ class Kernel:
                                clock=self.clock.now, t0=self.t0)
         self.tape = Tape(m.n)
         self.tape.mark_power(0.0, False)
+        self.journal = Journal(self.tape, self.run_dir) if self.run_dir else None
         self.heat = Heat()
         self.lock = threading.RLock()
         self.jobs: dict[int, Job] = {}
@@ -235,7 +235,13 @@ class Kernel:
                   f"{np.round(np.degrees(self.q_start), 1).tolist()}")
         for w in getattr(self.body, "warnings", []):
             self.emit("warning", w, "warn")
+        self.record_session()
         return st
+
+    def record_session(self, **context):
+        """Record startup state after connecting and applying the workcell, before executing a task."""
+        if self.run_dir:
+            save_summary(self.run_dir / "session.json", session_record(self, **context))
 
     def enable(self):
         """Torque on at the measured pose. Nothing if it is on already; refused while the kernel is faulted."""
@@ -333,6 +339,8 @@ class Kernel:
     def close(self) -> dict:
         """Close the connection (never switches torque off by itself) and write the flight record."""
         self.body.close()
+        if self.journal:
+            self.journal.close()
         summary = self.save_record()
         self.emit("closed", "connection closed")
         self.events.close()
@@ -345,12 +353,14 @@ class Kernel:
         until = self.clock.now() - self.t0
         if not self.run_dir:
             return dict(body=self.manifest.name, **self.tape.summary(rate, until=until))
+        if self.journal:
+            self.journal.flush()
         summary = dict(body=self.manifest.name, **self.tape.save(self.run_dir / "tape.npz", rate, until=until))
         summary["events"] = self.events.seq
         save_summary(self.run_dir / "summary.json", summary)
         with self.lock:                                  # the control thread moves held boxes about
             world = self.world.to_dict()
-        (self.run_dir / "world.json").write_text(json.dumps(world, indent=1))
+        save_summary(self.run_dir / "world.json", world)
         return summary
 
     # -- requests (any thread) ---------------------------------------------------------------------
@@ -360,9 +370,10 @@ class Kernel:
         with self.lock:
             if admission is not None:
                 admission()
-            job = Job(next(self._ids), behavior, spec if not isinstance(spec, Behavior) else spec.spec())
+            job = Job(next(self._ids), behavior, deepcopy(behavior.spec()))
             job.admission = admission
             self.jobs[job.id] = job
+            self.emit("submitted", f"job {job.id}: {behavior.describe()}", job=job.id, spec=job.spec)
             if self.faulted or self.power_uncertain:
                 self._end(job, Outcome("refused", behavior.kind, "the kernel is faulted or motor power is unconfirmed",
                                        hint="check the hardware, then reset"))
@@ -381,6 +392,8 @@ class Kernel:
             job = self.jobs.get(job_id)
             if job is None or job.status != "waiting":
                 raise Refused(f"job {job_id} is not waiting for an answer", "no_question")
+            self.emit("answer", f"job {job_id}: checkpoint answered", job=job_id, answer=str(text),
+                      question=job.question)
             job.answer, job.status = str(text), "running"      # resumes on the next tick
             job.attention.clear()
 
@@ -417,7 +430,7 @@ class Kernel:
         with self.lock:
             self.home_route = None if steps is None else (steps, self.events.seq + 1)
         message = "home route cleared" if steps is None else f"home route set ({len(steps)} moves, then fold)"
-        self.emit("home_route", message + (f": {note}" if note else ""))
+        self.emit("home_route", message + (f": {note}" if note else ""), steps=steps, note=note)
 
     def home_plan(self) -> list:
         """Route + fold back to the session's start pose, or Refused if nothing valid is known."""
@@ -515,7 +528,7 @@ class Kernel:
         if model.body != self.manifest.name:
             raise ValueError(f"that model was fitted for {model.body!r}, not {self.manifest.name!r}")
         self._on_loop(lambda: self._use_fit(model))
-        self.emit("fit", model.headline())
+        self.emit("fit", model.headline(), fit=model.to_dict())
 
     def _use_fit(self, model):
         with self.lock:
@@ -533,7 +546,7 @@ class Kernel:
         return tau if self.fit is None else tau + self.fit.friction_torque(self.cmd.dq)
 
     def touched(self, kind: str, message: str):
-        e = self.emit(kind, message)
+        e = self.emit(kind, message, world=self.world.to_dict())
         self.last_touch = e["seq"]
 
     def gripped(self, contact: float, attach: bool = True) -> str | None:
@@ -545,6 +558,8 @@ class Kernel:
         if held is not None:
             return held[0]
         box = self.world.grab(self.tool) if attach else None
+        if box is not None:
+            self.emit("attached", f"gripped {box.name}", world=self.world.to_dict())
         return None if box is None else box.name
 
     def _track_held(self):
@@ -560,7 +575,8 @@ class Kernel:
             else:
                 c = self.world.from_base("work", box.pose[:3, 3]) if "work" in self.world.frames else box.pose[:3, 3]
                 self.emit("let_go",
-                          f"let go of {box.name!r}; it should now stand at F{c[0]:+.3f} L{c[1]:+.3f} U{c[2]:+.3f}")
+                          f"let go of {box.name!r}; it should now stand at F{c[0]:+.3f} L{c[1]:+.3f} U{c[2]:+.3f}",
+                          world=self.world.to_dict())
             return
         self.world.carry(self.tool)
 
@@ -680,7 +696,8 @@ class Kernel:
             self.faulted = True
         job.outcome, job.status, job.t_end = out, out.status, time.time()
         level = "info" if out.ok else ("alarm" if out.status == "faulted" else "warn")
-        self.emit("finished", f"job {job.id} {out.status}: {out.message}", level, job=job.id, status=out.status)
+        self.emit("finished", f"job {job.id} {out.status}: {out.message}", level, job=job.id, status=out.status,
+                  outcome=out.to_dict())
         if not out.ok:
             self._cancel_queue(f"job {job.id} ended {out.status}")
             if out.status in ("surprise", "faulted"):
@@ -755,6 +772,7 @@ class Kernel:
         self.emit("hot", f"{trip.message}: going home along the home route", "alarm")
         job = Job(next(self._ids), build({"do": "seq", "steps": plan, "label": "home: motor hot"}), plan)
         self.jobs[job.id] = job
+        self.emit("submitted", f"job {job.id}: thermal return", job=job.id, spec=job.spec)
         self._thermal_home = job
         self._start(job, now)
 

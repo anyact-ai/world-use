@@ -66,6 +66,8 @@ def status(k) -> dict:
     feedback = k.feedback_status()
     d = dict(body=k.manifest.name, enabled=k.enabled, power_uncertain=k.power_uncertain,
              feedback=feedback,
+             recording=dict(path=str(k.run_dir) if k.run_dir else None,
+                            error=k.journal.error if k.journal else None),
              faulted=k.faulted, line=state_line(k),
              joints_deg=np.round(np.degrees(st.q), 2).tolist(),
              tool=dict(base=np.round(tool[:3, 3], 4).tolist(),

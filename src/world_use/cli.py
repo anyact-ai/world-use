@@ -128,7 +128,15 @@ def main(argv=None) -> int:
     up.add_argument("--runs", default=os.environ.get("WORLD_USE_RUNS", "runs"))
     up.add_argument("--enable", action="store_true")
     sub.add_parser("down", help="release at rest and stop the daemon")
-    sub.add_parser("record", help="write the flight record so far, without stopping")
+    p = sub.add_parser("record", help="write the flight record so far, without stopping")
+    p.add_argument("--note", default="", help="record an intervention or observation")
+    p.add_argument("--context", help="JSON or a JSON file with agent/model inputs to retain")
+    p = sub.add_parser("inspect", help="summarize a recorded run offline")
+    p.add_argument("run", type=Path)
+    p = sub.add_parser("replay", help="render recorded measurements and the world model; never operates hardware")
+    p.add_argument("run", type=Path)
+    p.add_argument("--out", type=Path)
+    p.add_argument("--speed", type=float, default=1.0)
     p = sub.add_parser("calibrate", help="find where a camera is from the arm: answer where it sees the tool point")
     p.add_argument("camera")
     p.add_argument("--points", type=int, default=8, help="corners of the box to visit (6-8)")
@@ -193,6 +201,14 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     c = Client(a.url)
     try:
+        if a.cmd in ("inspect", "replay"):
+            from . import records
+            if a.cmd == "inspect":
+                r = records.inspect(a.run)
+                print(json.dumps(r, indent=2) if a.json else records.describe(r))
+            else:
+                print(records.replay(a.run, a.out or a.run / "replay.gif", speed=a.speed))
+            return 0
         if a.cmd == "policy":
             from . import policy_text
             print(policy_text())
@@ -215,7 +231,7 @@ def main(argv=None) -> int:
             print(json.dumps(r["summary"]) if a.json else _summary(r["summary"]))
             return 0
         if a.cmd == "record":
-            r = c.record()
+            r = c.record(note=a.note, context=_spec(a.context) if a.context else None)
             print(json.dumps(r) if a.json else f"{r['run'] or '(no run folder)'}\n{_summary(r['summary'])}")
             return 0
         r = _dispatch(a, c)

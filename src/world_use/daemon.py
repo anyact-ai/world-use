@@ -44,7 +44,7 @@ MAX_WAIT_S = 120.0
 class Daemon:
     def __init__(self, kernel: Kernel, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
                  cams: dict[str, cameras.Camera] | None = None, rehearser: Rehearser | None = None,
-                 session: dict | None = None):
+                 session: dict | None = None, config: dict | None = None):
         self.k = kernel
         self.host, self.port = host, port
         from .bodies.sim import SimBody
@@ -53,6 +53,7 @@ class Daemon:
             f"sim:{adapter}" if isinstance(kernel.body, SimBody) else adapter, {})
         self.cameras = dict(cams or {})
         kernel.cameras = self.cameras                    # the card lists them
+        kernel.record_session(session=self.session, config=config or {})
         self.shots = 0
         self.calibrations: dict[int, dict] = {}         # job id -> camera, picture size and, once solved, the result
         self._solving = threading.Lock()
@@ -154,6 +155,8 @@ class Daemon:
         if route == ["calibrate"]:
             return self.calibrate(body["camera"], int(body.get("points", 8)), body.get("spread"), wait)
         if route == ["record"]:
+            if body.get("context") or body.get("note"):
+                k.emit("annotation", body.get("note", "agent context"), context=body.get("context", {}))
             return 200, dict(summary=k.save_record(), run=str(k.run_dir) if k.run_dir else None)
         if route == ["shutdown"]:
             return 200, dict(summary=self.shutdown())
@@ -187,7 +190,7 @@ class Daemon:
                            or (current.gripper is not None and snap.gripper is not None
                                and abs(current.gripper - snap.gripper) > 0.01))
                 own_job = k.active is not None and k.active.admission is admission
-                if (changed or k.events.seq != seq or len(k.jobs) != jobs + int(own_job)
+                if (changed or k.events.seq != seq + int(own_job) or len(k.jobs) != jobs + int(own_job)
                         or k.queue or k._stop is not None or (k.active is not None and not own_job)
                         or not k.enabled or k.faulted or k.power_uncertain):
                     raise Refused("the robot or scene changed during rehearsal; nothing started", "stale_check",
@@ -243,7 +246,8 @@ class Daemon:
         folder.mkdir(parents=True, exist_ok=True)
         path = (folder / f"{self.shots:04d}-{name}.{'png' if isinstance(cam, cameras.SimCamera) else 'jpg'}").resolve()
         img.save(path, quality=88) if path.suffix == ".jpg" else img.save(path)
-        k.emit("look", f"{name}: {path.name}", camera=name)
+        k.emit("look", f"{name}: {path.name}", camera=name, path=f"views/{path.name}",
+               drawn=drawn, size=list(img.size))
         return dict(path=str(path), camera=name, size=list(img.size), drawn=drawn)
 
     def _settle(self):
@@ -348,6 +352,7 @@ class Daemon:
                 a = np.radians(f["yaw_deg"])
                 T[:2, :2] = [[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]]
             w.add_frame(f["name"], T, f.get("source", "policy"))
+        self.k.emit("world_state", "world updated", change=body, world=w.to_dict())
         return 200, dict(out, boxes=sorted(w.boxes), facts=sorted(w.facts), frames=sorted(w.frames))
 
 
@@ -492,13 +497,14 @@ def main(argv=None):
     if simulated and "start_deg" in options:
         options["q"] = np.radians(options.pop("start_deg"))
     body = bodies.make(name, truth if simulated else world, **options)
-    run_dir = a.runs / f"{datetime.now():%Y%m%d-%H%M%S}-{name.replace(':', '-')}"
+    run_dir = a.runs / f"{datetime.now():%Y%m%d-%H%M%S-%f}-{name.replace(':', '-')}"
     k = Kernel(body, world, run_dir=run_dir)
     k.connect()
     if truth is not None:
         truth.frames.update(world.frames)
     apply_workcell(cell, k, truth)
-    d = Daemon(k, port=a.port, cams=make_cameras(cell, k, body, truth), session=session_identity(name, cell))
+    d = Daemon(k, port=a.port, cams=make_cameras(cell, k, body, truth),
+               session=session_identity(name, cell), config=cell)
     d.start()
     if a.enable:
         try:

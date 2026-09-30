@@ -100,9 +100,9 @@ class Client:
         """Start calibrating a camera from the arm: a job whose checkpoints ask where the tool point is."""
         return self._call("POST", "/calibrate", dict(camera=camera, points=points, spread=spread, wait=wait))
 
-    def record(self) -> dict:
+    def record(self, *, context: dict | None = None, note: str = "") -> dict:
         """Write the flight record so far, without stopping anything."""
-        return self._call("POST", "/record", {})
+        return self._call("POST", "/record", dict(context=context, note=note))
 
     def shutdown(self) -> dict:
         return self._call("POST", "/shutdown", {})
