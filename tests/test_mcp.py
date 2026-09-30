@@ -5,6 +5,8 @@ import pytest
 
 pytest.importorskip("mcp")
 
+from mcp.server.mcpserver.exceptions import ToolError
+
 from world_use.mcp_server import build
 
 
@@ -34,8 +36,11 @@ def test_mcp_tools_drive_the_daemon(daemon):
         assert "job 2 done" in r.content[0].text
         r = await server.call_tool("look", {"camera": "side"})
         assert {x.type for x in r.content} == {"text", "image"}
-        r = await server.call_tool("run", {"plan": {"do": "teleport"}})
-        assert "refused: unknown behavior" in r.content[0].text
+        # The SDK maps ToolError to is_error on the wire.
+        with pytest.raises(ToolError, match="refused: unknown behavior"):
+            await server.call_tool("run", {"plan": {"do": "teleport"}})
+        with pytest.raises(ToolError, match="error:"):
+            await server.call_tool("job", {"job": 99999})
         r = await server.call_tool("add_box", {"name": "tray", "kind": "surface", "center": [0.32, 0, 0.14],
                                                "size": [0.3, 0.4, 0.02]})
         assert r.content[0].text.startswith("surface 'tray'")

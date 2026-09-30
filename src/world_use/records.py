@@ -28,6 +28,8 @@ def events(folder: Path) -> list[dict]:
 
 def inspect(folder: Path | str) -> dict:
     folder = Path(folder)
+    if not folder.is_dir() or not any((folder / name).exists() for name in ("session.json", "tape", "tape.npz")):
+        raise ValueError(f"not a flight record: {folder}")
     session = json.loads((folder / "session.json").read_text()) if (folder / "session.json").exists() else {}
     log = events(folder)
     jobs = {}

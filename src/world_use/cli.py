@@ -37,10 +37,15 @@ from .client import DEFAULT_URL, Client, DaemonError
 
 
 def _spec(text: str):
-    p = Path(text)
-    if not text.lstrip().startswith(("{", "[")) and p.exists():
-        text = p.read_text()
-    return json.loads(text)
+    if not text.lstrip().startswith(("{", "[")) and text != "null":
+        try:
+            text = Path(text).expanduser().read_text()
+        except OSError as e:
+            raise ValueError(f"cannot read JSON file: {e}") from e
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"invalid JSON at line {e.lineno}, column {e.colno}: {e.msg}") from e
 
 
 def job_text(d: dict) -> str:
@@ -246,6 +251,12 @@ def main(argv=None) -> int:
         r = _dispatch(a, c)
         if a.json:
             print(json.dumps(r, indent=1))
+        elif a.cmd == "look":
+            print(f"{r['path']}\n{r['camera']} camera, {r['size'][0]}x{r['size'][1]}: {r['drawn']}" + (
+                f"\n{r['check']}" if r.get("check") else ""))
+        elif a.cmd == "events":
+            print("\n".join(f"[{e['seq']}] {e['t']:>7.1f}s {e['level']:5s} {e['kind']}: {e['message']}"
+                            for e in r["events"]) or "(none)")
         elif isinstance(r, dict) and "id" in r and "status" in r:
             print(job_text(r))
         elif isinstance(r, dict) and "text" in r:
@@ -266,8 +277,11 @@ def main(argv=None) -> int:
         else:
             print(f"error: {e}", file=sys.stderr)
         return 2
+    except (ValueError, KeyError) as e:
+        print(f"{a.cmd}: {e}", file=sys.stderr)
+        return 2
     except OSError as e:
-        if a.cmd in ("demo", "inspect", "replay", "fit", "policy"):
+        if a.cmd in ("demo", "inspect", "replay", "fit", "policy", "up"):
             print(f"{a.cmd}: {e}", file=sys.stderr)
             return 2
         print(f"cannot reach the daemon at {a.url} ({e}); start it with: wu up", file=sys.stderr)
@@ -284,16 +298,14 @@ def _dispatch(a, c: Client):
     if a.cmd == "calibrate":
         return c.calibrate(a.camera, a.points, a.spread, a.wait)
     if a.cmd == "look":
-        r = c.look(a.camera, None if a.plan is None else _spec(a.plan), a.grid)
-        return f"{r['path']}\n{r['camera']} camera, {r['size'][0]}x{r['size'][1]}: {r['drawn']}" + (
-            f"\n{r['check']}" if r.get("check") else "")
+        return c.look(a.camera, None if a.plan is None else _spec(a.plan), a.grid)
     if a.cmd == "help":
         return help_text(c, a.step)
     if a.cmd == "world":
-        return c.world()["text"]
+        return c.world()
     if a.cmd == "box":
         if a.remove:
-            return c.remove(a.name)["line"]
+            return c.remove(a.name)
         if not (a.kind and a.center and a.size):
             raise SystemExit("wu box NAME KIND CENTER SIZE, e.g. wu box tray surface 0.32,0,0.14 0.3,0.4,0.02")
         extra = {}
@@ -304,7 +316,7 @@ def _dispatch(a, c: Client):
             except json.JSONDecodeError:
                 extra[key] = value
         return c.box(a.name, a.kind, _vec(a.center), _vec(a.size), frame=a.frame, yaw_deg=a.yaw, source=a.source,
-                     **extra)["line"]
+                     **extra)
     if a.cmd == "check":
         return c.check(_spec(a.spec))
     if a.cmd == "answer":
@@ -318,9 +330,7 @@ def _dispatch(a, c: Client):
     if a.cmd == "home-route":
         return c.home_route(_spec(a.steps), a.note)
     if a.cmd == "events":
-        r = c.events(a.since, a.wait)
-        return "\n".join(f"[{e['seq']}] {e['t']:>7.1f}s {e['level']:5s} {e['kind']}: {e['message']}"
-                         for e in r["events"]) or "(none)"
+        return c.events(a.since, a.wait)
     if a.cmd == "fact":
         try:
             value = json.loads(a.value)

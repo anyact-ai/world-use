@@ -367,15 +367,26 @@ def _handler(d: Daemon):
             self.wfile.write(data)
 
         def _call(self, method):
+            port = d.http.server_port
+            hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+            host = self.headers.get("Host")
+            if host not in hosts or self.headers.get("Origin") not in (None, f"http://{host}"):
+                return self._reply(403, dict(error="use the local daemon address and a same-origin client"))
             u = urlparse(self.path)
             query = {k: v[-1] for k, v in parse_qs(u.query).items()}
             body = {}
             if method == "POST":
-                n = int(self.headers.get("Content-Length") or 0)
+                if self.headers.get_content_type() != "application/json":
+                    return self._reply(415, dict(error="POST requests require application/json"))
                 try:
+                    n = int(self.headers.get("Content-Length") or 0)
+                    if not 0 <= n <= 1024 * 1024:
+                        return self._reply(413, dict(error="request body must be at most 1 MiB"))
                     body = json.loads(self.rfile.read(n) or b"{}")
-                except json.JSONDecodeError as e:
-                    return self._reply(400, dict(error=f"bad JSON: {e}"))
+                    if not isinstance(body, dict):
+                        raise ValueError("request body must be a JSON object")
+                except (ValueError, UnicodeError) as e:
+                    return self._reply(400, dict(error=str(e)))
             try:
                 code, obj = d.api(method, u.path, query, body)
             except Refused as e:

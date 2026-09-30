@@ -53,6 +53,47 @@ def test_malformed_spec_is_a_409_with_the_reason(client):
     assert e.value.code == 409 and "unknown behavior" in str(e.value)
 
 
+def test_http_boundary_rejects_foreign_origins_hosts_and_non_json(client):
+    from contextlib import closing
+    from http.client import HTTPConnection
+    from urllib.parse import urlparse
+
+    client.release()
+    url = urlparse(client.url)
+    for headers, body, expected in [
+        ({"Origin": "https://example.invalid", "Content-Type": "application/json"}, "{}", 403),
+        ({"Host": f"example.invalid:{url.port}", "Content-Type": "application/json"}, "{}", 403),
+        ({"Content-Type": "text/plain"}, "{}", 415),
+        ({"Content-Type": "application/json"}, "[]", 400),
+    ]:
+        with closing(HTTPConnection(url.hostname, url.port)) as conn:
+            conn.request("POST", "/enable", body, headers)
+            response = conn.getresponse()
+            assert response.status == expected
+            response.read()
+        assert not client.status()["enabled"]
+    client.enable()
+    assert client.status()["enabled"]
+
+
+def test_cli_returns_structured_json_and_concise_input_errors(client, tmp_path, capsys):
+    import json
+
+    from world_use import cli
+
+    for command, key in [("world", "frames"), ("events", "events"), ("look", "path")]:
+        assert cli.main(["--url", client.url, command, "--json"]) == 0
+        assert key in json.loads(capsys.readouterr().out)
+    for args, message in [
+        (["run", "[{"], "invalid JSON"),
+        (["check", str(tmp_path / "missing.json")], "cannot read JSON file"),
+        (["inspect", str(tmp_path / "missing")], "not a flight record"),
+        (["replay", str(tmp_path), "--speed", "0"], "speed"),
+    ]:
+        assert cli.main(["--url", client.url, *args]) == 2
+        assert message in capsys.readouterr().err
+
+
 def test_checkpoint_round_trip(client):
     client.run({"do": "line", "up": 0.05, "duration": 1.0}, wait=10)
     r = client.run([{"do": "checkpoint", "ask": "clear to go on?"}, {"do": "line", "up": 0.01}], wait=5)
