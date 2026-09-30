@@ -236,8 +236,9 @@ def card(k, reach=None) -> str:
         joints, above = m.turn_clearance
         names = ", ".join(f"j{j + 1}" for j in joints)
         sideways = "; every left or right move turns j1, so lift first, then move sideways" if 0 in joints else ""
-        lines.append(f"turning {names} needs the tool at U{need:+.3f} or higher ({100 * above:.0f} cm above where it "
-                     f"started){sideways}.")
+        over = k.envelope.overrides.get("turn_height")
+        why = f"operator override: {over['reason']}" if over else f"{100 * above:.0f} cm above where it started"
+        lines.append(f"turning {names} needs the tool at U{need:+.3f} or higher ({why}){sideways}.")
     others = [f for f in k.world.frames if f not in ("base", "work")]
     lines.append("frames: work = forward, left, up from the base, pointing where the arm pointed at the session start"
                  + (f"; also {', '.join(others)}" if others else "") + ". Positions here are work-frame metres; "

@@ -108,3 +108,5 @@ def test_an_operator_can_lower_the_turn_height_and_rehearsals_follow_it(k):
     low = check([{"do": "line", "up": 0.03}, {"do": "line", "left": 0.05}, {"do": "line", "up": -0.02},
                  {"do": "line", "left": 0.03}], k)
     assert low.refused and "operator override" in str(low), str(low)
+    from world_use.views import card
+    assert "operator override: chess pieces are low" in card(k) and "above where it started" not in card(k)
