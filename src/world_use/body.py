@@ -138,7 +138,8 @@ class Body(Protocol):
         until disable succeeds at a freshly measured rest pose."""
 
     def read(self) -> JointState:
-        """Latest measurement. Called once per control tick."""
+        """Latest measurement. Called once per control tick. Preserve its timestamp when serving a cached
+        sample; raise on lost or stale feedback rather than presenting cached values as a new measurement."""
 
     def command(self, q: np.ndarray, dq: np.ndarray, gripper: float | None, gripper_v: float = 0.0) -> None:
         """Position setpoint for this tick, with velocity feedforward."""

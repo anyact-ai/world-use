@@ -464,27 +464,73 @@ def test_once_the_loop_runs_only_its_thread_calls_the_body():
     assert not k.enabled and callers[-1] is threading.current_thread()
 
 
-def test_a_body_that_raises_faults_the_kernel_but_the_loop_goes_on():
+@pytest.mark.parametrize("failed_call", ["read", "command"])
+def test_a_body_that_raises_suspends_commands_even_after_reconnection(failed_call):
     fail = threading.Event()
+    commands = []
 
     def flaky(fn):
-        def read():
+        def call(*args):
             if fail.is_set():
                 fail.clear()
                 raise OSError("the CAN adapter went away")
-            return fn()
-        return read
-    k, stop, loop = _looping({"read": flaky})
+            return fn(*args)
+        return call
+
+    def spy(fn):
+        def command(*args):
+            commands.append(args)
+            return fn(*args)
+        return command
+
+    hooks = {"command": spy}
+    hooks[failed_call] = (lambda fn: flaky(spy(fn))) if failed_call == "command" else flaky
+    k, stop, loop = _looping(hooks)
     k.enable()
     job = k.submit({"do": "hold", "seconds": 30})
     _until(lambda: job.status == "running")
     fail.set()
     _until(lambda: job.finished)
     assert job.outcome.status == "faulted" and "adapter went away" in job.outcome.message
-    assert loop.is_alive() and k.faulted
+    assert loop.is_alive() and k.faulted and k.power_uncertain
     assert any(e["kind"] == "fault" and e["level"] == "alarm" for e in k.events.since(0))
+    count, stamp = len(commands), k.state.t
+    _until(lambda: k.state.t > stamp + 0.1)            # reads recovered; motion commands must stay suspended
+    assert len(commands) == count
+    with pytest.raises(Refused, match="motor power is unconfirmed"):
+        k.reset()
+    assert k.submit({"do": "line", "up": 0.02}).status == "refused"
+    k.release()                                     # fresh feedback at rest and successful disable are required
+    assert not k.enabled and not k.power_uncertain
+    k.reset()
     stop.set()
     loop.join(2.0)
+
+
+def test_cached_feedback_cannot_authorize_a_release(k, monkeypatch):
+    cached = k.state
+    monkeypatch.setattr(k.body, "read", lambda: cached)
+    for _ in range(101):
+        k.clock.wait()
+    with pytest.raises(ConnectionError, match="no new feedback"):
+        k.release()
+    assert k.faulted and k.power_uncertain and k.body.enabled
+    assert k.feedback_status()["stale"]
+
+
+def test_an_embedded_kernel_also_latches_command_failure(k, monkeypatch):
+    commands = []
+
+    def lost(*args):
+        commands.append(args)
+        raise ConnectionError("CAN command failed")
+
+    monkeypatch.setattr(k.body, "command", lost)
+    with pytest.raises(ConnectionError, match="CAN command failed"):
+        k.tick()
+    assert k.faulted and k.power_uncertain
+    k.tick()
+    assert len(commands) == 1
 
 
 def test_a_fault_with_torque_off_keeps_it_off_until_an_operator_resets():

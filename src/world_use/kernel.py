@@ -19,6 +19,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import CancelledError, Future
+from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -195,6 +196,9 @@ class Kernel:
         self._stop: str | None = None
         self.enabled = self.faulted = False
         self.power_uncertain = False             # an incomplete enable/disable must never look like torque off
+        self.feedback_at: float | None = None    # kernel-clock time of the last distinct successful sample
+        self.feedback_error: str | None = None
+        self._feedback_stamp: float | None = None
         self.cameras: dict = {}                     # name -> camera, when a daemon owns some (the card lists them)
         self.last_touch = 0                        # event seq of the last contact (0 = none this session)
         self.home_route: tuple[list, int] | None = None   # (specs, event seq when set)
@@ -215,6 +219,7 @@ class Kernel:
     def connect(self) -> JointState:
         st = self.body.connect()
         self.state, self.q_start = st, np.asarray(st.q, float).copy()
+        self.feedback_at, self._feedback_stamp = self.clock.now(), st.t
         self.cmd = Command(self.q_start.copy(), np.zeros(self.manifest.n), st.gripper)
         self.grip_start = st.gripper
         self.envelope = Envelope(self.manifest, self.chain, self.world, self.q_start)
@@ -251,7 +256,7 @@ class Kernel:
         try:                          # not under the lock: an engage takes a second or two, and status must answer
             self.body.enable()
             self.enabled = True
-            st = self.body.read()
+            st = self._read_state()
         except Exception as e:
             with self.lock:
                 self.faulted = True
@@ -273,7 +278,7 @@ class Kernel:
             if self.active is not None or self.queue:
                 raise Refused("a job is running; stop it first", "busy")
             # A failed enable may have left an old reading behind. Never release on that evidence.
-            self.state = self.body.read()
+            self.state = self._read_state()
             rest = self.manifest.rest
             if rest is not None and not rest.holds(self.state.q):
                 raise Refused("the arm is not at its rest pose: releasing torque here would drop it", "not_at_rest",
@@ -567,8 +572,35 @@ class Kernel:
         return self.events.emit(kind, message, level, **data)
 
     # -- the control tick --------------------------------------------------------------------------
+    def _read_state(self) -> JointState:
+        try:
+            st = self.body.read()
+            if st.t != self._feedback_stamp:
+                self.feedback_at, self._feedback_stamp = self.clock.now(), st.t
+            if self.feedback_at is None or self.clock.now() - self.feedback_at > 1.0:
+                raise ConnectionError("the body returned no new feedback for over 1 second")
+        except Exception as e:
+            self.feedback_error = explain(e)
+            self._survive(e)         # posted enable/release calls need the same fault handling as a tick
+            raise
+        self.feedback_error = None
+        return st
+
+    def feedback_status(self) -> dict:
+        age = None if self.feedback_at is None else max(0.0, self.clock.now() - self.feedback_at)
+        return dict(age_s=None if age is None else round(age, 3),
+                    stale=self.feedback_error is not None or age is None or age > 1.0, error=self.feedback_error)
+
     def tick(self):
-        st = self.body.read()
+        """One control tick. Embedded callers get the same fault latch as the daemon loop."""
+        try:
+            self._tick()
+        except Exception as e:
+            self._survive(e)
+            raise
+
+    def _tick(self):
+        st = self._read_state()
         self.state = st
         if self.enabled and st.tau is not None:
             self.residuals.push(np.asarray(st.tau, float) - self.expected_torque(st.q))
@@ -760,27 +792,28 @@ class Kernel:
         self._loop_thread = threading.current_thread()
         while not stop.is_set():
             self._run_posted()
-            try:
+            with suppress(Exception):      # tick latched the fault; stay alive for status and recovery
                 self.tick()
-            except Exception as e:
-                self._survive(e)
             self.clock.wait()
         self._run_posted(run=False)
 
     def _survive(self, e: Exception):
         """The body raised (an adapter unplugged, a value out of range): fault and say so, but keep the loop and
-        the daemon alive, so the flight record survives and an operator sees why. The motors keep their last
-        command until something works again or someone switches them off."""
+        the daemon alive, so the flight record survives and an operator sees why. Motor power is unknown;
+        commands must not resume on reconnection. Physical motor power may still be on."""
         with self.lock:
             first = not self.faulted
             self.faulted = True
+            if self.enabled:
+                self.power_uncertain = True
             self.hold_here()
             self._cancel_queue("the kernel faulted")
             if self.active is not None:
                 self._end(self.active, Outcome("faulted", self.active.behavior.kind, explain(e),
-                                               hint="check the hardware, then reset"))
+                                               hint="treat the arm as energized; resolve motor power before reset"))
         if first:
-            self.emit("fault", f"control tick failed: {explain(e)}", "alarm")
+            detail = "; motor power unconfirmed, commands suspended" if self.power_uncertain else ""
+            self.emit("fault", f"control I/O failed: {explain(e)}{detail}", "alarm")
 
     @property
     def tool(self) -> np.ndarray:

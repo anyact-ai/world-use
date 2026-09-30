@@ -249,7 +249,7 @@ class ReBotBody:
         frozen = np.isnan(pos).any() or (self._stale > STALE_TICKS).any()
         self._blind = self._blind + 1 if frozen else 0
         if self._blind > BLIND_TICKS:
-            faults.append("no fresh feedback (48 V off? cable? adapter?)")
+            raise ConnectionError("no fresh feedback (48 V off? cable? adapter?); motor power is unconfirmed")
         last = self.last
         q = np.where(np.isnan(pos[:6]), last.q, pos[:6])
         self._last = JointState(time.monotonic(), q, None, np.nan_to_num(tau[:6]), temp[:6],

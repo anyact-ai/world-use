@@ -147,6 +147,18 @@ def test_a_bad_value_sends_nothing_to_any_motor(fake):
     assert bus.frames == frames
 
 
+def test_frozen_motor_feedback_raises_instead_of_returning_a_new_measurement(fake, monkeypatch):
+    fake(np.append(Q_REST, 1.0))
+    body = rebot.ReBotBody()
+    body.connect()
+    body.enable()
+    frozen = {m.i: m.get_state() for m in body.motors}
+    monkeypatch.setattr(FakeMotor, "get_state", lambda self: frozen[self.i])
+    with pytest.raises(ConnectionError, match="no fresh feedback"):
+        for _ in range(rebot.STALE_TICKS + rebot.BLIND_TICKS + 5):
+            body.read()
+
+
 def test_kernel_session_on_the_adapter_moves_folds_and_releases(fake):
     bus = fake(np.append(Q_REST, 1.0))
     world = World()
