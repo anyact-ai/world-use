@@ -53,6 +53,15 @@ def test_malformed_spec_is_a_409_with_the_reason(client):
     assert e.value.code == 409 and "unknown behavior" in str(e.value)
 
 
+def test_a_refusal_prints_as_json_when_json_is_asked_for(client, capsys):
+    import json
+    from world_use import cli
+    capsys.readouterr()
+    assert cli.main(["--url", client.url, "--json", "run", '{"do": "teleport"}']) == 2
+    body = json.loads(capsys.readouterr().out)
+    assert "unknown behavior" in json.dumps(body)
+
+
 def test_checkpoint_round_trip(client):
     client.run({"do": "line", "up": 0.05, "duration": 1.0}, wait=10)
     r = client.run([{"do": "checkpoint", "ask": "clear to go on?"}, {"do": "line", "up": 0.01}], wait=5)
