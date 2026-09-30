@@ -16,6 +16,8 @@ FIELDS = {
     'touchdown': {'max', 'dtau', 'speed_mps', 'joints'},
     'gripper': {'aperture_mm', 'to', 'seconds'},
     'grip': {'expect_mm', 'expect', 'start_mm', 'start', 'squeeze', 'effort', 'lag', 'speed', 'min'},
+    'grasp': {'expect_mm', 'expect', 'start_mm', 'start', 'squeeze', 'effort', 'lag', 'speed', 'min', 'search_mm',
+              'lift_mm'},
     'hold': {'seconds'},
     'checkpoint': {'ask', 'view', 'roi', 'expect'},
     'seq': {'steps'},

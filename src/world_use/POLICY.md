@@ -81,6 +81,7 @@ optional `"label"`. `wu help STEP` lists a step's parameters.
 | guarded | `{"do": "guarded", "forward": 0.03, "dtau": 0.6}` | the same in any direction; `expect_contact: false` to probe |
 | gripper | `{"do": "gripper", "aperture_mm": 60}` | or `to` in native units (card) |
 | grip | `{"do": "grip", "start_mm": 60, "expect_mm": [35, 45]}` | close until contact, check the width, squeeze, hold |
+| grasp | `{"do": "grasp", "start_mm": 30, "expect_mm": [10, 22]}` | a grip that, on a miss, reopens, lifts a few mm, shifts (`search_mm`) and grips again on the spot |
 | hold | `{"do": "hold", "seconds": 2}` | |
 | checkpoint | `{"do": "checkpoint", "ask": "is the block between the jaws?", "view": "side"}` | `expect` defaults to "yes"; `"expect": null` takes any answer and keeps it |
 

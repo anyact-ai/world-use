@@ -759,3 +759,31 @@ def test_a_rehearsal_assumes_any_answer_at_a_free_checkpoint(k):
     from world_use import check
     report = check([{"do": "checkpoint", "ask": "where is the tool?", "expect": None}], k)
     assert report.ok and "(any answer)" in report.assumed[0]
+
+
+def _across(k):
+    along = k.tool[:3, :3] @ np.asarray(k.manifest.gripper.opens_along, float)
+    along = np.array([along[0], along[1], 0.0]) / np.linalg.norm(along[:2])
+    return np.cross([0.0, 0.0, 1.0], along)
+
+
+def test_grasp_searches_on_the_spot_after_a_miss_and_holds_what_it_finds(lifted):
+    k = lifted
+    tool = k.chain.fk(k.state.q)[:3, 3]
+    k.body.world.add_box("block", "object", center=tool + 0.012 * _across(k), size=[0.004, 0.004, 0.03],
+                         grip_width=0.012, frame="base")
+    assert k.run({"do": "grip", "start": 3.0}).status == "surprise"          # a plain grip misses it
+    out = k.run({"do": "grasp", "start": 3.0, "expect": [0.4, 1.0], "search_mm": [[-12, 0], [12, 0]]})
+    assert out.ok and out.data["tries"] == 3 and out.data["offset_mm"] == [12.0, 0.0], out.message
+    assert np.linalg.norm(k.chain.fk(k.state.q)[:3, 3] - (tool + 0.012 * _across(k))) < 0.003
+    assert any(e["kind"] == "grasp_retry" for e in k.events.since(0))
+
+
+def test_grasp_that_finds_nothing_is_a_surprise_after_its_last_try(lifted):
+    out = lifted.run({"do": "grasp", "start": 3.0, "search_mm": [[5, 0]]})
+    assert out.status == "surprise" and out.data["tries"] == 2 and "after 2 tries" in out.message
+
+
+def test_grasp_needs_a_start_width_to_reopen_to(lifted):
+    out = lifted.run({"do": "grasp", "expect": [0.4, 1.0]})
+    assert out.status == "refused" and "start" in out.message
