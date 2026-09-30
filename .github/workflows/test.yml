@@ -14,9 +14,28 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        python: ['3.13', '3.14']
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
-      - run: uv sync --locked
+      - run: uv sync --locked --python '${{ matrix.python }}'
       - run: uv run pytest
+      - run: uv run python examples/adapters/planar.py
+      - name: Verify the installed wheel and packaged resources
+        shell: bash
+        run: |
+          uv build
+          uv venv --python '${{ matrix.python }}' "$RUNNER_TEMP/wheel-test"
+          for task_wheel in dist/*.whl; do
+            uv pip install --python "$RUNNER_TEMP/wheel-test/bin/python" "${task_wheel}[mcp]"
+          done
+          "$RUNNER_TEMP/wheel-test/bin/python" scripts/wheel_smoke.py
+      - name: Load the published hardware driver without opening CAN
+        if: matrix.python == '3.13'
+        shell: bash
+        run: |
+          for task_wheel in dist/*.whl; do
+            uv pip install --python "$RUNNER_TEMP/wheel-test/bin/python" "${task_wheel}[rebot]"
+          done
+          "$RUNNER_TEMP/wheel-test/bin/python" -c 'from motorbridge.abi import get_abi; get_abi()'

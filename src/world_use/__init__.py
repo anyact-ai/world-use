@@ -21,7 +21,7 @@ from .plan import Plan, Report, check, twin
 from .views import card, incident, state_line, status
 from .world import World
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = ["Behavior", "Body", "GripperSpec", "JointSpec", "JointState", "Kernel", "Manifest", "Outcome", "Plan",
            "RealClock", "Refused", "Report", "Rest", "VirtualClock", "World", "bodies", "build", "card", "check",
            "fit", "incident", "register", "state_line", "status", "twin"]
