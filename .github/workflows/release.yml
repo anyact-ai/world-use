@@ -1,6 +1,5 @@
-# Publishes a tagged version to PyPI: gh workflow run release.yml --ref v0.2.0
-# It needs a trusted publisher on PyPI first (project world-use, owner anyact-ai, repository world-use,
-# workflow release.yml, environment pypi), so no token is stored anywhere.
+# Run against a merged, tested version tag. PyPI trusted publisher: anyact-ai/world-use,
+# workflow release.yml, environment pypi. No package is published by the PR workflow.
 name: release
 on:
   workflow_dispatch:
@@ -13,5 +12,25 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
+      - name: Require a matching version tag
+        run: |
+          uv run --no-project python - <<'PY'
+          import os, tomllib
+          from pathlib import Path
+          version = tomllib.loads(Path('pyproject.toml').read_text())['project']['version']
+          assert os.environ['GITHUB_REF'] == f'refs/tags/v{version}', 'Run the release from its matching version tag'
+          PY
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ty check src
+      - run: uv run pytest
       - run: uv build
+      - name: Check the wheel before publishing
+        shell: bash
+        run: |
+          uv venv "$RUNNER_TEMP/wheel-test"
+          for task_wheel in dist/*.whl; do
+            uv pip install --python "$RUNNER_TEMP/wheel-test/bin/python" "${task_wheel}[mcp]"
+          done
+          "$RUNNER_TEMP/wheel-test/bin/python" scripts/wheel_smoke.py
       - run: uv publish --trusted-publishing always

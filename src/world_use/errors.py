@@ -1,8 +1,9 @@
-"""The one exception a policy needs to understand: a refused command. Nothing moved."""
+"""A refused step: it starts no motion; earlier steps in a running plan may have moved."""
+from __future__ import annotations
 
 
 class Refused(ValueError):
-    """A command was refused before anything moved.
+    """A step was refused before it moved; preceding steps may have completed.
 
     rule      which check refused it (e.g. "joint_limit", "speed", "reach", "keep_out")
     hint      the nearest thing that would pass, when there is one

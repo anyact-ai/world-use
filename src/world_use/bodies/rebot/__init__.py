@@ -6,6 +6,8 @@ control to the motors through Seeed's motorbridge driver (the `rebot` extra).
 Everything here was learned on the arm: the soft engage, the refusal to switch on or off away from the folded
 rest pose, never sending a disable frame from a read-only connection, and the numbers in the notes.
 """
+from __future__ import annotations
+
 import os
 import subprocess
 import sys

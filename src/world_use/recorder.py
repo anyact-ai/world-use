@@ -3,7 +3,12 @@
 The summary answers the questions that decide whether a policy is worth running on hardware: how long were
 the motors on, how much of that time did the robot actually move, how hot did it get.
 """
+from __future__ import annotations
+
+import hashlib
 import json
+import os
+import tempfile
 import threading
 from pathlib import Path
 
@@ -66,6 +71,21 @@ class Tape:
             last = {key: v[:used].copy() for key, v in blocks[-1].items()}
         return {key: np.concatenate([b[key] for b in blocks[:-1]] + [last[key]]) for key in last} | power
 
+    def since(self, row: int) -> dict:
+        """Copy only new samples; completed blocks are immutable, and the live block is copied under the lock."""
+        with self._lock:
+            parts = []
+            for i in range(row // self.CHUNK, len(self._blocks)):
+                begin = row % self.CHUNK if i == row // self.CHUNK else 0
+                end = self._used if i == len(self._blocks) - 1 else self.CHUNK
+                parts.append({key: v[begin:end].copy() for key, v in self._blocks[i].items()})
+        return {key: np.concatenate([p[key] for p in parts]) for key in parts[0]} if parts else {}
+
+    def power(self) -> dict:
+        with self._lock:
+            return dict(power_t=np.array([t for t, _ in self._power]),
+                        power_on=np.array([on for _, on in self._power], bool))
+
     def summary(self, rate_hz: float, *, until: float | None = None) -> dict:
         """Elapsed durations, not tick counts divided by the nominal rate (kept for API compatibility)."""
         return self._summary(self.arrays(), until)
@@ -103,10 +123,106 @@ class Tape:
     def save(self, path: Path, rate_hz: float, *, until: float | None = None):
         a = self.arrays()
         if a:
-            np.savez_compressed(path, **a)
+            save_arrays(path, a)
         return self._summary(a, until)
 
 
+def _atomic(path: Path, write):
+    path = Path(path)
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".writing-", delete=False) as f:
+        temp = Path(f.name)
+        try:
+            write(f)
+            f.flush()
+            os.fsync(f.fileno())
+            os.replace(temp, path)
+        finally:
+            temp.unlink(missing_ok=True)
+
+
 def save_summary(path: Path, summary: dict):
-    with open(path, "w") as f:
-        json.dump(summary, f, indent=2)
+    from .events import _plain
+    _atomic(path, lambda f: f.write(json.dumps(summary, indent=2, default=_plain).encode()))
+
+
+def save_arrays(path: Path, arrays: dict):
+    _atomic(path, lambda f: np.savez_compressed(f, **arrays))
+
+
+class Journal:
+    """Persist incremental tape chunks once a second, away from the control thread.
+
+    Readers ignore unfinished temporary files. Process loss can lose the last interval; no database or
+    crash handler is needed to read everything already committed. Memory remains available for live summaries.
+    """
+    def __init__(self, tape: Tape, folder: Path, interval: float = 1.0):
+        self.tape, self.folder = tape, folder / "tape"
+        self.folder.mkdir(exist_ok=True)
+        self.row, self.part = 0, 0
+        self.error: str | None = None
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._loop, args=(interval,), name="flight-recorder", daemon=True)
+        self._thread.start()
+
+    def flush(self):
+        with self._lock:
+            a = self.tape.since(self.row)
+            if a and len(a["t"]):
+                save_arrays(self.folder / f"{self.part:06d}.npz", a)
+                self.row += len(a["t"])
+                self.part += 1
+            save_arrays(self.folder / "power.npz", self.tape.power())
+            self.error = None
+
+    def _loop(self, interval):
+        while not self._stop.wait(interval):
+            try:
+                self.flush()
+            except OSError as e:
+                self.error = str(e)              # visible in status; a later flush can recover
+
+    def close(self):
+        self._stop.set()
+        self._thread.join()
+        self.flush()
+
+
+def load_tape(folder: Path | str) -> dict:
+    """Read a normal save or recover committed chunks after process loss. Never replay commands to a robot."""
+    folder = Path(folder)
+    parts = []
+    for path in sorted((folder / "tape").glob("[0-9]*.npz")):
+        with np.load(path) as f:
+            parts.append(dict(f))
+    a = {key: np.concatenate([p[key] for p in parts]) for key in parts[0]} if parts else {}
+    if (folder / "tape.npz").exists():
+        with np.load(folder / "tape.npz") as f:
+            saved = dict(f)
+        if not a or len(saved.get("t", [])) >= len(a["t"]):
+            a = saved
+    if (folder / "tape" / "power.npz").exists():
+        with np.load(folder / "tape" / "power.npz") as f:
+            a.update(dict(f))
+    return a
+
+
+def session_record(k, **context) -> dict:
+    from dataclasses import asdict
+    from datetime import UTC, datetime
+
+    from . import __version__, bodies
+    from .plan import snapshot
+
+    source = hashlib.sha256()
+    root = Path(__file__).parent
+    for path in sorted(root.rglob("*.py")):
+        source.update(str(path.relative_to(root)).encode())
+        source.update(path.read_bytes())
+    snap = snapshot(k)
+    return dict(format_version=1, created_at=datetime.now(UTC).isoformat(), package_version=__version__,
+                source_sha256=source.hexdigest(),
+                adapter=next((n for n, m in bodies.manifests().items() if m is k.manifest), None),
+                body=k.manifest.name, mode="simulation" if getattr(k.body, "simulated", False) else "hardware",
+                urdf_sha256=hashlib.sha256(Path(k.manifest.urdf).read_bytes()).hexdigest(),
+                initial=asdict(snap), **context)

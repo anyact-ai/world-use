@@ -3,6 +3,8 @@
 The chain runs from the URDF root to one tool link. Movable joints off that path (gripper fingers) are
 treated as fixed at zero; their links still count for gravity.
 """
+from __future__ import annotations
+
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path

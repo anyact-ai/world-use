@@ -6,6 +6,8 @@ fitted from the real robot's records (use_fit), the links weigh what it says and
 Surfaces in the world push the tool back. Objects stop the gripper at their width and ride along once gripped.
 Motors heat while they carry load. It is not a physics engine: nothing tips, slides or bounces.
 """
+from __future__ import annotations
+
 import numpy as np
 
 from ..body import JointState, Manifest

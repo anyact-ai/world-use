@@ -2,6 +2,8 @@
 
 The state line is what a policy reads after every step, so every character in it has to earn its place.
 """
+from __future__ import annotations
+
 import time
 
 import numpy as np
@@ -64,6 +66,8 @@ def status(k) -> dict:
     feedback = k.feedback_status()
     d = dict(body=k.manifest.name, enabled=k.enabled, power_uncertain=k.power_uncertain,
              feedback=feedback,
+             recording=dict(path=str(k.run_dir) if k.run_dir else None,
+                            error=k.journal.error if k.journal else None),
              faulted=k.faulted, line=state_line(k),
              joints_deg=np.round(np.degrees(st.q), 2).tolist(),
              tool=dict(base=np.round(tool[:3, 3], 4).tolist(),
@@ -203,8 +207,8 @@ def card(k, reach=None) -> str:
     lines = [f"# {m.name}" + (" (simulated)" if sim else ""),
              f"{m.n} joints, control at {m.rate_hz:.0f} Hz; senses: {', '.join(sorted(m.sensing))}."]
     if sim:
-        lines.append("This is a simulation: the joints follow commands exactly, with no sag or noise. Lines marked "
-                     "'hardware:' describe the real robot.")
+        lines.append("This is a simulation: the joints follow commands with a small lag and approximate contact. "
+                     "Lines marked 'hardware:' describe the real robot.")
     lines.append("joints (deg): " + "; ".join(f"j{i + 1} {j.name} {np.degrees(j.lower):.0f}..{np.degrees(j.upper):.0f}"
                                           for i, j in enumerate(m.joints)))
     if m.gripper:

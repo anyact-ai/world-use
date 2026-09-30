@@ -17,6 +17,8 @@ Workcell entry (positions in the work frame, metres):
     look_at = [0.30, 0.0, 0.15]                    # what the image centre shows,
     fov_deg = 55                                   # and its horizontal field of view
 """
+from __future__ import annotations
+
 import subprocess
 import time
 import urllib.request
@@ -321,10 +323,7 @@ def equirect_from_config(cfg: dict, world) -> EquirectCut:
 # -- drawing ------------------------------------------------------------------------------------------
 
 def _font(size: int):
-    try:
-        return ImageFont.load_default(size=size)
-    except TypeError:                                  # Pillow < 10.1
-        return ImageFont.load_default()
+    return ImageFont.load_default(size=size)
 
 
 def _corners(box) -> np.ndarray:

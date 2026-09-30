@@ -9,6 +9,8 @@ server all use. It also owns the cameras.
 With a simulated body the daemon keeps two worlds: the simulator's truth, and the kernel's model of it. A workcell
 box is in both unless it says `known = false`; what a policy adds (`wu box`) goes into the model only.
 """
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
@@ -27,7 +29,7 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 
 from . import bodies, calibrate, cameras, views
-from .behaviors import REGISTRY
+from .behaviors import REGISTRY, build
 from .errors import Refused, explain
 from .fit import load as load_fit
 from .kernel import Kernel
@@ -42,7 +44,7 @@ MAX_WAIT_S = 120.0
 class Daemon:
     def __init__(self, kernel: Kernel, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
                  cams: dict[str, cameras.Camera] | None = None, rehearser: Rehearser | None = None,
-                 session: dict | None = None):
+                 session: dict | None = None, config: dict | None = None):
         self.k = kernel
         self.host, self.port = host, port
         from .bodies.sim import SimBody
@@ -51,10 +53,10 @@ class Daemon:
             f"sim:{adapter}" if isinstance(kernel.body, SimBody) else adapter, {})
         self.cameras = dict(cams or {})
         kernel.cameras = self.cameras                    # the card lists them
+        kernel.record_session(session=self.session, config=config or {})
         self.shots = 0
         self.calibrations: dict[int, dict] = {}         # job id -> camera, picture size and, once solved, the result
         self._solving = threading.Lock()
-        self.checked = None                              # the last plan `check` rehearsed: `run --checked` runs it
         self.stop_loop = threading.Event()
         self.done = threading.Event()                    # set once the shutdown reply has gone out
         self._closing = threading.Lock()                 # held once a shutdown has begun
@@ -63,6 +65,7 @@ class Daemon:
         # rehearsals and reach probes run in a worker process: in this one they took the control loop's ticks
         self.rehearser = rehearser if rehearser is not None else Rehearser()
         self._own_rehearser = rehearser is None
+        kernel.planner = self.rehearser
         self.control = threading.Thread(target=self.k.loop, args=(self.stop_loop,), name="control", daemon=True)
 
     def start(self):
@@ -115,15 +118,12 @@ class Daemon:
             return 404, dict(error=f"no route {method} /{path.strip('/')}")
         if route == ["run"]:
             if body.get("checked"):
-                if self.checked is None:
-                    raise Refused("no plan has been checked yet", "spec", "check one first, or give the plan")
-                return self._run(self.checked, wait, bool(body.get("check", True)))
+                raise Refused("submit the plan explicitly; checked plans are no longer shared between clients", "spec")
             return self._run(body["spec"], wait, bool(body.get("check", True)))
         if route == ["look"]:
             return 200, self.look(body.get("camera"), body.get("spec"), bool(body.get("grid")))
         if route == ["check"]:
             report = self.rehearser.check(body["spec"], k)
-            self.checked = body["spec"]
             return 200, dict(report.to_dict(), text=str(report))
         if route == ["answer"]:
             k.answer(int(body["job"]), body["answer"])
@@ -155,6 +155,8 @@ class Daemon:
         if route == ["calibrate"]:
             return self.calibrate(body["camera"], int(body.get("points", 8)), body.get("spread"), wait)
         if route == ["record"]:
+            if body.get("context") or body.get("note"):
+                k.emit("annotation", body.get("note", "agent context"), context=body.get("context", {}))
             return 200, dict(summary=k.save_record(), run=str(k.run_dir) if k.run_dir else None)
         if route == ["shutdown"]:
             return 200, dict(summary=self.shutdown())
@@ -162,6 +164,7 @@ class Daemon:
 
     def _run(self, spec, wait: float, rehearse: bool) -> tuple[int, dict]:
         """Rehearse an idle snapshot, then admit only while that snapshot is still current."""
+        build(spec)                  # malformed plans are request errors, before rehearsal or queueing
         k = self.k
         report: Report | None = None
         admission = None
@@ -187,14 +190,14 @@ class Daemon:
                            or (current.gripper is not None and snap.gripper is not None
                                and abs(current.gripper - snap.gripper) > 0.01))
                 own_job = k.active is not None and k.active.admission is admission
-                if (changed or k.events.seq != seq or len(k.jobs) != jobs + int(own_job)
+                if (changed or k.events.seq != seq + int(own_job) or len(k.jobs) != jobs + int(own_job)
                         or k.queue or k._stop is not None or (k.active is not None and not own_job)
                         or not k.enabled or k.faulted or k.power_uncertain):
                     raise Refused("the robot or scene changed during rehearsal; nothing started", "stale_check",
                                   "wait until idle, then retry so the plan is checked from the new state")
 
             report = self.rehearser.check(spec, k, snap=snap)
-            if report.refused or report.outcome.status == "faulted":
+            if report.refused or report.outcome.status not in ("done", "surprise"):
                 text = ("refused in rehearsal, so nothing moved:\n" + str(report) + "\n"
                         + self.rehearser.reach_line(k))
                 return 200, dict(id=None, status="refused", incident=text, rehearsal=report.to_dict(),
@@ -243,7 +246,8 @@ class Daemon:
         folder.mkdir(parents=True, exist_ok=True)
         path = (folder / f"{self.shots:04d}-{name}.{'png' if isinstance(cam, cameras.SimCamera) else 'jpg'}").resolve()
         img.save(path, quality=88) if path.suffix == ".jpg" else img.save(path)
-        k.emit("look", f"{name}: {path.name}", camera=name)
+        k.emit("look", f"{name}: {path.name}", camera=name, path=f"views/{path.name}",
+               drawn=drawn, size=list(img.size))
         return dict(path=str(path), camera=name, size=list(img.size), drawn=drawn)
 
     def _settle(self):
@@ -348,6 +352,7 @@ class Daemon:
                 a = np.radians(f["yaw_deg"])
                 T[:2, :2] = [[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]]
             w.add_frame(f["name"], T, f.get("source", "policy"))
+        self.k.emit("world_state", "world updated", change=body, world=w.to_dict())
         return 200, dict(out, boxes=sorted(w.boxes), facts=sorted(w.facts), frames=sorted(w.frames))
 
 
@@ -492,13 +497,14 @@ def main(argv=None):
     if simulated and "start_deg" in options:
         options["q"] = np.radians(options.pop("start_deg"))
     body = bodies.make(name, truth if simulated else world, **options)
-    run_dir = a.runs / f"{datetime.now():%Y%m%d-%H%M%S}-{name.replace(':', '-')}"
+    run_dir = a.runs / f"{datetime.now():%Y%m%d-%H%M%S-%f}-{name.replace(':', '-')}"
     k = Kernel(body, world, run_dir=run_dir)
     k.connect()
     if truth is not None:
         truth.frames.update(world.frames)
     apply_workcell(cell, k, truth)
-    d = Daemon(k, port=a.port, cams=make_cameras(cell, k, body, truth), session=session_identity(name, cell))
+    d = Daemon(k, port=a.port, cams=make_cameras(cell, k, body, truth),
+               session=session_identity(name, cell), config=cell)
     d.start()
     if a.enable:
         try:

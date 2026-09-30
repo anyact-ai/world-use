@@ -1,6 +1,8 @@
 """The envelope: limits every motion stays inside. Paths are checked whole before anything moves; measured
 state is checked on every tick while it moves. A policy can tighten it; loosening needs an operator override,
 which is scoped, has a reason, and shows up in the log."""
+from __future__ import annotations
+
 from dataclasses import dataclass
 from itertools import pairwise
 
@@ -179,17 +181,12 @@ class Envelope:
                        need_up=round(need, 4))
 
     # -- during motion ----------------------------------------------------------------------------
-    def watch(self, st: JointState, q_cmd, grip_cmd=None) -> Trip | None:
+    def watch(self, st: JointState, q_cmd, grip_cmd=None, ignore_heat=False) -> Trip | None:
         """Watchdog on one measurement against what was commanded. Returns the first finding, or None."""
         if st.faults:
             return Trip("fault", "; ".join(st.faults))
         if st.q is None or not np.all(np.isfinite(st.q)):
             return Trip("fault", "no position feedback")
-        if st.temp is not None:
-            temp = np.nan_to_num(np.asarray(st.temp, float), nan=0.0)
-            if temp.max() > self.m.temp_limit_c:
-                i = int(np.argmax(temp))
-                return Trip("hot", f"{self._name(i)} is at {temp[i]:.0f} C", i, float(temp[i]), self.m.temp_limit_c)
         err = np.abs(np.asarray(st.q) - np.asarray(q_cmd))
         for i, j in enumerate(self.m.joints):
             if err[i] > j.track_tol:
@@ -216,6 +213,11 @@ class Envelope:
                             isolate=True)
             if st.gripper_tau is not None and abs(st.gripper_tau) > g.tau_max:
                 return Trip("gripper", f"gripper effort {st.gripper_tau:.1f}; limit {g.tau_max}", isolate=True)
+        if st.temp is not None and not ignore_heat:
+            temp = np.nan_to_num(np.asarray(st.temp, float), nan=0.0)
+            if temp.max() > self.m.temp_limit_c:
+                i = int(np.argmax(temp))
+                return Trip("hot", f"{self._name(i)} is at {temp[i]:.0f} C", i, float(temp[i]), self.m.temp_limit_c)
         return None
 
     @staticmethod

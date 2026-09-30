@@ -8,6 +8,8 @@ Every behavior can carry an expectation. When what happens is not what was expec
 
 A spec is plain JSON: {"do": "line", "up": 0.05}. A list is a sequence. `build(spec)` makes the behavior.
 """
+from __future__ import annotations
+
 import inspect
 from collections import deque
 from dataclasses import dataclass, field
@@ -18,6 +20,7 @@ import numpy as np
 from . import geometry, motion
 from .envelope import TURN_EPS
 from .errors import Refused
+from .validation import validate
 from .world import DIRECTIONS, along, heading
 
 if TYPE_CHECKING:
@@ -98,14 +101,42 @@ class PathBehavior(Behavior):
     def plan(self, k: Kernel) -> np.ndarray:
         raise NotImplementedError
 
+    @property
+    def moves(self):
+        return getattr(self, "_pending", None) is None
+
     def start(self, k):
+        self._pending = None
+        if k.planner is None:
+            self.prepare(k)
+        else:
+            self._pending, self._snapshot = k.planner.prepare(self.spec(), k)
+            k.set(k.cmd.q)             # continue feedback and hold while the worker computes
+
+    def prepare(self, k):
         self.path = np.asarray(self.plan(k), float)
         self.info = k.envelope.check_path(self.path, k.cmd.q, allow_contact=self.allow_contact)
         self.vel = np.gradient(np.vstack([k.cmd.q, self.path]), axis=0)[1:] * k.manifest.rate_hz
         self.vel[-1] = 0.0
         self.i = 0
 
+    def ready(self, k):
+        if self._pending is not None:
+            if not self._pending.done():
+                return False
+            from .plan import same_start
+            prepared = self._pending.result()
+            if not same_start(self._snapshot, k):
+                raise Refused("the scene or command changed while preparing this step", "stale_path",
+                              "inspect the current state and replan")
+            self.__dict__.update(prepared)
+            self._pending = None
+            k.rebias()
+        return True
+
     def tick(self, k):
+        if not self.ready(k):
+            return None
         if self.i >= len(self.path):
             return self.arrived(k)
         k.set(self.path[self.i], self.vel[self.i])
@@ -122,7 +153,7 @@ def _speed_timing(k: Kernel, speed=None):
 
 
 class Joints(PathBehavior):
-    """Joint-space move: each joint turns straight to its target. The only step that changes the gripper's angle.
+    """Joint-space move: each joint turns straight to its target. Also changes the gripper's angle.
 
     target_deg  {joint number: degrees}, joints numbered from 1
     delta_deg   {joint number: degrees to add}
@@ -453,10 +484,10 @@ class Guarded(Line):
 
     OVERSHOOT = 0.02                  # plan at most this far into a surface the world knows about
 
-    def start(self, k):
+    def prepare(self, k):
         self.d, self.cut = self._clip_to_surfaces(k, self.delta(k))
         self.seconds = max(1.0, float(np.linalg.norm(self.d)) / float(self.params.get("speed_mps", 0.02)) / 0.8)
-        super().start(k)
+        super().prepare(k)
         self.sense: ContactSense | None = None     # taken once the arm has held still for a whole baseline window
 
     def _clip_to_surfaces(self, k, d):
@@ -481,6 +512,8 @@ class Guarded(Line):
         return path
 
     def tick(self, k):
+        if not self.ready(k):
+            return None
         if self.sense is None:
             # straight after another move the recent torque is that move's slowing down, not this pose at rest
             if k.still < k.residuals.window:
@@ -807,7 +840,10 @@ class Sequence(Behavior):
                 except Refused as e:
                     return Outcome("refused", self.current.kind, f"step {self.i + 1}/{len(self.steps)}: {e}",
                                    dict(step=self.i + 1, rule=e.rule), hint=e.hint)
-            out = self.current.tick(k)
+            try:
+                out = self.current.tick(k)
+            except Refused as e:
+                out = Outcome("refused", self.current.kind, str(e), dict(rule=e.rule), hint=e.hint)
             if out is None:
                 return None
             self.results.append(out)
@@ -856,9 +892,15 @@ def build(spec) -> Behavior:
         raise Refused(f"a step must be a dict with a 'do' key or a list of steps, got {spec!r}", "spec")
     spec = dict(spec)
     kind = spec.pop("do")
+    if not isinstance(kind, str):
+        raise Refused("do must name a behavior", "spec")
     if kind not in REGISTRY:
         raise Refused(f"unknown behavior {kind!r}; known: {sorted(REGISTRY)}", "spec")
     label = spec.pop("label", None)
+    if label is not None and not isinstance(label, str):
+        raise Refused("label must be a string", "spec")
+    if REGISTRY[kind].__module__ == __name__:
+        validate(kind, spec)
     if kind == "seq":
         return Sequence(spec.pop("steps"), label, **spec)
     return REGISTRY[kind](label, **spec)

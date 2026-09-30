@@ -3,6 +3,8 @@
 Pure math, sampled at the control rate. A path is an (N, n) array of joint positions, one row per tick,
 starting one tick after the current pose and ending exactly at the goal.
 """
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 import numpy as np
@@ -70,7 +72,7 @@ def time_scale(knots, duration, timing: Timing, shape=minjerk):
 def joint_move(q0, q1, timing: Timing, duration=None):
     q0, q1 = np.asarray(q0, float), np.asarray(q1, float)
     if np.abs(q1 - q0).max() < 1e-6:
-        raise Refused("joint move has zero length", "zero_length")
+        return np.repeat(q0[None, :], 2, axis=0), 2 / timing.rate_hz
     knots = q0 + (q1 - q0) * np.linspace(0, 1, 41)[:, None]
     return time_scale(knots, duration, timing)
 

@@ -1,4 +1,6 @@
 """Python client for the daemon's JSON API (stdlib only). The CLI and the MCP server are thin layers on it."""
+from __future__ import annotations
+
 import json
 import os
 import urllib.error
@@ -41,10 +43,10 @@ class Client:
     def card(self) -> str:
         return self._call("GET", "/card")["card"]
 
-    def run(self, spec=None, wait: float = 0.0, check: bool = True, checked: bool = False) -> dict:
+    def run(self, spec, wait: float = 0.0, check: bool = True) -> dict:
         """Rehearse (unless check=False), then run. A plan the kernel would refuse comes back refused, unmoved.
-        checked=True runs the plan the last `check` rehearsed."""
-        return self._call("POST", "/run", dict(spec=spec, wait=wait, check=check, checked=checked))
+        Each submission includes its own plan."""
+        return self._call("POST", "/run", dict(spec=spec, wait=wait, check=check))
 
     def job(self, job_id: int, wait: float = 0.0) -> dict:
         return self._call("GET", f"/jobs/{job_id}?wait={wait}")
@@ -98,9 +100,9 @@ class Client:
         """Start calibrating a camera from the arm: a job whose checkpoints ask where the tool point is."""
         return self._call("POST", "/calibrate", dict(camera=camera, points=points, spread=spread, wait=wait))
 
-    def record(self) -> dict:
+    def record(self, *, context: dict | None = None, note: str = "") -> dict:
         """Write the flight record so far, without stopping anything."""
-        return self._call("POST", "/record", {})
+        return self._call("POST", "/record", dict(context=context, note=note))
 
     def shutdown(self) -> dict:
         return self._call("POST", "/shutdown", {})

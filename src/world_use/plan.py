@@ -9,7 +9,10 @@
 
 Any registered behavior is a method (p.grip(...), p.checkpoint(...)); plugins' behaviors appear automatically.
 """
-from dataclasses import dataclass, field
+from __future__ import annotations
+
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -133,15 +136,27 @@ def snapshot(k: Kernel) -> Snapshot:
         st, env, route = k.state, k.envelope, k.home_route
         return Snapshot(
             body=next((name for name, m in bodies.manifests().items() if m is k.manifest), None),
-            world=k.world.to_dict(), q=np.asarray(st.q, float).tolist(), gripper=st.gripper,
+            world=deepcopy(k.world.to_dict()), q=np.asarray(st.q, float).tolist(), gripper=st.gripper,
             temp=None if st.temp is None else np.asarray(st.temp, float).tolist(),
             q_cmd=np.asarray(k.cmd.q, float).tolist(), grip_cmd=k.cmd.gripper,
             q_start=np.asarray(k.q_start, float).tolist(), max_excursion=env.max_excursion,
             overrides=dict(env.overrides),
-            home_route=list(route[0]) if route is not None and k.last_touch < route[1] else None,
+            home_route=deepcopy(route[0]) if route is not None and k.last_touch < route[1] else None,
             held_at=k.held_at, grip_start=k.grip_start,
             ik_weights=None if k.ik_weights is None else list(k.ik_weights),
             fit=None if k.fit is None else k.fit.to_dict())
+
+
+def same_start(s: Snapshot, k: Kernel) -> bool:
+    """A prepared path is tied to its command, limits and scene. Allow encoder noise and held-object settling."""
+    current = snapshot(k)
+    world = current.world
+    if world.get("held") == s.world.get("held") and world.get("held"):
+        name = world["held"]["name"]
+        if name in world["boxes"] and name in s.world["boxes"]:
+            world["boxes"][name]["pose"] = s.world["boxes"][name]["pose"]
+    return (replace(current, q=s.q, gripper=s.gripper, temp=s.temp) == s
+            and np.allclose(current.q, s.q, atol=0.01, rtol=0))
 
 
 def twin_from(s: Snapshot, manifest: Manifest | None = None) -> Kernel:
