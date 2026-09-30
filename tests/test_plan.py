@@ -95,3 +95,16 @@ def test_a_twins_home_route_goes_stale_when_the_twin_touches_something(lifted):
     t.touched("contact", "in the rehearsal")
     with pytest.raises(Refused, match="touched something"):
         t.home_plan()
+
+
+def test_an_operator_can_lower_the_turn_height_and_rehearsals_follow_it(k):
+    from world_use.daemon import apply_workcell
+    plan = [{"do": "line", "up": 0.03}, {"do": "line", "left": 0.05}]
+    assert check(plan, k).refused
+    apply_workcell({"envelope": {"turn_height_m": 0.24, "turn_reason": "chess pieces are low"}}, k)
+    assert k.envelope.turn_height() == pytest.approx(0.24)
+    assert check(plan, k).ok
+    assert k.envelope.overrides["turn_height"]["reason"] == "chess pieces are low"
+    low = check([{"do": "line", "up": 0.03}, {"do": "line", "left": 0.05}, {"do": "line", "up": -0.02},
+                 {"do": "line", "left": 0.03}], k)
+    assert low.refused and "operator override" in str(low), str(low)

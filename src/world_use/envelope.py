@@ -41,11 +41,16 @@ class Envelope:
             raise ValueError("link_radius_m must be finite and nonnegative")
 
     def override(self, key: str, value, reason: str):
-        """Operator-only loosening, e.g. max_excursion for one task. Recorded with its reason."""
-        if key != "max_excursion":
+        """Operator-only loosening, e.g. max_excursion for one task. Recorded with its reason. turn_height is the
+        lowest tool height (work frame, m) at which the turn-clearance joints may turn, instead of start + clearance."""
+        if key == "max_excursion":
+            self.overrides[key] = dict(value=value, reason=reason, was=self.max_excursion)
+            self.max_excursion = value
+        elif key == "turn_height":
+            was = None if self.m.turn_clearance is None else self._turn_height(self.m.turn_clearance[1])
+            self.overrides[key] = dict(value=float(value), reason=reason, was=was)
+        else:
             raise KeyError(f"no override named {key!r}")
-        self.overrides[key] = dict(value=value, reason=reason, was=self.max_excursion)
-        self.max_excursion = value
 
     # -- before motion ----------------------------------------------------------------------------
     def bounds(self, q_from) -> tuple[np.ndarray, np.ndarray]:
@@ -155,6 +160,8 @@ class Envelope:
         return self._turn_height(self.m.turn_clearance[1])
 
     def _turn_height(self, above: float) -> float:
+        if "turn_height" in self.overrides:
+            return float(self.overrides["turn_height"]["value"])
         return self._up(self.chain.fk(self.q_start)[:3, 3]) + above
 
     def _up(self, p) -> float:
@@ -175,8 +182,10 @@ class Envelope:
             return None
         names = "/".join(f"j{j + 1}" for j in joints)
         lift = max(1, int(np.ceil(100 * (need - z) - 1e-3)))
+        why = (f"an operator override: {self.overrides['turn_height']['reason']}" if "turn_height" in self.overrides
+               else f"{100 * above:.0f} cm above the start height")
         return Refused(f"this turns {names} with the tool at U{z:+.3f}; turning needs U{need:+.3f} or higher "
-                       f"({100 * above:.0f} cm above the start height), or the gripper sweeps across the table",
+                       f"({why}), or the gripper sweeps across the table",
                        "turn_clearance", f"lift at least {lift} cm more first", tool_up=round(z, 4),
                        need_up=round(need, 4))
 
