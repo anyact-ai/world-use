@@ -3,7 +3,7 @@ import numpy as np
 from conftest import make_kernel
 
 from world_use import card, state_line
-from world_use.views import world_text
+from world_use.views import status, world_text
 
 
 def test_the_card_gives_positions_in_the_work_frame_moves_use():
@@ -37,6 +37,33 @@ def test_no_heat_forecast_with_torque_off():
     assert "min to 80C" in state_line(k)
     k.release()
     assert "min to 80C" not in state_line(k)
+    assert "heat" not in status(k)
+
+
+def test_lost_feedback_is_cached_not_a_claim_of_holding(k, monkeypatch):
+    import pytest
+
+    def lost():
+        raise ConnectionError("USB unplugged")
+
+    k.heat.minutes_left = lambda limit: (2, 88.0, -1.0)
+    monkeypatch.setattr(k.body, "read", lost)
+    with pytest.raises(ConnectionError):
+        k.tick()
+    for _ in range(500):
+        k.clock.wait()
+    s = status(k)
+    assert s["power_uncertain"] and s["feedback"]["stale"]
+    assert s["feedback"]["age_s"] == 5.0 and "USB unplugged" in s["feedback"]["error"]
+    assert "motor power unconfirmed" in s["line"] and "STALE feedback" in s["line"]
+    assert "holding" not in s["line"] and "heat" not in s and "min to" not in s["line"]
+
+
+def test_a_stopped_loop_does_not_keep_telemetry_fresh(k):
+    for _ in range(200):
+        k.clock.wait()
+    assert status(k)["feedback"]["stale"]
+    assert "STALE feedback" in state_line(k)
 
 
 def test_a_view_drawn_on_a_picture_of_another_shape_keeps_square_pixels():

@@ -251,9 +251,82 @@ def test_hot_motor_goes_home_along_a_valid_route_and_otherwise_holds_and_alarms(
     for _ in range(6000):
         k2.tick()
         k2.clock.wait()
-        if k2.active is None and np.allclose(k2.cmd.q, HOME, atol=1e-4):
+        if not k2.enabled:
             break
     assert np.allclose(k2.cmd.q, HOME, atol=1e-4)
+    assert not k2.enabled and not k2.power_uncertain and not k2.body.enabled
+
+
+@pytest.mark.parametrize("step", [
+    {"do": "checkpoint", "ask": "is the path clear?"},
+    {"do": "hold"},
+    {"do": "hold", "seconds": 3600},
+    {"do": "guarded", "up": 0.02},
+])
+@pytest.mark.parametrize("nested", [False, True])
+def test_home_routes_refuse_waits_and_contact_steps_even_when_nested(k, step, nested):
+    route = [{"do": "seq", "steps": [[step]]}] if nested else [step]
+    with pytest.raises(Refused, match="not allowed in a home route"):
+        k.set_home_route(route)
+    assert k.home_route is None
+
+
+def test_home_route_is_a_snapshot_and_can_be_cleared(lifted):
+    route = [{"do": "seq", "steps": [{"do": "line", "up": 0.01}]}]
+    lifted.set_home_route(route)
+    route[0]["steps"][0] = {"do": "checkpoint", "ask": "wait forever"}
+    plan = lifted.home_plan()
+    assert plan[0]["steps"][0]["do"] == "line"
+    plan[0]["steps"].clear()
+    assert lifted.home_plan()[0]["steps"]
+    lifted.set_home_route(None, "operator moved objects into the return path")
+    with pytest.raises(Refused, match="no home route"):
+        lifted.home_plan()
+
+
+def test_a_legacy_blocking_home_route_cannot_start_a_thermal_return(lifted, monkeypatch):
+    from world_use.envelope import Trip
+
+    lifted.home_route = ([{"do": "checkpoint", "ask": "clear?"}], lifted.events.seq + 1)
+    monkeypatch.setattr(lifted.envelope, "watch", lambda *args: Trip("hot", "motor too hot"))
+    q = lifted.cmd.q.copy()
+    lifted.tick()
+    assert lifted.active is None and lifted.enabled
+    assert np.allclose(lifted.cmd.q, q, atol=1e-6)
+    assert any("Operator must resolve power now" in e["message"] for e in lifted.events.since(0))
+
+
+def test_a_user_label_cannot_bypass_thermal_return_and_cooling_does_not_cancel_release(lifted, monkeypatch):
+    from world_use.envelope import Trip
+
+    lifted.set_home_route([])
+    job = lifted.submit({"do": "hold", "label": "home: motor hot"})
+    for _ in range(20):
+        lifted.tick()
+        lifted.clock.wait()
+    assert job.status == "running"
+    monkeypatch.setattr(lifted.envelope, "watch", lambda *args: Trip("hot", "motor too hot"))
+    lifted.tick()
+    assert job.status == "stopped" and lifted.active is not None
+    monkeypatch.setattr(lifted.envelope, "watch", lambda *args: None)
+    for _ in range(3000):
+        lifted.tick()
+        lifted.clock.wait()
+        if not lifted.enabled:
+            break
+    assert not lifted.enabled and not lifted.power_uncertain and not lifted.body.enabled
+
+
+def test_a_failed_thermal_return_is_not_retried_automatically(lifted, monkeypatch):
+    from world_use.envelope import Trip
+
+    lifted.set_home_route([{"do": "line", "up": 100}])  # motion admission will refuse this
+    monkeypatch.setattr(lifted.envelope, "watch", lambda *args: Trip("hot", "motor too hot"))
+    for _ in range(20):
+        lifted.tick()
+        lifted.clock.wait()
+    assert lifted.active is None and lifted.home_route is None and lifted.enabled
+    assert len([j for j in lifted.jobs.values() if j.behavior.label == "home: motor hot"]) == 1
 
 
 def test_no_heat_forecast_until_the_switch_on_transient_has_passed(lifted):
@@ -391,27 +464,73 @@ def test_once_the_loop_runs_only_its_thread_calls_the_body():
     assert not k.enabled and callers[-1] is threading.current_thread()
 
 
-def test_a_body_that_raises_faults_the_kernel_but_the_loop_goes_on():
+@pytest.mark.parametrize("failed_call", ["read", "command"])
+def test_a_body_that_raises_suspends_commands_even_after_reconnection(failed_call):
     fail = threading.Event()
+    commands = []
 
     def flaky(fn):
-        def read():
+        def call(*args):
             if fail.is_set():
                 fail.clear()
                 raise OSError("the CAN adapter went away")
-            return fn()
-        return read
-    k, stop, loop = _looping({"read": flaky})
+            return fn(*args)
+        return call
+
+    def spy(fn):
+        def command(*args):
+            commands.append(args)
+            return fn(*args)
+        return command
+
+    hooks = {"command": spy}
+    hooks[failed_call] = (lambda fn: flaky(spy(fn))) if failed_call == "command" else flaky
+    k, stop, loop = _looping(hooks)
     k.enable()
     job = k.submit({"do": "hold", "seconds": 30})
     _until(lambda: job.status == "running")
     fail.set()
     _until(lambda: job.finished)
     assert job.outcome.status == "faulted" and "adapter went away" in job.outcome.message
-    assert loop.is_alive() and k.faulted
+    assert loop.is_alive() and k.faulted and k.power_uncertain
     assert any(e["kind"] == "fault" and e["level"] == "alarm" for e in k.events.since(0))
+    count, stamp = len(commands), k.state.t
+    _until(lambda: k.state.t > stamp + 0.1)            # reads recovered; motion commands must stay suspended
+    assert len(commands) == count
+    with pytest.raises(Refused, match="motor power is unconfirmed"):
+        k.reset()
+    assert k.submit({"do": "line", "up": 0.02}).status == "refused"
+    k.release()                                     # fresh feedback at rest and successful disable are required
+    assert not k.enabled and not k.power_uncertain
+    k.reset()
     stop.set()
     loop.join(2.0)
+
+
+def test_cached_feedback_cannot_authorize_a_release(k, monkeypatch):
+    cached = k.state
+    monkeypatch.setattr(k.body, "read", lambda: cached)
+    for _ in range(101):
+        k.clock.wait()
+    with pytest.raises(ConnectionError, match="no new feedback"):
+        k.release()
+    assert k.faulted and k.power_uncertain and k.body.enabled
+    assert k.feedback_status()["stale"]
+
+
+def test_an_embedded_kernel_also_latches_command_failure(k, monkeypatch):
+    commands = []
+
+    def lost(*args):
+        commands.append(args)
+        raise ConnectionError("CAN command failed")
+
+    monkeypatch.setattr(k.body, "command", lost)
+    with pytest.raises(ConnectionError, match="CAN command failed"):
+        k.tick()
+    assert k.faulted and k.power_uncertain
+    k.tick()
+    assert len(commands) == 1
 
 
 def test_a_fault_with_torque_off_keeps_it_off_until_an_operator_resets():

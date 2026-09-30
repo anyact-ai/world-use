@@ -124,9 +124,10 @@ def build(url: str = DEFAULT_URL):
         return call(lambda: c.stop(reason)["line"])
 
     @server.tool()
-    def home_route(steps: list[dict], note: str = "") -> str:
+    def home_route(steps: list[dict] | None, note: str = "") -> str:
         """Set the way home from here, checked against what you can see: [] folds straight home; otherwise the
-        moves that get clear first. It goes stale when anything is touched."""
+        moves that get clear first. Only motion and gripper steps; no checkpoints or holds. null clears a route
+        when the scene changes. It goes stale when anything is touched."""
         return call(lambda: f"home: {c.home_route(steps, note)['home']}")
 
     @server.tool()

@@ -19,12 +19,28 @@ import time
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import CancelledError, Future
+from contextlib import suppress
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
-from .behaviors import STATUSES, Behavior, ContactSense, Outcome, Residuals, Sequence, build, fragile_dtau
+from .behaviors import (
+    STATUSES,
+    Behavior,
+    ContactSense,
+    Gripper,
+    Joints,
+    Line,
+    Lines,
+    MoveTo,
+    Outcome,
+    Residuals,
+    Sequence,
+    build,
+    fragile_dtau,
+)
 from .body import Body, JointState
 from .envelope import MARGIN, Envelope, Trip
 from .errors import Refused, explain
@@ -180,9 +196,13 @@ class Kernel:
         self._stop: str | None = None
         self.enabled = self.faulted = False
         self.power_uncertain = False             # an incomplete enable/disable must never look like torque off
+        self.feedback_at: float | None = None    # kernel-clock time of the last distinct successful sample
+        self.feedback_error: str | None = None
+        self._feedback_stamp: float | None = None
         self.cameras: dict = {}                     # name -> camera, when a daemon owns some (the card lists them)
         self.last_touch = 0                        # event seq of the last contact (0 = none this session)
         self.home_route: tuple[list, int] | None = None   # (specs, event seq when set)
+        self._thermal_home: Job | None = None
         self._hot_alarm_t = -np.inf
         self._warned: set[int] = set()
         self._sense: ContactSense | None = None    # collision check for every move (guarded moves add their own)
@@ -199,6 +219,7 @@ class Kernel:
     def connect(self) -> JointState:
         st = self.body.connect()
         self.state, self.q_start = st, np.asarray(st.q, float).copy()
+        self.feedback_at, self._feedback_stamp = self.clock.now(), st.t
         self.cmd = Command(self.q_start.copy(), np.zeros(self.manifest.n), st.gripper)
         self.grip_start = st.gripper
         self.envelope = Envelope(self.manifest, self.chain, self.world, self.q_start)
@@ -235,7 +256,7 @@ class Kernel:
         try:                          # not under the lock: an engage takes a second or two, and status must answer
             self.body.enable()
             self.enabled = True
-            st = self.body.read()
+            st = self._read_state()
         except Exception as e:
             with self.lock:
                 self.faulted = True
@@ -257,7 +278,7 @@ class Kernel:
             if self.active is not None or self.queue:
                 raise Refused("a job is running; stop it first", "busy")
             # A failed enable may have left an old reading behind. Never release on that evidence.
-            self.state = self.body.read()
+            self.state = self._read_state()
             rest = self.manifest.rest
             if rest is not None and not rest.holds(self.state.q):
                 raise Refused("the arm is not at its rest pose: releasing torque here would drop it", "not_at_rest",
@@ -369,14 +390,31 @@ class Kernel:
             self.faulted = False
         self.emit("reset", "fault cleared by operator", "warn")
 
-    def set_home_route(self, specs: list, note: str = "") -> None:
+    @staticmethod
+    def _home_steps(specs: list) -> list:
+        """Emergency returns must not depend on answers, holds, contact, or arbitrary plugin behavior."""
+        def check(step):
+            if type(step) is Sequence:
+                for child in step.steps:
+                    check(child)
+            elif type(step) not in (Joints, Line, Lines, MoveTo, Gripper):
+                raise Refused(f"{step.kind} is not allowed in a home route; use only motion and gripper steps",
+                              "home_route_step", "resolve questions before setting the route; use null to clear it")
+
+        if not isinstance(specs, list):
+            raise Refused("a home route must be a list of steps, or null to clear it", "home_route_step")
+        route = build(specs)
+        check(route)
+        return deepcopy(route.spec()["steps"])
+
+    def set_home_route(self, specs: list | None, note: str = "") -> None:
         """The policy's way out from here, checked against the scene it can see now. [] = fold straight home.
-        It stays valid until something is touched."""
-        for s in specs:
-            build(s)
+        It stays valid until something is touched. None clears it when the scene changes."""
+        steps = None if specs is None else self._home_steps(specs)
         with self.lock:
-            self.home_route = (list(specs), self.events.seq + 1)
-        self.emit("home_route", f"home route set ({len(specs)} moves, then fold)" + (f": {note}" if note else ""))
+            self.home_route = None if steps is None else (steps, self.events.seq + 1)
+        message = "home route cleared" if steps is None else f"home route set ({len(steps)} moves, then fold)"
+        self.emit("home_route", message + (f": {note}" if note else ""))
 
     def home_plan(self) -> list:
         """Route + fold back to the session's start pose, or Refused if nothing valid is known."""
@@ -402,7 +440,7 @@ class Kernel:
         if carry:
             fold.append({"do": "joints", "target_deg": {str(i + 1): float(np.degrees(q0[i])) for i in sorted(carry)},
                          "label": "fold"})
-        plan = route[0] + [f for f in fold if self._differs(f)]
+        plan = self._home_steps(route[0]) + [f for f in fold if self._differs(f)]
         g = self.manifest.gripper       # a gripper left open past pi comes back a turn low on the reBot
         if (g is not None and self.grip_start is not None and self.held_at is None and self.cmd.gripper is not None
                 and abs(self.cmd.gripper - self.grip_start) > 0.02):     # never while it holds something
@@ -534,8 +572,35 @@ class Kernel:
         return self.events.emit(kind, message, level, **data)
 
     # -- the control tick --------------------------------------------------------------------------
+    def _read_state(self) -> JointState:
+        try:
+            st = self.body.read()
+            if st.t != self._feedback_stamp:
+                self.feedback_at, self._feedback_stamp = self.clock.now(), st.t
+            if self.feedback_at is None or self.clock.now() - self.feedback_at > 1.0:
+                raise ConnectionError("the body returned no new feedback for over 1 second")
+        except Exception as e:
+            self.feedback_error = explain(e)
+            self._survive(e)         # posted enable/release calls need the same fault handling as a tick
+            raise
+        self.feedback_error = None
+        return st
+
+    def feedback_status(self) -> dict:
+        age = None if self.feedback_at is None else max(0.0, self.clock.now() - self.feedback_at)
+        return dict(age_s=None if age is None else round(age, 3),
+                    stale=self.feedback_error is not None or age is None or age > 1.0, error=self.feedback_error)
+
     def tick(self):
-        st = self.body.read()
+        """One control tick. Embedded callers get the same fault latch as the daemon loop."""
+        try:
+            self._tick()
+        except Exception as e:
+            self._survive(e)
+            raise
+
+    def _tick(self):
+        st = self._read_state()
         self.state = st
         if self.enabled and st.tau is not None:
             self.residuals.push(np.asarray(st.tau, float) - self.expected_torque(st.q))
@@ -603,6 +668,9 @@ class Kernel:
         self.emit("started", f"job {job.id}: {job.behavior.describe()}", job=job.id)
 
     def _end(self, job: Job, out: Outcome):
+        thermal = job is self._thermal_home
+        if thermal:
+            self._thermal_home = None
         if out.status == "faulted":
             self.faulted = True
         job.outcome, job.status, job.t_end = out, out.status, time.time()
@@ -617,6 +685,14 @@ class Kernel:
                 if stale:
                     self.emit("facts_stale", f"facts to re-check: {', '.join(stale)}", "warn")
         job.attention.set()
+        if thermal:
+            if out.ok:
+                self._release()                  # finish even if the temperature fell below the trip meanwhile
+                self.emit("hot", "thermal return complete: torque released at rest to cool", "alarm")
+            else:
+                self.set_home_route(None, "thermal return did not finish; inspect the scene before retrying")
+                self.emit("hot", "thermal return failed; torque may remain on. Operator must resolve power now.",
+                          "alarm")
 
     def _cancel_queue(self, why: str):
         while self.queue:
@@ -654,7 +730,7 @@ class Kernel:
             self.emit("trip", trip.message, "alarm" if status == "faulted" else "warn", trip=trip.kind)
 
     def _on_hot(self, trip: Trip, now: float):
-        if self.active is not None and self.active.behavior.label == "home: motor hot":
+        if self.active is not None and self.active is self._thermal_home:
             return                                    # already going home
         if self.active is not None:
             self._end(self.active, Outcome("stopped", self.active.behavior.kind, trip.message, dict(trip="hot")))
@@ -671,11 +747,13 @@ class Kernel:
             self.hold_here()
             if now - self._hot_alarm_t > 10.0:
                 self._hot_alarm_t = now
-                self.emit("hot", f"{trip.message} and {e}: holding. Send it home.", "alarm")
+                self.emit("hot", f"{trip.message} and {e}: holding with torque on. Operator must resolve power now; "
+                          "if no clear return is available, support the arm and cut its motor supply.", "alarm")
             return
         self.emit("hot", f"{trip.message}: going home along the home route", "alarm")
         job = Job(next(self._ids), build({"do": "seq", "steps": plan, "label": "home: motor hot"}), plan)
         self.jobs[job.id] = job
+        self._thermal_home = job
         self._start(job, now)
 
     def _heat_warnings(self, st: JointState):
@@ -714,27 +792,28 @@ class Kernel:
         self._loop_thread = threading.current_thread()
         while not stop.is_set():
             self._run_posted()
-            try:
+            with suppress(Exception):      # tick latched the fault; stay alive for status and recovery
                 self.tick()
-            except Exception as e:
-                self._survive(e)
             self.clock.wait()
         self._run_posted(run=False)
 
     def _survive(self, e: Exception):
         """The body raised (an adapter unplugged, a value out of range): fault and say so, but keep the loop and
-        the daemon alive, so the flight record survives and an operator sees why. The motors keep their last
-        command until something works again or someone switches them off."""
+        the daemon alive, so the flight record survives and an operator sees why. Motor power is unknown;
+        commands must not resume on reconnection. Physical motor power may still be on."""
         with self.lock:
             first = not self.faulted
             self.faulted = True
+            if self.enabled:
+                self.power_uncertain = True
             self.hold_here()
             self._cancel_queue("the kernel faulted")
             if self.active is not None:
                 self._end(self.active, Outcome("faulted", self.active.behavior.kind, explain(e),
-                                               hint="check the hardware, then reset"))
+                                               hint="treat the arm as energized; resolve motor power before reset"))
         if first:
-            self.emit("fault", f"control tick failed: {explain(e)}", "alarm")
+            detail = "; motor power unconfirmed, commands suspended" if self.power_uncertain else ""
+            self.emit("fault", f"control I/O failed: {explain(e)}{detail}", "alarm")
 
     @property
     def tool(self) -> np.ndarray:

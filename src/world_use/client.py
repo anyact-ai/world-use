@@ -70,7 +70,7 @@ class Client:
     def reset(self) -> dict:
         return self._call("POST", "/reset", {})
 
-    def home_route(self, steps: list, note: str = "") -> dict:
+    def home_route(self, steps: list | None, note: str = "") -> dict:
         return self._call("POST", "/home_route", dict(steps=steps, note=note))
 
     def home(self, wait: float = 0.0) -> dict:

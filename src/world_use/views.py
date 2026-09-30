@@ -32,11 +32,15 @@ def state_line(k) -> str:
     if k.power_uncertain:
         parts.append("FAULTED, motor power unconfirmed")
     elif k.faulted:
-        parts.append("FAULTED, holding")
+        parts.append("FAULTED, holding" if k.enabled else "FAULTED, torque off")
     elif job is not None:
         parts.append(f"job {job.id} {job.status}: {job.behavior.describe()}"[:80])
     else:
         parts.append("idle, holding" if k.enabled else "torque off")
+    feedback = k.feedback_status()
+    if feedback["stale"]:
+        age = "unknown age" if feedback["age_s"] is None else f"{feedback['age_s']:.1f}s old"
+        parts.append(f"STALE feedback ({age}); values below are last known")
     parts.append("tool " + _xyz(k, k.chain.fk(st.q)[:3, 3]))
     g = _gripper(k, st.gripper, st.gripper_tau)
     if g:
@@ -48,7 +52,7 @@ def state_line(k) -> str:
         i = int(temp.argmax())
         left = k.heat.minutes_left(k.manifest.temp_limit_c)
         s = f"hottest j{i + 1} {temp[i]:.0f}C"
-        if k.enabled and left is not None and left[2] < 30:
+        if k.enabled and not k.power_uncertain and not feedback["stale"] and left is not None and left[2] < 30:
             s += f" ({left[2]:.1f} min to {k.manifest.temp_limit_c:.0f}C, j{left[0] + 1})"
         parts.append(s)
     return " | ".join(parts)
@@ -57,7 +61,9 @@ def state_line(k) -> str:
 def status(k) -> dict:
     st = k.state
     tool = k.chain.fk(st.q)
+    feedback = k.feedback_status()
     d = dict(body=k.manifest.name, enabled=k.enabled, power_uncertain=k.power_uncertain,
+             feedback=feedback,
              faulted=k.faulted, line=state_line(k),
              joints_deg=np.round(np.degrees(st.q), 2).tolist(),
              tool=dict(base=np.round(tool[:3, 3], 4).tolist(),
@@ -68,7 +74,7 @@ def status(k) -> dict:
     if st.temp is not None:
         d["temp_c"] = np.round(np.asarray(st.temp, float), 0).tolist()
         left = k.heat.minutes_left(k.manifest.temp_limit_c)
-        if left:
+        if left and k.enabled and not k.power_uncertain and not feedback["stale"]:
             d["heat"] = dict(joint=left[0] + 1, temp_c=round(left[1], 1), minutes_to_limit=round(left[2], 1))
     if k.manifest.gripper is not None and st.gripper is not None:
         g = k.manifest.gripper
