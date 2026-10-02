@@ -454,11 +454,21 @@ class Kernel:
         carry = set(rest.joints) if rest else set()
         # Leave clearance from physical stops: a powered arm can meet them before its unpowered rest angle.
         if rest is not None:
-            for i in carry:
-                q0[i] = rest.q[i]
-            for i in rest.stops:
-                s = rest.off_stop(i, self.manifest.joints[i])
-                q0[i] += s * MARGIN
+            # Session-start bounds remain valid after any escape moves in the route.
+            lo, hi = self.envelope.bounds(self.q_start)
+            for i in sorted(carry):
+                lo[i], hi[i] = max(lo[i], rest.q[i] - rest.tol), min(hi[i], rest.q[i] + rest.tol)
+                if i in rest.stops:
+                    s = rest.off_stop(i, self.manifest.joints[i])
+                    if s > 0:
+                        lo[i] = max(lo[i], rest.q[i] + MARGIN)
+                    else:
+                        hi[i] = min(hi[i], rest.q[i] - MARGIN)
+                if lo[i] > hi[i]:
+                    raise Refused(f"{self.manifest.joints[i].name}: no supported rest target satisfies the joint "
+                                  "planning limits and stop clearance", "home_rest",
+                                  "check the configured rest pose and tolerance")
+                q0[i] = float(np.clip(rest.q[i], lo[i], hi[i]))
         # full precision elsewhere: a rounded target would differ from where the session started
         free = {str(i + 1): float(np.degrees(q0[i])) for i in range(self.manifest.n) if i not in carry}
         fold = [{"do": "joints", "target_deg": free, "label": "turn back while high"}] if free else []

@@ -69,6 +69,9 @@ tol = 0.1
 # stops = ["elbow"]            # Only if this joint rests on a physical stop.
 ```
 
+Home targets `q` within `tol`, joint planning limits, and clearance from declared
+stops. It refuses when no supported target satisfies those constraints.
+
 Otherwise explicitly set `self_supporting = true`. Use that only when disabling
 cannot make the robot fall, such as a braked arm or the in-memory example. A
 missing rest declaration is an error. Do not copy another arm's limits or folding

@@ -3,7 +3,7 @@
 ## 0.3.0 (unreleased)
 
 - Clear gripper velocity on stop while retaining its position; home load-bearing joints
-  to their configured rest pose, even when the session started elsewhere.
+  within their configured rest tolerance and planning limits, even when the session started elsewhere.
 - Report camera capture timeouts and correct calibration of resized 360-camera views.
 - Describe the configured work frame in the robot card and clarify Python script setup.
 - Add unannotated camera frames and optional EdgeTAM tracking for Python procedures.

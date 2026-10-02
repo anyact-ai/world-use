@@ -279,6 +279,54 @@ def test_home_uses_declared_rest_when_the_session_started_elsewhere(stops):
     k.close()
 
 
+@pytest.mark.parametrize("sign", [-1, 1])
+def test_home_reaches_supported_rest_near_a_joint_limit(sign):
+    from dataclasses import replace
+    from pathlib import Path
+
+    from world_use import VirtualClock
+    from world_use.bodies.sim import SimBody
+    from world_use.body import Rest
+    from world_use.config import load_robot
+
+    model = load_robot(Path(__file__).resolve().parents[1] / "examples/adapters/planar.toml")
+    model = replace(model, rest=Rest(q=(0.0, sign * 2.49), joints=(1,), tol=0.1))
+    k = Kernel(SimBody(model, q=[0.2, sign * 2.4]), clock=VirtualClock(model.rate_hz))
+    k.connect()
+    k.enable()
+    assert k.run({"do": "joints", "target_deg": {"2": float(np.degrees(sign * 2.0))}}).ok
+    assert not model.rest.holds(k.state.q)
+    k.set_home_route([])
+    out = k.run(k.home_plan())
+    assert out.ok, out.message
+    assert model.rest.holds(k.state.q)
+    assert k.state.q[0] == pytest.approx(0.2, abs=0.01)
+    k.release()
+    assert not k.enabled and not k.power_uncertain
+    k.close()
+
+
+@pytest.mark.parametrize("stops, rest_q", [((), -2.49), ((1,), 0.5)])
+def test_home_refuses_when_rest_tolerance_cannot_accommodate_clearance(stops, rest_q):
+    from dataclasses import replace
+    from pathlib import Path
+
+    from world_use import VirtualClock
+    from world_use.bodies.sim import SimBody
+    from world_use.body import Rest
+    from world_use.config import load_robot
+
+    model = load_robot(Path(__file__).resolve().parents[1] / "examples/adapters/planar.toml")
+    model = replace(model, rest=Rest(q=(0.0, rest_q), joints=(1,), tol=0.005, stops=stops))
+    k = Kernel(SimBody(model, q=[0.2, 0.0]), clock=VirtualClock(model.rate_hz))
+    k.connect()
+    k.set_home_route([])
+    with pytest.raises(Refused, match="no supported rest target"):
+        k.home_plan()
+    assert k.active is None and not k.queue and not k.enabled
+    k.close()
+
+
 def test_hot_motor_goes_home_along_a_valid_route_and_otherwise_holds_and_alarms():
     k = make_kernel(temp_c=[30, 30, 79.0, 30, 30, 30])
     assert k.run({"do": "line", "forward": 0.08, "up": 0.06}).ok
