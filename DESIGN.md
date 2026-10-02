@@ -137,6 +137,13 @@ So world-use serves both loops with the same kernel, behaviors and records:
 We do not require ROS, a GPU simulator or an industrial arm. The core is numpy, Pillow and the standard library,
 so a laptop and a low-cost arm are enough.
 
+Optional perception runs in the procedure's process. `Client.frame()` reads an unannotated
+camera frame without adding a flight-record image; `look` remains the recorded, annotated
+view. The EdgeTAM helper keeps one selected object and bounded forward history. Its
+observations carry frame identity and age, and do not update world facts or command the
+body. Procedures decide how to use them between checked phases; inference never belongs
+in a behavior tick. See the [tracking example](examples/tracking).
+
 ## Where it goes
 
 Start with repeatable tasks on one arm. The [block example](examples/pick-place) gives

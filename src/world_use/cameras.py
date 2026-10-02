@@ -19,12 +19,15 @@ Workcell entry (positions in the work frame, metres):
 """
 from __future__ import annotations
 
+import base64
+import os
 import subprocess
 import time
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from io import BytesIO
 from pathlib import Path
+from uuid import uuid4
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -40,6 +43,36 @@ MODEL = (22, 140, 80)                  # what the kernel believes: outlines
 TOOL = (200, 30, 160)
 PLAN = (40, 90, 230)
 AXES = {"F": (215, 50, 50), "L": (40, 160, 70), "U": (50, 90, 220)}
+
+
+@dataclass(frozen=True)
+class Frame:
+    """An upright, unannotated image. Coordinates refer to this image's native pixels.
+
+    timestamp uses this host's monotonic clock: file modification time converted to
+    that clock, or the start of acquisition when sensor timing is unavailable.
+    HTTP/command sources must themselves serve current images.
+    """
+
+    image: Image.Image
+    camera: str
+    id: str = field(default_factory=lambda: uuid4().hex)
+    timestamp: float = field(default_factory=time.monotonic)
+
+    @property
+    def age_s(self) -> float:
+        return max(0.0, time.monotonic() - self.timestamp)
+
+    def to_dict(self) -> dict:
+        data = BytesIO()
+        self.image.save(data, format="PNG")
+        return dict(camera=self.camera, id=self.id, timestamp=self.timestamp,
+                    png=base64.b64encode(data.getvalue()).decode("ascii"))
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Frame:
+        image = Image.open(BytesIO(base64.b64decode(data["png"]))).convert("RGB")
+        return cls(image, data["camera"], data["id"], float(data["timestamp"]))
 
 
 @dataclass
@@ -112,8 +145,14 @@ class Camera:
 
     def picture(self, k) -> Image.Image:
         """The picture as the camera serves it: turned upright if it is mounted turned."""
-        img = self.snap(k)
+        return self._upright(self.snap(k))
+
+    def _upright(self, img: Image.Image) -> Image.Image:
         return img.transpose(ROTATE[self.rotate]) if self.rotate else img
+
+    def capture(self, k) -> Frame:
+        started = time.monotonic()
+        return Frame(self.picture(k), self.name, timestamp=started)
 
 
 class HttpCamera(Camera):
@@ -151,19 +190,38 @@ class FileCamera(Camera):
                  rotate: int = 0):
         super().__init__(name, view, rotate)
         self.path, self.max_age_s = Path(path).expanduser(), float(max_age_s)
+        # A fixed conversion keeps equal modification times equal across captures.
+        self._clock_offset = time.monotonic() - time.time()
 
-    def snap(self, k) -> Image.Image:
-        try:
-            age = time.time() - self.path.stat().st_mtime
-        except FileNotFoundError:
-            raise RuntimeError(f"camera {self.name!r}: no frame at {self.path}") from None
+    def _read(self):
+        # Reading metadata and pixels through the same handle also handles atomic replacement.
+        for attempt in range(2):
+            try:
+                with self.path.open("rb") as f:
+                    stat = os.fstat(f.fileno())
+                    data = f.read()
+                    if os.fstat(f.fileno()).st_mtime_ns != stat.st_mtime_ns or len(data) != stat.st_size:
+                        raise OSError("camera frame changed during capture")
+                image = Image.open(BytesIO(data)).convert("RGB")
+                break
+            except FileNotFoundError:
+                raise RuntimeError(f"camera {self.name!r}: no frame at {self.path}") from None
+            except OSError:
+                if attempt:
+                    raise
+        age = max(0.0, time.time() - stat.st_mtime)
         if age > self.max_age_s:
             raise RuntimeError(f"camera {self.name!r}: the newest frame is {age:.0f} s old (max_age_s "
                                f"{self.max_age_s:g}): is the capture running?")
-        try:                          # read once: a writer that renames frames into place cannot mix two of them
-            return Image.open(BytesIO(self.path.read_bytes())).convert("RGB")
-        except OSError:               # caught mid-write by a writer that does not rename: one more try
-            return Image.open(BytesIO(self.path.read_bytes())).convert("RGB")
+        return image, stat, min(time.monotonic(), stat.st_mtime + self._clock_offset)
+
+    def snap(self, k) -> Image.Image:
+        return self._read()[0]
+
+    def capture(self, k) -> Frame:
+        image, stat, timestamp = self._read()
+        identity = f"{self.name}:{stat.st_ino}:{stat.st_mtime_ns}:{stat.st_size}"
+        return Frame(self._upright(image), self.name, identity, timestamp)
 
 
 class SimCamera(Camera):
@@ -259,7 +317,14 @@ class EquirectCut(Camera):
         return self._tables[(h, w)]
 
     def snap(self, k) -> Image.Image:
-        pano = np.asarray(self.source.picture(k), dtype=np.uint8)
+        return self._cut(self.source.picture(k))
+
+    def capture(self, k) -> Frame:
+        frame = self.source.capture(k)
+        return replace(frame, image=self._cut(frame.image), camera=self.name, id=f"{self.name}:{frame.id}")
+
+    def _cut(self, image: Image.Image) -> Image.Image:
+        pano = np.asarray(image, dtype=np.uint8)
         h, w = pano.shape[:2]
         idx, wts = self._table(h, w)
         flat = pano.reshape(-1, 3).astype(np.float32)

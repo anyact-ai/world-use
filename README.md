@@ -83,6 +83,10 @@ Plans are JSON data: save them, generate them in code, and inspect them before
 execution. `Client.run` rehearses against the current state. Embedded `Kernel.run`
 checks each step as it starts; call `check` explicitly for a whole-plan rehearsal.
 
+For visual feedback inside a procedure, the optional [EdgeTAM tracker](examples/tracking)
+follows a selected object through camera frames. It runs locally with bounded history
+and reports image-space observations, including lost or stale tracking.
+
 ## What the runtime provides
 
 - Cartesian lines, joint moves, guarded contact, gripping, and checkpoints.

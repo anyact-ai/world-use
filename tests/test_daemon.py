@@ -129,6 +129,26 @@ def test_check_does_not_move_the_robot(client):
     assert np.allclose(client.status()["joints_deg"], before, atol=0.01)
 
 
+def test_frame_returns_native_pixels_without_creating_records(daemon, tmp_path):
+    from world_use.cameras import FileCamera
+
+    d, c = daemon
+    path = tmp_path / "source.png"
+    image = Image.new("RGB", (1300, 40), "red")
+    image.putpixel((1100, 20), (20, 60, 90))
+    image.save(path)
+    d.cameras["side view"] = FileCamera("side view", path, rotate=90)
+    shots, events = d.shots, d.k.events.seq
+    frame = c.frame("side view")
+    assert frame.camera == "side view" and frame.image.size == (40, 1300)
+    assert np.array_equal(frame.image, image.transpose(Image.Transpose.ROTATE_270))
+    assert c.frame("side view").id == frame.id and frame.age_s < 3
+    assert d.shots == shots and not (d.k.run_dir / "views").exists()
+    assert not any(e["kind"] == "look" for e in d.k.events.since(events))
+    with pytest.raises(DaemonError, match="no camera"):
+        c.frame("missing")
+
+
 def test_stop_interrupts_a_long_move(client):
     client.run({"do": "line", "up": 0.03, "duration": 1.0}, wait=10)
     r = client.run({"do": "line", "forward": 0.05, "duration": 5.0})

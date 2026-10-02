@@ -1,5 +1,6 @@
 """360 cameras: pinhole cuts of an equirectangular picture, and where the world lands in them."""
 import numpy as np
+import pytest
 from PIL import Image
 
 from world_use import World
@@ -58,3 +59,44 @@ def test_a_known_point_lands_in_a_calibrated_cut_where_its_view_says():
         (want,), _ = cut.view.project([P])
         assert np.linalg.norm(_dot(cut.picture(None)) - want) < 1.5
     assert len(cut._tables) == 1                                         # resampled through one table
+
+
+def test_file_frames_preserve_identity_age_and_rotation(tmp_path):
+    import os
+    import time
+
+    from world_use.cameras import FileCamera
+
+    path = tmp_path / "camera.png"
+    image = Image.new("RGB", (12, 8))
+    image.putpixel((0, 0), (255, 0, 0))
+    image.save(path)
+    os.utime(path, (time.time() - 2, time.time() - 2))
+    camera = FileCamera("side", path, max_age_s=5, rotate=90)
+    first, again = camera.capture(None), camera.capture(None)
+    assert first.id == again.id and 1.9 < first.age_s < 3
+    assert np.array_equal(first.image, camera.picture(None))
+    assert first.image.size == (8, 12)
+    # Atomic replacement with the same modification time is still a different frame.
+    replacement = tmp_path / "new.png"
+    image.save(replacement)
+    stat = path.stat()
+    os.utime(replacement, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    replacement.replace(path)
+    assert camera.capture(None).id != first.id
+    os.utime(path, (time.time() - 10, time.time() - 10))
+    with pytest.raises(RuntimeError, match="newest frame"):
+        camera.capture(None)
+
+
+def test_360_cut_preserves_source_frame_identity_and_age(tmp_path):
+    from world_use.cameras import FileCamera
+
+    path = tmp_path / "pano.png"
+    Image.new("RGB", (200, 100), "red").save(path)
+    source = FileCamera("pano", path)
+    cut = EquirectCut("front", source, 60, (80, 60))
+    one, two = cut.capture(None), cut.capture(None)
+    assert one.id == two.id and one.camera == "front"
+    assert one.timestamp == pytest.approx(two.timestamp, abs=.01)
+    assert np.array_equal(one.image, cut.picture(None))
