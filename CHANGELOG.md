@@ -2,6 +2,8 @@
 
 ## 0.3.0 (unreleased)
 
+- Add unannotated camera frames and optional EdgeTAM tracking for Python procedures.
+  Keep forward history bounded and report lost or stale observations.
 - Load robot descriptions and external drivers from workcell configuration. Rehearse
   custom robots in the worker; save their models and URDFs for portable replay and fitting.
 - Resolve config paths relative to their files and reject unknown fields and invalid models.
