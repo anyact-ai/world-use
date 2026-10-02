@@ -641,6 +641,8 @@ class Grip(Behavior):
     lag        how far the gripper may fall behind its command before that counts as contact (default 0.1)
     speed      closing speed, native units per second (default 0.3)
     min        close no further than this, native units (default: fully closed)
+    hold_effort  least gripper effort (absolute) that counts as a firm hold once squeezed; less is a surprise, a grip on
+               an edge or a taper that would slip on the lift (default: not checked; requires gripper_effort sensing)
     """
     kind = "grip"
     example = {"do": "grip", "start_mm": 60, "expect_mm": [35, 45]}
@@ -668,6 +670,11 @@ class Grip(Behavior):
         self.squeeze = float(p.get("squeeze", g.squeeze))
         self.effort, self.lag = float(p.get("effort", 0.6)), float(p.get("lag", 0.1))
         self.floor = float(p.get("min", g.closed))
+        self.hold = None if p.get("hold_effort") is None else float(p["hold_effort"])
+        if self.hold is not None and not (np.isfinite(self.hold) and 0 < self.hold <= g.tau_max):
+            raise Refused(f"grip hold_effort must be finite and in (0, {g.tau_max}]", "gripper_limit")
+        if self.hold is not None and "gripper_effort" not in k.manifest.sensing:
+            raise Refused("hold_effort requires gripper_effort sensing", "sensing")
         for name, value, limit in (("speed", speed, g.v_max), ("effort", self.effort, g.tau_max),
                                    ("lag", self.lag, g.track_tol)):
             if not np.isfinite(value) or not 0 < value <= limit:
@@ -687,6 +694,8 @@ class Grip(Behavior):
 
     def tick(self, k):
         g, st, p = k.manifest.gripper, k.state, self.params
+        if self.hold is not None and (st.gripper_tau is None or not np.isfinite(st.gripper_tau)):
+            raise Refused("hold_effort needs a finite gripper effort reading; sensing is unavailable", "sensing")
         if self.phase == "open":
             if self.pre is not None and self.pre.tick(k) is None:
                 return None
@@ -724,6 +733,12 @@ class Grip(Behavior):
         a = g.aperture(contact)
         if a is not None:
             data["aperture_mm"] = round(1000 * a, 1)
+        if self.hold is not None and st.gripper_tau is not None and abs(st.gripper_tau) < self.hold:
+            k.gripped(contact, attach=False)        # it may hold something all the same: going home must not let go
+            return self.surprise(f"weak grip: {abs(st.gripper_tau):.2f} of effort squeezed at {contact:.2f} {g.unit}"
+                                 f"{_mm(g, contact)}, less than the {self.hold:.2f} a firm hold needs",
+                                 expected=self.hold, observed=round(abs(st.gripper_tau), 2),
+                                 hint="the fingers met an edge or a taper: open, move a little and grip again", **data)
         if self.expect is not None and not self.expect[0] <= contact <= self.expect[1]:
             lo, hi = self.expect
             mm = p.get("expect_mm")
@@ -739,6 +754,100 @@ class Grip(Behavior):
     def _no_contact(self, k):
         return self.surprise("the gripper closed on nothing", expected="contact", observed="no contact",
                              hint="open, check the object's position in a camera, adjust and retry")
+
+
+class Grasp(Behavior):
+    """A grip that searches nearby on a miss instead of ending the plan. The kernel knows at once when the fingers
+    close on nothing (or on the wrong width); rather than a round trip to the policy, the fingers reopen, lift a
+    little, shift to the next offset, come back down and grip again. Done at the first grip within expect_mm; a
+    surprise after the last offset, holding where it tried last.
+
+    expect_mm, start_mm  as for grip (start_mm is required: each retry reopens to it)
+    squeeze, effort, lag, speed, min, hold_effort  as for grip (a weak grip is a miss too)
+    search_mm  [[across, along], ...] offsets from where the grasp began, mm: across the jaws (the direction the
+               fingers are thin in) and along them (the way they open), both level (default: 6 mm each way across,
+               then 6 mm each way along)
+    lift_mm    how far to lift before shifting (default 8; more where the base may only turn higher up, as the
+               shift turns it)
+    """
+    kind = "grasp"
+    example = {"do": "grasp", "start_mm": 30, "expect_mm": [10, 22], "search_mm": [[6, 0], [-6, 0]]}
+    GRIP = ("expect_mm", "expect", "start_mm", "start", "squeeze", "effort", "lag", "speed", "min", "hold_effort")
+
+    @property
+    def moves(self):
+        return self.current is not None and self.current.moves
+
+    @property
+    def senses_contact(self):
+        return self.current is not None and self.current.senses_contact
+
+    def start(self, k):
+        p = self.params
+        validate(self.kind, p)
+        if k.manifest.gripper is None:
+            raise Refused("this robot has no gripper", "no_gripper")
+        search = p.get("search_mm", [[6, 0], [-6, 0], [0, 6], [0, -6]])
+        self.offsets = [np.asarray(o, float) / 1000 for o in search]
+        self.lift = float(p.get("lift_mm", 8.0)) / 1000
+        self.grip = {key: p[key] for key in self.GRIP if key in p}
+        opens = k.tool[:3, :3] @ np.asarray(k.manifest.gripper.opens_along, float)
+        along = np.array([opens[0], opens[1], 0.0])
+        if np.linalg.norm(along) < 0.2:                    # jaws opening up and down: search level anyway
+            along = np.array([0.0, 1.0, 0.0])
+        self.along = along / np.linalg.norm(along)
+        self.across = np.cross([0.0, 0.0, 1.0], self.along)
+        self.at, self.tries, self.misses = np.zeros(2), 0, []
+        self.queue: deque[Behavior] = deque([Grip(**self.grip)])
+        self.current: Behavior | None = None
+
+    def _shift(self, k, offset):
+        """One smooth motion from the current offset to the next: up, across, down. A sideways move turns the base,
+        so where the body only turns above a height the lift goes at least that high (corners rounded above it)."""
+        d = (offset - self.at)[0] * self.across + (offset - self.at)[1] * self.along
+        fwd, left, _ = k.world.frame("work").axes if "work" in k.world.frames else np.eye(3)
+        self.at = offset
+        lift, blend = self.lift, min(0.004, self.lift / 2)
+        need = k.envelope.turn_height()
+        if need is not None:
+            p = k.chain.fk(k.cmd.q)[:3, 3]
+            up = float(k.world.from_base("work", p)[2]) if "work" in k.world.frames else float(p[2])
+            lift = max(lift, need + blend + 0.002 - up)
+        return Lines(legs=[[0.0, 0.0, lift], [float(d @ fwd), float(d @ left), 0.0], [0.0, 0.0, -lift]], blend=blend)
+
+    def tick(self, k):
+        while True:
+            if self.current is None:
+                self.current = self.queue.popleft()
+                self.current.start(k)
+            out = self.current.tick(k)
+            if out is None:
+                return None
+            self.current = None
+            if out.kind != "grip":
+                if not out.ok:
+                    return out
+                continue
+            self.tries += 1
+            if out.ok:
+                return self.done(f"{out.message} (try {self.tries}"
+                                 + (f", {1000 * self.at[0]:+.0f} mm across, {1000 * self.at[1]:+.0f} mm along)"
+                                    if self.tries > 1 else ")"),
+                                 **out.data, tries=self.tries, offset_mm=[round(1000 * x, 1) for x in self.at])
+            self.misses.append(out.message)
+            if self.tries > len(self.offsets):
+                return self.surprise(f"no grip after {self.tries} tries: {'; '.join(self.misses)}",
+                                     expected=out.expected, observed=out.observed,
+                                     hint="look at the object from above and plan the grasp again", tries=self.tries)
+            nxt = self.offsets[self.tries - 1]
+            k.emit("grasp_retry", f"missed ({out.message}); retrying {1000 * nxt[0]:+.0f} mm across, "
+                                  f"{1000 * nxt[1]:+.0f} mm along", offset_mm=[round(1000 * x, 1) for x in nxt])
+            opening = {"to": self.grip["start"]} if "start" in self.grip else {"aperture_mm": self.grip["start_mm"]}
+            self.queue.extend([Gripper(**opening), self._shift(k, nxt), Grip(**self.grip)])
+
+    def stop(self, k, reason):
+        k.hold_here()
+        return Outcome("stopped", self.kind, f"stopped after {self.tries} grip tries: {reason}")
 
 
 # -- waiting, asking, composing -----------------------------------------------------------------------
@@ -873,7 +982,7 @@ class Sequence(Behavior):
 
 
 REGISTRY: dict[str, type[Behavior]] = {c.kind: c for c in (Joints, Line, Lines, MoveTo, Guarded, Touchdown, Gripper,
-                                                            Grip, Hold, Checkpoint, Sequence)}
+                                                            Grip, Grasp, Hold, Checkpoint, Sequence)}
 
 
 def register(cls: type[Behavior]) -> type[Behavior]:

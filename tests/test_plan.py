@@ -95,3 +95,37 @@ def test_a_twins_home_route_goes_stale_when_the_twin_touches_something(lifted):
     t.touched("contact", "in the rehearsal")
     with pytest.raises(Refused, match="touched something"):
         t.home_plan()
+
+
+def test_an_operator_can_lower_the_turn_height_and_rehearsals_follow_it(k, tmp_path, rehearser):
+    from world_use.config import load_workcell
+    from world_use.daemon import apply_workcell
+
+    plan = [{"do": "line", "up": 0.03}, {"do": "line", "left": 0.05}]
+    assert check(plan, k).refused
+    path = tmp_path / "workcell.toml"
+    path.write_text('[envelope]\nturn_height_m = 0.24\nturn_reason = "chess pieces are low"\n')
+    apply_workcell(load_workcell(path), k)
+    assert k.envelope.turn_height() == pytest.approx(0.24)
+    assert check(plan, k).ok
+    assert rehearser.check(plan, k).ok
+    assert k.envelope.overrides["turn_height"]["reason"] == "chess pieces are low"
+    low = check([{"do": "line", "up": 0.03}, {"do": "line", "left": 0.05}, {"do": "line", "up": -0.02},
+                 {"do": "line", "left": 0.03}], k)
+    assert low.refused and "operator override" in str(low), str(low)
+    from world_use.views import card
+    assert "operator override: chess pieces are low" in card(k) and "above where it started" not in card(k)
+
+
+@pytest.mark.parametrize("height", [float("nan"), float("inf")])
+def test_turn_height_rejects_nonfinite_limits(k, tmp_path, height):
+    from world_use.config import load_workcell
+
+    path = tmp_path / "workcell.toml"
+    path.write_text(f"[envelope]\nturn_height_m = {height}\n")
+    with pytest.raises(ValueError, match="finite number"):
+        load_workcell(path)
+    before = k.envelope.turn_height()
+    with pytest.raises(ValueError, match="finite number"):
+        k.envelope.override("turn_height", height, "invalid limit")
+    assert k.envelope.turn_height() == before

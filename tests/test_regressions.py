@@ -13,6 +13,15 @@ from world_use.geometry import axis_angle, interpolate_rotation, rotation_log
     {'do': 'lines', 'legs': []}, {'do': 'checkpoint'},
     {'do': []}, {'do': 'hold', 'label': 5}, {'do': 'checkpoint', 'ask': 'ready?', 'expect': 1},
     [{'do': 'hold', 'seconds': .1}, {'do': 'gripper', 'apeture_mm': 60}],
+    {'do': 'grasp', 'expect': [.4, 1.]},
+    {'do': 'grasp', 'start': 3., 'search_mm': None},
+    {'do': 'grasp', 'start': 3., 'search_mm': [['oops', 0]]},
+    {'do': 'grasp', 'start': 3., 'search_mm': [[float('inf'), 0]]},
+    {'do': 'grasp', 'start': 3., 'lift_mm': 'oops'},
+    {'do': 'grasp', 'start': 3., 'lift_mm': 51},
+    {'do': 'grasp', 'start': 3., 'expect_mm': [10]},
+    {'do': 'grip', 'hold_effort': 'oops'},
+    {'do': 'grasp', 'start': 3., 'hold_effort': -1},
 ])
 def test_bad_specs_are_rejected_before_queueing(k, spec):
     with pytest.raises(Refused):

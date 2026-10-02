@@ -465,6 +465,10 @@ def apply_workcell(cell: dict, k: Kernel, truth: World | None = None):
                             env.get("reason", "set in the workcell file by the operator"))
         why = env.get("reason", "workcell file")
         k.emit("override", f"max excursion {env['max_excursion_deg']} deg: {why}", "warn")
+    if "turn_height_m" in env:
+        why = env.get("turn_reason", "set in the workcell file by the operator")
+        k.envelope.override("turn_height", env["turn_height_m"], why)
+        k.emit("override", f"base and wrist may turn from U{env['turn_height_m']:+.3f} up: {why}", "warn")
 
 
 def make_cameras(cell: dict, k: Kernel, body, truth: World | None) -> dict[str, cameras.Camera]:

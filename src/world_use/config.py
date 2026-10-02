@@ -225,7 +225,11 @@ def load_workcell(path: Path | str | None) -> dict:
         _vector(frame.get("origin", [0, 0, 0]), 3, "frame.origin")
         _vector(frame.get("rpy_deg", [0, 0, 0]), 3, "frame.rpy_deg")
     env = cell.get("envelope", {})
-    _keys(env, ("max_excursion_deg", "reason"), "envelope")
+    _keys(env, ("max_excursion_deg", "reason", "turn_height_m", "turn_reason"), "envelope")
     if "max_excursion_deg" in env:
         _number(env["max_excursion_deg"], "envelope.max_excursion_deg", positive=True)
+    if "turn_height_m" in env:
+        _number(env["turn_height_m"], "envelope.turn_height_m")
+    if "turn_reason" in env and (not isinstance(env["turn_reason"], str) or not env["turn_reason"].strip()):
+        raise ValueError("envelope.turn_reason: expected a nonempty string")
     return cell

@@ -100,6 +100,11 @@ Paths for the robot, fit and camera images are relative to the workcell file;
 calibration. `[[box]]` and `[[fact]]` entries describe the scene; the
 [block workcell](../src/world_use/workcells/block.toml) shows boxes.
 
+For robots with a `turn_clearance` rule, an operator can set
+`[envelope].turn_height_m` to an absolute tool height in the work frame (metres),
+with `turn_reason` explaining the scene clearance. This replaces the default
+height relative to the starting pose and applies to execution and rehearsal.
+
 `--body sim` uses the same robot description with `[simulation]` settings. Driver
 options stay with the driver. Existing `sim`, `sim:rebot`, `rebot` and
 `[body_options]` simulation workcells continue to work. The built-in reBot driver

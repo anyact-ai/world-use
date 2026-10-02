@@ -275,7 +275,9 @@ def main(argv=None) -> int:
         return exit_status(a, r)
     except DaemonError as e:
         refused = e.body.get("refused")
-        if refused:
+        if getattr(a, "json", False):                 # a script asked for JSON: a refusal must parse too
+            print(json.dumps(e.body))
+        elif refused:
             print(f"refused: {refused['message']}" + (f" (hint: {refused['hint']})" if refused.get("hint") else ""))
         else:
             print(f"error: {e}", file=sys.stderr)

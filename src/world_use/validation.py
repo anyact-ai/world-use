@@ -15,12 +15,14 @@ FIELDS = {
     'guarded': {'frame', 'forward', 'left', 'up', 'dtau', 'expect_contact', 'speed_mps', 'joints'},
     'touchdown': {'max', 'dtau', 'speed_mps', 'joints'},
     'gripper': {'aperture_mm', 'to', 'seconds'},
-    'grip': {'expect_mm', 'expect', 'start_mm', 'start', 'squeeze', 'effort', 'lag', 'speed', 'min'},
+    'grip': {'expect_mm', 'expect', 'start_mm', 'start', 'squeeze', 'effort', 'lag', 'speed', 'min', 'hold_effort'},
+    'grasp': {'expect_mm', 'expect', 'start_mm', 'start', 'squeeze', 'effort', 'lag', 'speed', 'min', 'search_mm',
+              'lift_mm', 'hold_effort'},
     'hold': {'seconds'},
     'checkpoint': {'ask', 'view', 'roi', 'expect'},
     'seq': {'steps'},
 }
-POSITIVE = {'duration', 'speed', 'speed_mps', 'dtau', 'effort', 'lag', 'max'}
+POSITIVE = {'duration', 'speed', 'speed_mps', 'dtau', 'effort', 'lag', 'max', 'hold_effort', 'lift_mm'}
 NONNEGATIVE = {'seconds', 'blend', 'within_deg', 'squeeze', 'aperture_mm', 'start_mm'}
 SCALARS = POSITIVE | NONNEGATIVE | {'forward', 'left', 'up', 'start', 'min'}
 
@@ -44,7 +46,7 @@ def validate(kind: str, p: dict):
         raise Refused(f"{kind}: unknown parameter(s) {', '.join(sorted(unknown))}", 'spec',
                       f"parameters: {', '.join(sorted(FIELDS[kind]))}")
     for name, value in p.items():
-        if name == 'seconds' and value is None and kind == 'hold':
+        if value is None and (name == 'hold_effort' or (name == 'seconds' and kind == 'hold')):
             continue
         if name in SCALARS:
             number(value, name)
@@ -84,8 +86,18 @@ def validate(kind: str, p: dict):
             if not any(p[name]):
                 raise Refused(f'{name} cannot be a zero vector', 'spec')
     for name in ('expect_mm', 'expect'):
-        if name in p and kind == 'grip':
+        if name in p and kind in ('grip', 'grasp'):
             vector(p[name], name, 2)
+    if kind == 'grasp':
+        if not p.keys() & {'start_mm', 'start'}:
+            raise Refused('grasp needs start_mm (or start): every retry reopens to it', 'spec')
+        if p.get('lift_mm', 8) > 50:
+            raise Refused('grasp lift_mm must be in (0, 50]', 'spec')
+        if 'search_mm' in p:
+            if not isinstance(p['search_mm'], (list, tuple)):
+                raise Refused('search_mm must be a list of [across, along] pairs, mm', 'spec')
+            for offset in p['search_mm']:
+                vector(offset, 'search_mm offset', 2)
     if 'roi' in p and p['roi'] is not None:
         vector(p['roi'], 'roi', 4)
     if kind == 'lines':
