@@ -303,7 +303,7 @@ class Daemon:
         cut = cam if isinstance(cam, cameras.EquirectCut) else None
         try:
             fit = calibrate.solve(points, [pixels[i] for i in seen], size, fov_deg=cam.fov_deg or 60.0,
-                                  focal=None if cut is None else cut.f)
+                                  focal=None if cut is None else cut.f * size[0] / cut.size[0])
         except Refused as e:
             return dict(installed=False, text=f"calibration of {name!r} from {len(answers)} answers: not installed: "
                         f"{e}" + (f" ({e.hint})" if e.hint else ""))

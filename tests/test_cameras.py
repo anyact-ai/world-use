@@ -1,10 +1,13 @@
 """360 cameras: pinhole cuts of an equirectangular picture, and where the world lands in them."""
+import subprocess
+
 import numpy as np
 import pytest
 from PIL import Image
 
 from world_use import World
-from world_use.cameras import Camera, EquirectCut, equirect_dirs, equirect_uv, from_config
+from world_use.cameras import Camera, CommandCamera, EquirectCut, equirect_dirs, equirect_uv, from_config
+from world_use.client import DaemonError
 
 
 class Still(Camera):
@@ -100,3 +103,20 @@ def test_360_cut_preserves_source_frame_identity_and_age(tmp_path):
     assert one.id == two.id and one.camera == "front"
     assert one.timestamp == pytest.approx(two.timestamp, abs=.01)
     assert np.array_equal(one.image, cut.picture(None))
+
+
+def test_command_camera_timeout_is_reported_to_the_client(monkeypatch, daemon):
+    d, c = daemon
+    camera = CommandCamera("side", "capture", timeout=0.25)
+    d.cameras["side"] = camera
+
+    def timed_out(*args, **kwargs):
+        raise subprocess.TimeoutExpired(camera.command, camera.timeout)
+
+    monkeypatch.setattr(subprocess, "run", timed_out)
+    with pytest.raises(RuntimeError, match=r"camera 'side'.*0\.25"):
+        camera.capture(None)
+    with pytest.raises(DaemonError) as error:
+        c.look("side")
+    assert error.value.code == 502
+    assert "side" in error.value.body["error"] and "0.25" in error.value.body["error"]

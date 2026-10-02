@@ -8,7 +8,8 @@ from conftest import Q_REST, make_kernel
 
 from world_use import Kernel, RealClock, Refused, World, bodies
 
-HOME = np.maximum(Q_REST, [-np.inf, 0.02, 0.02, -np.inf, -np.inf, -np.inf])   # folded just off the stops
+HOME = Q_REST.copy()
+HOME[1:4] = [0.02, 0.02, 0.0]   # declared rest, just off the shoulder and elbow stops
 
 
 @pytest.mark.parametrize("trip", ["fault", "hot", "blocked"])
@@ -199,6 +200,30 @@ def test_stop_holds_where_the_arm_is(lifted):
     assert np.allclose(k.cmd.q, q)
 
 
+def test_stop_clears_gripper_velocity_without_releasing_its_position(k, monkeypatch):
+    sent = []
+    command = k.body.command
+
+    def capture(q, dq, gripper, gripper_v=0.0):
+        sent.append((gripper, gripper_v))
+        command(q, dq, gripper, gripper_v)
+
+    monkeypatch.setattr(k.body, "command", capture)
+    job = k.submit({"do": "gripper", "to": 4.0, "seconds": 3.0})
+    for _ in range(100):
+        k.tick()
+        k.clock.wait()
+    position, velocity = sent[-1]
+    assert velocity > 0
+    sent.clear()
+    k.stop("operator stopped the gripper")
+    for _ in range(50):
+        k.tick()
+        k.clock.wait()
+    assert job.status == "stopped"
+    assert sent and all(target == position and speed == 0 for target, speed in sent)
+
+
 def test_a_surprise_marks_facts_stale(lifted):
     k = lifted
     k.world.assert_fact("door.angle_deg", 22, "side camera")
@@ -217,7 +242,7 @@ def test_home_needs_a_route_and_a_contact_makes_it_stale(lifted):
         k.home_plan()
 
 
-def test_home_folds_back_to_the_session_start_and_release_is_then_allowed(lifted):
+def test_home_folds_to_rest_and_release_is_then_allowed(lifted):
     k = lifted
     with pytest.raises(Refused):
         k.release()                                              # raised: releasing would drop the arm
@@ -227,6 +252,79 @@ def test_home_folds_back_to_the_session_start_and_release_is_then_allowed(lifted
     assert np.allclose(k.cmd.q, HOME, atol=1e-4)
     k.release()
     assert not k.enabled
+
+
+@pytest.mark.parametrize("stops", [(), (1,)])
+def test_home_uses_declared_rest_when_the_session_started_elsewhere(stops):
+    from dataclasses import replace
+    from pathlib import Path
+
+    from world_use import VirtualClock
+    from world_use.bodies.sim import SimBody
+    from world_use.body import Rest
+    from world_use.config import load_robot
+
+    model = load_robot(Path(__file__).resolve().parents[1] / "examples/adapters/planar.toml")
+    model = replace(model, rest=Rest(q=(0.0, 0.5), joints=(1,), tol=0.1, stops=stops))
+    k = Kernel(SimBody(model, q=[0.2, 0.0]), clock=VirtualClock(model.rate_hz))
+    k.connect()
+    k.enable()
+    k.set_home_route([{"do": "joints", "target_deg": {"1": 30, "2": float(np.degrees(0.5))}}])
+    out = k.run(k.home_plan())
+    assert out.ok, out.message
+    assert model.rest.holds(k.state.q)
+    assert k.state.q[0] == pytest.approx(0.2, abs=0.01)
+    k.release()
+    assert not k.enabled and not k.power_uncertain
+    k.close()
+
+
+@pytest.mark.parametrize("sign", [-1, 1])
+def test_home_reaches_supported_rest_near_a_joint_limit(sign):
+    from dataclasses import replace
+    from pathlib import Path
+
+    from world_use import VirtualClock
+    from world_use.bodies.sim import SimBody
+    from world_use.body import Rest
+    from world_use.config import load_robot
+
+    model = load_robot(Path(__file__).resolve().parents[1] / "examples/adapters/planar.toml")
+    model = replace(model, rest=Rest(q=(0.0, sign * 2.49), joints=(1,), tol=0.1))
+    k = Kernel(SimBody(model, q=[0.2, sign * 2.4]), clock=VirtualClock(model.rate_hz))
+    k.connect()
+    k.enable()
+    assert k.run({"do": "joints", "target_deg": {"2": float(np.degrees(sign * 2.0))}}).ok
+    assert not model.rest.holds(k.state.q)
+    k.set_home_route([])
+    out = k.run(k.home_plan())
+    assert out.ok, out.message
+    assert model.rest.holds(k.state.q)
+    assert k.state.q[0] == pytest.approx(0.2, abs=0.01)
+    k.release()
+    assert not k.enabled and not k.power_uncertain
+    k.close()
+
+
+@pytest.mark.parametrize("stops, rest_q", [((), -2.49), ((1,), 0.5)])
+def test_home_refuses_when_rest_tolerance_cannot_accommodate_clearance(stops, rest_q):
+    from dataclasses import replace
+    from pathlib import Path
+
+    from world_use import VirtualClock
+    from world_use.bodies.sim import SimBody
+    from world_use.body import Rest
+    from world_use.config import load_robot
+
+    model = load_robot(Path(__file__).resolve().parents[1] / "examples/adapters/planar.toml")
+    model = replace(model, rest=Rest(q=(0.0, rest_q), joints=(1,), tol=0.005, stops=stops))
+    k = Kernel(SimBody(model, q=[0.2, 0.0]), clock=VirtualClock(model.rate_hz))
+    k.connect()
+    k.set_home_route([])
+    with pytest.raises(Refused, match="no supported rest target"):
+        k.home_plan()
+    assert k.active is None and not k.queue and not k.enabled
+    k.close()
 
 
 def test_hot_motor_goes_home_along_a_valid_route_and_otherwise_holds_and_alarms():

@@ -86,6 +86,12 @@ On communication loss, status marks feedback stale and power unconfirmed; reconn
 does not resume commands. Resolve power before reset or restart. See `wu policy` for
 the recovery contract.
 
+Feedback freshness currently depends on reported motor values changing. Identical
+incoming samples can be mistaken for a stale cache; distinguishing them requires
+a receive counter from MotorBridge.
+Read-only connection also rejects repeated exact-zero positions because the
+current driver cannot reliably distinguish them from failed or misidentified parameter replies.
+
 ## Hardware records
 
 - [First runs and pick-and-place, September 27](hardware-2026-09-27.md)

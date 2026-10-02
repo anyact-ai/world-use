@@ -67,7 +67,12 @@ use checkpoints where it needs an answer.
 
 ## Python
 
-With an enabled daemon running:
+With an enabled daemon running, save the example below as `task.py`. The CLI
+installation has an isolated environment; run the script with its own dependency:
+
+```sh
+uv run --python 3.13 --with "world-use @ git+https://github.com/anyact-ai/world-use" python task.py
+```
 
 ```python
 from world_use import Plan
@@ -114,8 +119,9 @@ at the motor-supply switch. A stopped job still holds with torque; a raised arm
 without brakes cannot simply be released.
 
 For another arm, supply a robot description and a small driver in your own package.
-The same configuration feeds execution, simulation and recorded replay. The
-[adapter guide](docs/adapters.md) includes a runnable two-joint example.
+The runtime supports rotational arm joints (revolute and continuous); prismatic
+joints are rejected. The same configuration feeds execution, simulation and
+recorded replay. The [adapter guide](docs/adapters.md) includes a runnable two-joint example.
 
 ## Develop
 

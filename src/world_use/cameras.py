@@ -175,7 +175,10 @@ class CommandCamera(Camera):
         self.command, self.timeout = command, timeout
 
     def snap(self, k) -> Image.Image:
-        out = subprocess.run(self.command, shell=True, capture_output=True, timeout=self.timeout)
+        try:
+            out = subprocess.run(self.command, shell=True, capture_output=True, timeout=self.timeout)
+        except subprocess.TimeoutExpired as e:
+            raise RuntimeError(f"camera {self.name!r}: capture timed out after {self.timeout:g} s") from e
         if out.returncode != 0 or not out.stdout:
             raise RuntimeError(f"camera {self.name!r}: {self.command!r} failed: {out.stderr.decode()[-300:].strip()}")
         return Image.open(BytesIO(out.stdout)).convert("RGB")

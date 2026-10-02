@@ -171,6 +171,8 @@ class Kernel:
                  ik_weights=None, auto_answer: bool = False):
         self.body, self.manifest = body, body.manifest
         self.chain = Chain(self.manifest.urdf, self.manifest.tool_link)
+        if any(j.type == "prismatic" for j in self.chain.active):
+            raise ValueError("the runtime supports rotational arm joints only; prismatic joints are unsupported")
         if self.chain.n != self.manifest.n:
             raise ValueError(f"URDF chain to {self.manifest.tool_link} has {self.chain.n} joints; "
                              f"manifest has {self.manifest.n}")
@@ -439,7 +441,7 @@ class Kernel:
         self.emit("home_route", message + (f": {note}" if note else ""), steps=steps, note=note)
 
     def home_plan(self) -> list:
-        """Route + fold back to the session's start pose, or Refused if nothing valid is known."""
+        """Route + supported rest pose; free joints return to their session-start positions."""
         route = self.home_route
         if route is None:
             raise Refused("no home route set, so there is no known-clear way back", "no_home_route",
@@ -450,12 +452,23 @@ class Kernel:
         q0 = self.q_start.copy()
         rest = self.manifest.rest
         carry = set(rest.joints) if rest else set()
-        # A folded arm rests on its stops, and the start pose was measured with torque off, sagged into them.
-        # Powered, it meets them a little earlier: folding to that angle pushes into the stop. Fold to just off it.
+        # Leave clearance from physical stops: a powered arm can meet them before its unpowered rest angle.
         if rest is not None:
-            for i in rest.stops:
-                s = rest.off_stop(i, self.manifest.joints[i])
-                q0[i] = rest.q[i] + s * max(MARGIN, s * (q0[i] - rest.q[i]))
+            # Session-start bounds remain valid after any escape moves in the route.
+            lo, hi = self.envelope.bounds(self.q_start)
+            for i in sorted(carry):
+                lo[i], hi[i] = max(lo[i], rest.q[i] - rest.tol), min(hi[i], rest.q[i] + rest.tol)
+                if i in rest.stops:
+                    s = rest.off_stop(i, self.manifest.joints[i])
+                    if s > 0:
+                        lo[i] = max(lo[i], rest.q[i] + MARGIN)
+                    else:
+                        hi[i] = min(hi[i], rest.q[i] - MARGIN)
+                if lo[i] > hi[i]:
+                    raise Refused(f"{self.manifest.joints[i].name}: no supported rest target satisfies the joint "
+                                  "planning limits and stop clearance", "home_rest",
+                                  "check the configured rest pose and tolerance")
+                q0[i] = float(np.clip(rest.q[i], lo[i], hi[i]))
         # full precision elsewhere: a rounded target would differ from where the session started
         free = {str(i + 1): float(np.degrees(q0[i])) for i in range(self.manifest.n) if i not in carry}
         fold = [{"do": "joints", "target_deg": free, "label": "turn back while high"}] if free else []
@@ -482,6 +495,7 @@ class Kernel:
         """Command the measured joint positions: stops pressing into whatever blocked the arm.
         The gripper keeps its command, so whatever it holds stays held."""
         self.set(np.asarray(self.state.q, float))
+        self.cmd.gripper_v = 0.0
 
     def ask(self, question: dict):
         job = self.active
