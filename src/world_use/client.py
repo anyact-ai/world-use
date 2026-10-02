@@ -5,6 +5,10 @@ import json
 import os
 import urllib.error
 import urllib.request
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .cameras import Frame
 
 DEFAULT_URL = os.environ.get("WORLD_USE_URL", "http://127.0.0.1:7431")
 
@@ -92,6 +96,14 @@ class Client:
         """Save a picture from a camera (with the plan's path drawn on it, given a spec; with grid, a pixel ruler
         and nothing else); returns its path."""
         return self._call("POST", "/look", dict(camera=camera, spec=spec, grid=grid))
+
+    def frame(self, camera: str | None = None) -> Frame:
+        """Read an unannotated frame in memory, without recording it. Pixels are not downscaled."""
+        from urllib.parse import urlencode
+
+        from .cameras import Frame
+        query = "?" + urlencode(dict(camera=camera)) if camera is not None else ""
+        return Frame.from_dict(self._call("GET", "/frame" + query))
 
     def help(self) -> dict:
         return self._call("GET", "/help")["steps"]

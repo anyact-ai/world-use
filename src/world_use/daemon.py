@@ -116,6 +116,9 @@ class Daemon:
             return self._job(int(route[1]), wait)
         if method == "GET" and route == ["world"]:
             return 200, dict(k.world.to_dict(), text=views.world_text(k))
+        if method == "GET" and route == ["frame"]:
+            _, cam = self._camera(query.get("camera"))
+            return 200, cam.capture(k).to_dict()
         if method != "POST":
             return 404, dict(error=f"no route {method} /{path.strip('/')}")
         if route == ["run"]:
@@ -213,17 +216,21 @@ class Daemon:
                                 "(the world model may be incomplete; running it anyway)")
         return code, d
 
-    def look(self, camera: str | None = None, spec=None, grid: bool = False) -> dict:
-        """One picture from a camera, with the tool, the known boxes and (given a plan) its path drawn on it, saved
-        to the flight record. Returns the file's path: a model reads the image from there. With grid, a pixel ruler
-        and nothing the kernel believes: for reading off where something is, e.g. while calibrating."""
-        k = self.k
+    def _camera(self, camera: str | None):
         if not self.cameras:
             raise Refused("no cameras: add [[camera]] entries to the workcell", "no_camera")
         name = camera or next(iter(self.cameras))
         cam = self.cameras.get(name)
         if cam is None:
             raise Refused(f"no camera {name!r}; cameras: {', '.join(self.cameras)}", "no_camera")
+        return name, cam
+
+    def look(self, camera: str | None = None, spec=None, grid: bool = False) -> dict:
+        """One picture from a camera, with the tool, the known boxes and (given a plan) its path drawn on it, saved
+        to the flight record. Returns the file's path: a model reads the image from there. With grid, a pixel ruler
+        and nothing the kernel believes: for reading off where something is, e.g. while calibrating."""
+        k = self.k
+        name, cam = self._camera(camera)
         if grid or self._calibrating(name):            # what the kernel believes must not anchor an answer
             return self._save(k, name, cam, cameras.ruler(cam.picture(k)),
                               "a pixel grid every 100 px (x across, y down, from the top left); nothing else drawn"
