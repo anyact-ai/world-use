@@ -439,7 +439,7 @@ class Kernel:
         self.emit("home_route", message + (f": {note}" if note else ""), steps=steps, note=note)
 
     def home_plan(self) -> list:
-        """Route + fold back to the session's start pose, or Refused if nothing valid is known."""
+        """Route + supported rest pose; free joints return to their session-start positions."""
         route = self.home_route
         if route is None:
             raise Refused("no home route set, so there is no known-clear way back", "no_home_route",
@@ -450,12 +450,13 @@ class Kernel:
         q0 = self.q_start.copy()
         rest = self.manifest.rest
         carry = set(rest.joints) if rest else set()
-        # A folded arm rests on its stops, and the start pose was measured with torque off, sagged into them.
-        # Powered, it meets them a little earlier: folding to that angle pushes into the stop. Fold to just off it.
+        # Leave clearance from physical stops: a powered arm can meet them before its unpowered rest angle.
         if rest is not None:
+            for i in carry:
+                q0[i] = rest.q[i]
             for i in rest.stops:
                 s = rest.off_stop(i, self.manifest.joints[i])
-                q0[i] = rest.q[i] + s * max(MARGIN, s * (q0[i] - rest.q[i]))
+                q0[i] += s * MARGIN
         # full precision elsewhere: a rounded target would differ from where the session started
         free = {str(i + 1): float(np.degrees(q0[i])) for i in range(self.manifest.n) if i not in carry}
         fold = [{"do": "joints", "target_deg": free, "label": "turn back while high"}] if free else []
@@ -482,6 +483,7 @@ class Kernel:
         """Command the measured joint positions: stops pressing into whatever blocked the arm.
         The gripper keeps its command, so whatever it holds stays held."""
         self.set(np.asarray(self.state.q, float))
+        self.cmd.gripper_v = 0.0
 
     def ask(self, question: dict):
         job = self.active
