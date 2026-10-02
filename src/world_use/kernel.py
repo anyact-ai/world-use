@@ -171,6 +171,8 @@ class Kernel:
                  ik_weights=None, auto_answer: bool = False):
         self.body, self.manifest = body, body.manifest
         self.chain = Chain(self.manifest.urdf, self.manifest.tool_link)
+        if any(j.type == "prismatic" for j in self.chain.active):
+            raise ValueError("the runtime supports rotational arm joints only; prismatic joints are unsupported")
         if self.chain.n != self.manifest.n:
             raise ValueError(f"URDF chain to {self.manifest.tool_link} has {self.chain.n} joints; "
                              f"manifest has {self.manifest.n}")

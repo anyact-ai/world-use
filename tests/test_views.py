@@ -3,6 +3,7 @@ import numpy as np
 from conftest import make_kernel
 
 from world_use import card, state_line
+from world_use.daemon import apply_workcell
 from world_use.views import status, world_text
 
 
@@ -13,6 +14,14 @@ def test_the_card_gives_positions_in_the_work_frame_moves_use():
     text = card(k)
     assert "object 'block': centre F+0.340 L+0.030 U+0.200" in text and "40 mm across the jaws" in text
     assert "block" in world_text(k)
+
+
+def test_the_card_describes_the_resolved_workcell_frame():
+    k = make_kernel()
+    apply_workcell({"frame": [dict(name="work", origin=[.01, .02, .03], rpy_deg=[0, 0, 90])]}, k)
+    text = card(k, reach=lambda _: "")
+    assert "origin in base F+0.010 L+0.020 U+0.030 m" in text and "from workcell" in text
+    assert "axes in base: forward points left, level; left points back, level; up points straight up" in text
 
 
 def test_the_card_says_which_way_the_gripper_points_and_opens():

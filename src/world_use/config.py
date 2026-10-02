@@ -169,6 +169,8 @@ def load_robot(path: Path | str) -> Manifest:
     with path.open("rb") as f:
         m = manifest_from_data(tomllib.load(f), path.parent)
     chain = Chain(m.urdf, m.tool_link)
+    if any(j.type == "prismatic" for j in chain.active):
+        raise ValueError(f"{path}: the runtime supports rotational arm joints only; prismatic joints are unsupported")
     if [j.name for j in m.joints] != chain.joint_names:
         raise ValueError(f"{path}: joints must follow the URDF chain order: {chain.joint_names}")
     if np.any(m.lower < chain.lower) or np.any(m.upper > chain.upper):

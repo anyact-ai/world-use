@@ -1,10 +1,12 @@
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from world_use import Kernel, World, fit, records
+from world_use.bodies.sim import SimBody
 from world_use.client import Client
 from world_use.config import load_robot, load_workcell
 from world_use.daemon import Daemon, apply_workcell, make_body, session_identity
@@ -88,6 +90,19 @@ def test_invalid_robot_descriptions_fail_before_a_driver_is_loaded(tmp_path, old
     path.write_text((EXAMPLE / "planar.toml").read_text().replace(old, new))
     with pytest.raises(ValueError, match=message):
         make_body("no_such_driver:Body", {"robot": str(path)})
+
+
+def test_prismatic_joints_are_offline_kinematics_only(tmp_path):
+    urdf = tmp_path / "linear.urdf"
+    urdf.write_text((EXAMPLE / "planar.urdf").read_text().replace('type="revolute"', 'type="prismatic"', 1))
+    path = tmp_path / "robot.toml"
+    path.write_text((EXAMPLE / "planar.toml").read_text().replace('urdf = "planar.urdf"', 'urdf = "linear.urdf"'))
+    body = SimBody(replace(load_robot(EXAMPLE / "planar.toml"), urdf=urdf))
+    assert body.chain.fk([.1, 0])[2, 3] == pytest.approx(.3)
+    with pytest.raises(ValueError, match="rotational arm joints only; prismatic joints are unsupported"):
+        load_robot(path)
+    with pytest.raises(ValueError, match="rotational arm joints only; prismatic joints are unsupported"):
+        Kernel(body)
 
 
 def test_supported_rest_uses_joint_names_and_preserves_release_rules(tmp_path):

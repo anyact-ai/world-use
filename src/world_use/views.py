@@ -200,6 +200,16 @@ def world_text(k) -> str:
     return "\n".join(lines)
 
 
+def frame_line(frame) -> str:
+    """Describe a resolved frame compactly, using its actual transform and source."""
+    origin = frame.T[:3, 3]
+    axes = "; ".join(f"{name} points {heading(axis)}"
+                     for name, axis in zip(("forward", "left", "up"), frame.axes, strict=True))
+    return (f"{frame.name} uses x=forward, y=left, z=up; "
+            f"origin in base F{origin[0]:+.3f} L{origin[1]:+.3f} U{origin[2]:+.3f} m, "
+            f"axes in base: {axes} (from {frame.source})")
+
+
 def card(k, reach=None) -> str:
     """The embodiment card: what this robot is and what it can do, for the top of a policy's context."""
     m, c = k.manifest, k.chain
@@ -240,7 +250,7 @@ def card(k, reach=None) -> str:
         why = f"operator override: {over['reason']}" if over else f"{100 * above:.0f} cm above where it started"
         lines.append(f"turning {names} needs the tool at U{need:+.3f} or higher ({why}){sideways}.")
     others = [f for f in k.world.frames if f not in ("base", "work")]
-    lines.append("frames: work = forward, left, up from the base, pointing where the arm pointed at the session start"
+    lines.append("frames: " + frame_line(k.world.frame("work"))
                  + (f"; also {', '.join(others)}" if others else "") + ". Positions here are work-frame metres; "
                  "moves take forward/left/up along a frame's axes (default: work).")
     lines += [box_line(k, b) for b in k.world.boxes.values()]

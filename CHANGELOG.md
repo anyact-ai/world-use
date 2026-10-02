@@ -2,6 +2,10 @@
 
 ## 0.3.0 (unreleased)
 
+- Clear gripper velocity on stop while retaining its position; home load-bearing joints
+  to their configured rest pose, even when the session started elsewhere.
+- Report camera capture timeouts and correct calibration of resized 360-camera views.
+- Describe the configured work frame in the robot card and clarify Python script setup.
 - Add unannotated camera frames and optional EdgeTAM tracking for Python procedures.
   Keep forward history bounded and report lost or stale observations.
 - Load robot descriptions and external drivers from workcell configuration. Rehearse
@@ -27,6 +31,9 @@
 an explicit plan or plan file; the daemon no longer stores a shared “last checked” plan.
 New record readers also accept existing `tape.npz` files. Visual replay needs the
 new `session.json` metadata.
+
+Robot loading and the runtime now reject prismatic arm joints: actions, telemetry,
+and monitoring support rotational joints only. Offline `Chain` kinematics is unchanged.
 
 ## 0.2.0
 

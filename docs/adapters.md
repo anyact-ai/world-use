@@ -40,12 +40,17 @@ specifications. `urdf` is relative to that file. `tool_link` identifies the poin
 Cartesian actions control. Each `[[joints]]` entry must follow the URDF chain's
 joint order; its limits may be tighter than the URDF's, never wider.
 
+The runtime supports revolute and continuous arm joints. Prismatic joints are
+rejected before a driver is loaded: joint actions, limits, telemetry and torque
+monitoring use rotational units. `Chain` supports prismatic joints for offline
+kinematics, but that does not provide runtime support for linear actuators.
+
 The fields follow [Manifest](../src/world_use/body.py):
 
 | Fields | Units / meaning |
 | --- | --- |
-| Joint `lower`, `upper`, `track_tol` | Radians; metres for prismatic joints |
-| Joint `v_max`, `a_max` | Radians/s and radians/s²; corresponding linear units for prismatic joints |
+| Joint `lower`, `upper`, `track_tol` | Radians |
+| Joint `v_max`, `a_max` | Radians/s and radians/s² |
 | Joint `tau_max`, `tau_hold_max`, `contact_dtau` | Torque thresholds in Nm |
 | `rate_hz`, `speed`, `auto_accel`, `min_move_s` | Control rate and default motion timing |
 | `sensing` | `position`, optionally `torque`, `temperature`, `gripper_effort` |
@@ -81,7 +86,7 @@ robot = "arm.toml"
 channel = "can0"               # Passed to Arm(manifest=..., channel="can0").
 
 [simulation]
-start_deg = [0.0, 28.65]        # Used by --body sim; q accepts native joint units.
+start_deg = [0.0, 28.65]        # Used by --body sim; q accepts radians.
 
 [[frame]]
 name = "work"

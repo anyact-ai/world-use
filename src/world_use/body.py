@@ -17,7 +17,7 @@ import numpy as np
 @dataclass(frozen=True)
 class JointSpec:
     name: str
-    lower: float                      # rad (or m for a prismatic joint)
+    lower: float                      # radians
     upper: float
     v_max: float = 0.8                # plan gate: peak planned speed
     a_max: float = 6.0                # plan gate: peak planned acceleration
