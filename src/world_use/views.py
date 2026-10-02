@@ -203,11 +203,10 @@ def world_text(k) -> str:
 def frame_line(frame) -> str:
     """Describe a resolved frame compactly, using its actual transform and source."""
     origin = frame.T[:3, 3]
-    axes = "; ".join(f"{name} points {heading(axis)}"
-                     for name, axis in zip(("forward", "left", "up"), frame.axes, strict=True))
-    return (f"{frame.name} uses x=forward, y=left, z=up; "
-            f"origin in base F{origin[0]:+.3f} L{origin[1]:+.3f} U{origin[2]:+.3f} m, "
-            f"axes in base: {axes} (from {frame.source})")
+    axes = "; ".join(f"{name}={heading(axis)}"
+                     for name, axis in zip(("x", "y", "z"), frame.axes, strict=True))
+    return (f"{frame.name} in base: origin F{origin[0]:+.3f} L{origin[1]:+.3f} U{origin[2]:+.3f} m; "
+            f"{axes} (from {frame.source})")
 
 
 def card(k, reach=None) -> str:
@@ -251,8 +250,8 @@ def card(k, reach=None) -> str:
         lines.append(f"turning {names} needs the tool at U{need:+.3f} or higher ({why}){sideways}.")
     others = [f for f in k.world.frames if f not in ("base", "work")]
     lines.append("frames: " + frame_line(k.world.frame("work"))
-                 + (f"; also {', '.join(others)}" if others else "") + ". Positions here are work-frame metres; "
-                 "moves take forward/left/up along a frame's axes (default: work).")
+                 + (f"; also {', '.join(others)}" if others else "")
+                 + ". Positions use work-frame metres (x=forward, y=left, z=up); moves default to work.")
     lines += [box_line(k, b) for b in k.world.boxes.values()]
     cams = k.cameras
     if cams:
