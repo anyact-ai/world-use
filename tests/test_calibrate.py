@@ -1,9 +1,11 @@
 """Calibrating a camera from the arm: the tool visits a box, the policy says where it sees the tool point."""
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 from conftest import make_kernel
 
-from world_use import Refused, cameras
+from world_use import Outcome, Refused, cameras
 from world_use.calibrate import GRAY, solve, tour
 from world_use.cameras import View
 
@@ -84,3 +86,17 @@ def test_the_daemon_calibrates_a_camera_and_installs_it(client, daemon):
     assert r["status"] == "done" and r["calibration"]["installed"], text
     assert 'frame = "base"' in text and d.cameras["side"].view is not lens
     assert "magenta" in c.look("side")["drawn"] and "camera.side" in c.world()["facts"]
+
+
+def test_the_daemon_fits_a_large_360_cut_from_resized_answers(daemon):
+    d, _ = daemon
+    cut = cameras.EquirectCut("panorama", d.cameras["side"], fov_deg=55.0, size=(1920, 1080))
+    d.cameras[cut.name] = cut
+    pixels = TRUE.project(BOX)[0]                     # answers from the 1024x576 picture saved by look
+    answers = [dict(tool=d.k.world.from_base("work", point).tolist(), answer=f"{x:.6f},{y:.6f}")
+               for point, (x, y) in zip(BOX, pixels, strict=True)]
+    job = SimpleNamespace(id=123, outcome=Outcome("done", "seq", "calibrated", dict(answers=answers)))
+    result = d._fit(job, cut.name, (1024, 576))
+    assert result["installed"], result["text"]
+    assert cut.view is not None
+    assert _miss(cut.view, TRUE.scaled(1920, 1080)) < 0.5
