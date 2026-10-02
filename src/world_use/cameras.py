@@ -190,6 +190,8 @@ class FileCamera(Camera):
                  rotate: int = 0):
         super().__init__(name, view, rotate)
         self.path, self.max_age_s = Path(path).expanduser(), float(max_age_s)
+        # A fixed conversion keeps equal modification times equal across captures.
+        self._clock_offset = time.monotonic() - time.time()
 
     def _read(self):
         # Reading metadata and pixels through the same handle also handles atomic replacement.
@@ -211,7 +213,7 @@ class FileCamera(Camera):
         if age > self.max_age_s:
             raise RuntimeError(f"camera {self.name!r}: the newest frame is {age:.0f} s old (max_age_s "
                                f"{self.max_age_s:g}): is the capture running?")
-        return image, stat, time.monotonic() - age
+        return image, stat, min(time.monotonic(), stat.st_mtime + self._clock_offset)
 
     def snap(self, k) -> Image.Image:
         return self._read()[0]

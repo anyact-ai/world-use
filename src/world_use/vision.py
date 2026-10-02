@@ -160,7 +160,7 @@ class EdgeTAM:
             raise ValueError("camera or image size changed; select the object again")
         if frame.id == self._last.frame_id:
             return self._last                       # a repeated file does not advance time or model memory
-        if frame.timestamp <= self._last.timestamp:
+        if frame.timestamp < self._last.timestamp:
             raise ValueError("frames arrived out of order; select again to start a new sequence")
         if frame.age_s > self.max_age_s:
             return self._observation(frame, None)   # stale input cannot become tracking history

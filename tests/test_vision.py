@@ -1,4 +1,5 @@
 """Tracking contracts without downloading weights. Real-model replay is an explicit example check."""
+import os
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -6,7 +7,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from world_use.cameras import Frame
+from world_use.cameras import FileCamera, Frame
 from world_use.vision import EdgeTAM, _discard_history
 
 
@@ -64,6 +65,35 @@ def test_duplicate_and_stale_frames_do_not_advance_tracking(tracker, monkeypatch
     assert stale.status == "stale" and stale.mask is None and tracker._index == 2
     missing = tracker.update(Frame(Image.new("RGB", (10, 10)), "side", timestamp=103))
     assert missing.status == "lost" and missing.bbox is None
+
+
+def test_file_replacement_with_equal_mtime_advances_tracking(tracker, tmp_path, monkeypatch):
+    wall, monotonic = [1000.0], [100.0]
+    monkeypatch.setattr("world_use.cameras.time", SimpleNamespace(
+        time=lambda: wall[0], monotonic=lambda: monotonic[0]))
+    monkeypatch.setattr("world_use.vision.time.monotonic", lambda: monotonic[0])
+    path = tmp_path / "camera.png"
+    Image.new("RGB", (10, 10), "red").save(path)
+    os.utime(path, (999.8, 999.8))
+    camera = FileCamera("side", path)
+    first = camera.capture(None)
+    seed = tracker.select(first, point=(4, 4))
+
+    replacement = tmp_path / "replacement.png"
+    Image.new("RGB", (10, 10)).save(replacement)
+    stat = path.stat()
+    os.utime(replacement, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    replacement.replace(path)
+    # Separate wall/monotonic reads can differ by a microsecond between captures.
+    wall[0] += 0.01
+    monotonic[0] += 0.009999
+    fresh = camera.capture(None)
+    result = tracker.update(fresh)
+    assert result is not seed and result.frame_id == fresh.id != first.id
+    assert result.status == "lost" and fresh.timestamp == first.timestamp
+    assert tracker.update(camera.capture(None)) is result
+    monotonic[0] += 2
+    assert result.status == "stale"
 
 
 def test_reselection_replaces_history_and_close_ends_the_session(tracker):
