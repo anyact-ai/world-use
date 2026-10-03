@@ -4,6 +4,7 @@
 `Rebot_Arm_description/RS/` in
 [Seeed-Projects/reBot-DevArm](https://github.com/Seeed-Projects/reBot-DevArm/tree/3e62d6088fc6706758d50b07cea9f2fe12240fbd/Rebot_Arm_description/RS),
 commit `3e62d6088fc6706758d50b07cea9f2fe12240fbd`.
+Only meshes referenced by the URDF or the MuJoCo scene builder are bundled.
 
 Copyright Seeed Studio. These model files are licensed under
 [CERN-OHL-W-2.0](LICENSE-CERN-OHL-W-2.0.txt), separately from world-use's Apache-2.0

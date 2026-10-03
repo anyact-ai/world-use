@@ -197,7 +197,7 @@ class World:
         return dict(centre=centre, size=box.size.copy(), yaw_deg=float(np.degrees(np.arctan2(R[1, 0], R[0, 0]))),
                     top=float(centre[2] + R[2, 2] * box.size[2] / 2))
 
-    # -- objects in the hand ----------------------------------------------------------------------
+    # -- estimated object attachment (not simulation physics) --------------------------------------
     def object_at(self, p, margin: float = 0.005) -> Box | None:
         """The object whose box holds point p (the tool point between the jaws), if any."""
         for box in self.of_kind("object"):
@@ -206,7 +206,7 @@ class World:
         return None
 
     def grab(self, tool_T) -> Box | None:
-        """The object at the tool point now rides along with the tool."""
+        """Estimate that the object at the tool point is attached to the tool."""
         box = self.object_at(tool_T[:3, 3])
         if box is not None:
             self.held = (box.name, np.linalg.inv(tool_T) @ box.pose)
@@ -218,7 +218,7 @@ class World:
             self.boxes[name].pose = np.asarray(tool_T) @ rel
 
     def drop(self) -> Box | None:
-        """Let go: the object lands upright on the highest surface under it (no physics, no tipping)."""
+        """Estimate an upright placement on the highest surface below; MuJoCo resolves actual motion."""
         if self.held is None:
             return None
         box = self.boxes.get(self.held[0])
