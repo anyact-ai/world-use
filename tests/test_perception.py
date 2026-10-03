@@ -233,12 +233,21 @@ def test_daemon_rgbd_receipt_and_no_check_prerequisite(daemon):
 
 
 @pytest.mark.rendering
-def test_live_procedure_transfers_an_unknown_block_and_verifies_from_pixels(tmp_path):
+@pytest.mark.parametrize("inference_delay_s", [0, 1.5])
+def test_live_procedure_transfers_an_unknown_block_and_verifies_from_pixels(tmp_path, monkeypatch, inference_delay_s):
     import json
+    import time
 
-    from world_use.examples.perception import run
+    from world_use.examples import perception
 
-    result = run(tmp_path, scenario="shifted")
+    select = perception.orange_mask
+
+    def delayed_mask(frame):
+        time.sleep(inference_delay_s)  # continuous physics lets the unpowered wrist settle before enable
+        return select(frame)
+
+    monkeypatch.setattr(perception, "orange_mask", delayed_mask)
+    result = perception.run(tmp_path, scenario="shifted")
     assert result["lift"] == result["placement"] == "pass"
     assert result["evaluation"]["success"] and result["torque_off"]
     initial = json.loads((tmp_path / "session.json").read_text())["initial"]["world"]

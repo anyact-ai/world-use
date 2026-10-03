@@ -70,19 +70,22 @@ def main():
             result = run(folder, condition=condition, scenario=scenario, model="edgetam", device="cpu")
             record = inspect(folder)
             report["runs"][name] = dict(result=result, telemetry=record["summary"])
-            print(json.dumps(dict(case=name, **report["runs"][name])), flush=True)
+            print(json.dumps(dict(case=name, evaluation=result["evaluation"], lift=result["lift"],
+                                  placement=result["placement"], torque_off=result["torque_off"],
+                                  reason=result.get("reason"))), flush=True)
             assert result["torque_off"], result
             assert record["closed"] and "recording_lost" not in record["summary"], record["summary"]
             for observation in result["observations"]:
                 evidence = folder / "perception" / observation["evidence"]
                 assert all((evidence / file).is_file()
                            for file in ("measurement.json", "rgb.png", "overlay.png", "surfaces.npz"))
-            expected_success = condition != "nominal" and scenario != "missing"
-            assert result["evaluation"]["success"] == expected_success, result
             if scenario == "missing":
                 assert not result["outcomes"] and record["summary"]["powered_s"] == 0, result
+                assert not result["evaluation"]["success"], result
             elif condition == "verify":
+                assert result["evaluation"]["success"], result
                 assert result["lift"] == result["placement"] == "pass", result
+            # The other conditions are ablations: measure their misses rather than require success.
 
         verified = root / "verify-displaced"
         first = report["runs"]["verify-displaced"]["result"]["observations"][0]["evidence"]

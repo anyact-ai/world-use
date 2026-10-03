@@ -61,7 +61,7 @@ def placement_result(center, tool, aperture_mm):
                       and abs(center[2] - .20) < .008 and aperture_mm >= 60) else "fail"
 
 
-def procedure(c: Client, *, condition="verify", tracker=None, approach=(1, 0, 0), evaluate=lambda: None):
+def procedure(c: Client, *, condition="verify", tracker=None, evaluate=lambda: None):
     """One attempt, no automatic re-grasps. All motion uses checked, finite phases on a known clear tray."""
     if c.status()["session"]["mode"] != "simulation":
         raise ValueError("this example is only for simulation")
@@ -113,7 +113,7 @@ def procedure(c: Client, *, condition="verify", tracker=None, approach=(1, 0, 0)
                   else f"known upright shape; evidence {latest['id']}")
         c.box("block", "object", center, SIZE, source=source)
 
-    center, _, frame = observe()
+    center, _, _ = observe()
     if condition == "nominal":
         center = np.array([.34, .03, .20])
     elif center is None:
@@ -122,11 +122,13 @@ def procedure(c: Client, *, condition="verify", tracker=None, approach=(1, 0, 0)
         evaluate()
         return results
     assert_block(center)
-    assert frame.tool is not None
-    offset = .02 * (world.frame("work").T[:3, :3].T @ frame.tool[:3, :3] @ np.asarray(approach))
+    # The tool frame is at the fingertips; this known upright grasp uses the inside of the pads.
+    offset = np.array([.02, 0, 0])
     c.enable()
     try:
-        execute([{"do": "line", "up": .08}, {"do": "gripper", "aperture_mm": 65}], dependent=False)
+        # The unpowered wrist can settle during inference. Establish the grasp orientation above the tray.
+        execute([{"do": "line", "up": .08}, {"do": "gripper", "aperture_mm": 65},
+                 {"do": "move_to", "point": "forward", "jaws": "left", "within_deg": 0}], dependent=False)
         high = c.status()["tool"]["work"][2]
         execute({"do": "move_to", "to": [float(center[0] + offset[0]), float(center[1] + offset[1]), high]})
         if condition in ("track", "verify"):
@@ -227,9 +229,7 @@ def run(output: Path, *, scenario="shifted", condition="verify", model="color", 
             k.emit("task_result", "independent simulator evaluation", **evaluated)
 
         try:
-            assert k.manifest.gripper is not None
-            result = procedure(c, condition=condition, tracker=tracker,
-                               approach=k.manifest.gripper.approach, evaluate=evaluate)
+            result = procedure(c, condition=condition, tracker=tracker, evaluate=evaluate)
             result.update(scenario=scenario, evaluation=evaluated)
             c.shutdown()
             result["recording"] = k.save_record()

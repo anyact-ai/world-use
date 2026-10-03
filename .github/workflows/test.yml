@@ -24,7 +24,7 @@ jobs:
         run: .venv/bin/python scripts/vision_smoke.py --output runs/vision-ci
       - name: Preserve validation evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: vision-evidence
           path: runs/vision-ci

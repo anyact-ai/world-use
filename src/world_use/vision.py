@@ -72,8 +72,8 @@ class EdgeTAM:
 
     def _load(self, device, model_path):
         try:
-            import torch  # ty: ignore[unresolved-import, unused-ignore-comment]
-            import transformers  # ty: ignore[unresolved-import, unused-ignore-comment]
+            import torch  # ty: ignore[unresolved-import]
+            import transformers  # ty: ignore[unresolved-import]
         except ImportError as e:
             raise ImportError("install world-use[vision] in this procedure's environment to use EdgeTAM") from e
         if transformers.__version__ != TRANSFORMERS_VERSION:

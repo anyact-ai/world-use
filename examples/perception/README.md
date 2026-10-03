@@ -5,6 +5,8 @@ MuJoCo RGB-D. The procedure knows the block dimensions and the tray, but receive
 no simulator object positions or instance masks. It measures visible surfaces,
 asserts its shape estimate explicitly, and checks evidence before dependent motion.
 Physics and feedback continue while the procedure captures, measures and records.
+The gripper is explicitly aligned above the tray before approaching: the unpowered
+wrist can settle while inference runs, so its startup angle is not a grasp target.
 
 From the repository with Python 3.13+:
 
@@ -36,8 +38,9 @@ deterministic masks and the color fixture; their success does not establish
 EdgeTAM accuracy or latency.
 
 The Linux CI vision job downloads the pinned checkpoint and runs the four
-displaced-block conditions plus a missing-block refusal. It checks the independent
-outcomes, visual verification, torque release, recorded evidence, point/box prompts
+displaced-block conditions plus a missing-block refusal. It records comparison
+outcomes and requires the full verification condition to place successfully. It
+checks visual verification, torque release, recorded evidence, point/box prompts
 and tracking beyond the history window, then exports Rerun. Its `vision-evidence`
 artifact contains full runs and `validation.json`, including inference and control
 timings. Run the same check with vision and Rerun installed:
