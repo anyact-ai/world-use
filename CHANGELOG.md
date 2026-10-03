@@ -17,6 +17,8 @@
 - Bound daemon recording buffers, retain complete committed history in chunks, and report
   buffer overruns in status, inspection, and Rerun. Save lifetime summaries without
   rebuilding telemetry in memory; long-run timing percentiles use a bounded sample.
+- Wait for durable recording completion before ending a live Rerun export. Isolate
+  mutable world parameters and facts between simulation truth and estimates.
 - Clear gripper velocity on stop while retaining its position; home load-bearing joints
   within their configured rest tolerance and planning limits, even when the session started elsewhere.
 - Report camera capture timeouts and correct calibration of resized 360-camera views.

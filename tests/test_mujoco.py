@@ -4,7 +4,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from world_use import World, bodies
+from world_use import Kernel, VirtualClock, World, bodies
 from world_use.bodies.mujoco_scene import mj
 from world_use.bodies.rebot import MANIFEST
 from world_use.cameras import View
@@ -87,6 +87,7 @@ def test_disable_removes_actuation_and_gravity_keeps_running():
         body.close()
 
 
+@pytest.mark.rendering
 def test_camera_projection_matches_off_axis_intrinsics_and_does_not_step_physics():
     world = World()
     point = np.array([1.08, .1, .4])
@@ -115,3 +116,33 @@ def test_an_incompatible_gripper_mapping_is_rejected():
         assert not body.enabled
     finally:
         body.close()
+
+
+def test_estimated_parameters_cannot_change_physical_mass_or_friction():
+    world = World()
+    world.add_box("block", "object", [.8, 0, .4], [.04] * 3, mass_kg=.05, friction=.8)
+    body = bodies.make("sim", world)
+    k = Kernel(body, world, VirtualClock(100))
+    try:
+        k.connect()
+        k.tick()
+        k.world.boxes["block"].params.update(mass_kg=5.0, friction=0.0)
+        k.tick()
+        assert body.world.boxes["block"].params == dict(mass_kg=.05, friction=.8)
+        assert body.model.body("box/block").mass[0] == pytest.approx(.05)
+        assert body.model.geom("box/block").friction[0] == pytest.approx(.8)
+    finally:
+        k.close()
+
+
+def test_restored_worlds_own_nested_parameters_and_fact_values():
+    world = World()
+    world.add_box("block", "object", [.8, 0, .4], [.04] * 3, material={"estimates": [.5, .8]})
+    world.assert_fact("target", {"position": [.1, .2, .3]}, "test")
+    snapshot = world.to_dict()
+    estimate, truth = World.from_dict(snapshot), World.from_dict(snapshot)
+    estimate.boxes["block"].params["material"]["estimates"][0] = 9
+    estimate.facts["target"].value["position"][0] = 9
+    assert truth.boxes["block"].params["material"]["estimates"] == [.5, .8]
+    assert truth.facts["target"].value["position"] == [.1, .2, .3]
+    assert snapshot == world.to_dict()

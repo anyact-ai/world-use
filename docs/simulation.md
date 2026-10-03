@@ -55,9 +55,15 @@ rendering.
 Headless Linux selects EGL when `DISPLAY` is absent. Install the Mesa EGL runtime
 (`libegl1` and `libgl1-mesa-dri` on Ubuntu) or use an EGL-capable GPU driver. An
 explicit `MUJOCO_GL` setting takes precedence; `MUJOCO_GL=osmesa` requires OSMesa.
-macOS uses MuJoCo's native offscreen backend. Dynamics and rehearsal do not need
-a display or graphics context. Rendering errors are reported rather than replaced
-with a schematic image.
+macOS uses MuJoCo's native CGL backend and requires GPU access. GitHub-hosted macOS
+VMs cannot provide that context; MuJoCo does not support software rendering there.
+Dynamics and rehearsal do not need a display or graphics context. Rendering errors
+are reported rather than replaced with a schematic image.
+
+CI runs the full suite, including camera projection and replay, on Linux with Mesa
+EGL. Hosted macOS runs `pytest -m 'not rendering'`; it still tests physics, control,
+record recovery, Rerun export and image transport through file cameras. On a Mac
+with GPU access, run the full suite with `uv run pytest`.
 
 New recordings bundle meshes with their URDF. Replay renders measured joints and
 the recorded **estimated world**, not a second physics rollout or a reconstruction

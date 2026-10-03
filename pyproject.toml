@@ -37,7 +37,7 @@ wu = "world_use.cli:main"
 Repository = "https://github.com/anyact-ai/world-use"
 
 [dependency-groups]
-dev = ["pytest>=9", "ruff>=0.16", "ty>=0.0.84", "mcp>=2.2"]
+dev = ["pytest>=9", "ruff>=0.16", "ty>=0.0.84", "mcp>=2.2", "rerun-sdk>=0.38.1,<0.39"]
 
 [build-system]
 requires = ["hatchling"]
@@ -57,3 +57,4 @@ ignore = ["RUF005", "RUF012"]    # tuple concatenation reads fine; behavior exam
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["rendering: requires a working MuJoCo OpenGL context (unavailable on hosted macOS VMs)"]

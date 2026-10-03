@@ -284,6 +284,7 @@ class Journal:
             tape.max_blocks = self.MAX_BLOCKS
             tape._power = deque(tape._power, maxlen=self.MAX_POWER)
         self._stop = threading.Event()
+        self._closing = False
         self._lock = threading.Lock()
         self._thread = threading.Thread(target=self._loop, args=(interval,), name="flight-recorder", daemon=True)
         self._thread.start()
@@ -319,6 +320,9 @@ class Journal:
         with self._lock:
             try:
                 self._flush()
+                if self._closing:
+                    save_summary(self.folder.parent / "complete.json",
+                                 dict(parts=self.part, events_bytes=self.offset))
             except OSError as e:
                 self._error = str(e)
                 raise
@@ -371,6 +375,7 @@ class Journal:
     def close(self):
         self._stop.set()
         self._thread.join()
+        self._closing = True
         self.flush()
 
 

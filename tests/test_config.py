@@ -14,7 +14,8 @@ from world_use.daemon import Daemon, apply_workcell, make_body, session_identity
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "adapters"
 
 
-def test_external_robot_through_daemon_worker_and_portable_record(tmp_path, monkeypatch, rehearser):
+@pytest.fixture
+def external_robot_record(tmp_path, monkeypatch, rehearser):
     setup = tmp_path / "setup"
     shutil.copytree(EXAMPLE, setup)
     monkeypatch.syspath_prepend(str(setup))
@@ -54,9 +55,17 @@ def test_external_robot_through_daemon_worker_and_portable_record(tmp_path, monk
     shutil.rmtree(setup)
     archived = tmp_path / "archived"
     shutil.move(tmp_path / "run", archived)
-    assert records.inspect(archived)["closed"]
-    assert fit.robot_of([archived]).joints[0].v_max == .8
-    assert records.replay(archived, tmp_path / "replay.gif").stat().st_size > 1000
+    return archived
+
+
+def test_external_robot_through_daemon_worker_and_portable_record(external_robot_record):
+    assert records.inspect(external_robot_record)["closed"]
+    assert fit.robot_of([external_robot_record]).joints[0].v_max == .8
+
+
+@pytest.mark.rendering
+def test_external_robot_replays_after_the_original_model_is_removed(external_robot_record, tmp_path):
+    assert records.replay(external_robot_record, tmp_path / "replay.gif").stat().st_size > 1000
 
 
 def test_workcell_paths_and_typos_are_not_silently_ignored(tmp_path, monkeypatch):

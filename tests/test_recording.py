@@ -29,10 +29,14 @@ def test_recording_failure_does_not_interrupt_motion_or_release(tmp_path, monkey
         assert not k.enabled
         assert k.journal.error == "disk full"
         assert k.close()["recording_error"] == "disk full"
+        assert not (tmp_path / "complete.json").exists()
     k.save_record()
     log = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [e["seq"] for e in log] == list(range(1, k.events.seq + 1))
     assert log[-1]["kind"] == "closed"
+    complete = json.loads((tmp_path / "complete.json").read_text())
+    assert complete["events_bytes"] == (tmp_path / "events.jsonl").stat().st_size
+    assert complete["parts"] == len(list((tmp_path / "tape").glob("[0-9]*.npz")))
 
 
 def test_elapsed_durations_include_slow_control_ticks():
@@ -115,11 +119,10 @@ def test_record_captures_plans_answers_outcomes_and_startup(daemon):
     assert record["observations"][-1]["data"]["context"]["model"] == "test-policy"
 
 
-def test_committed_record_survives_process_kill(tmp_path):
+@pytest.fixture
+def interrupted_record(tmp_path):
     import subprocess
     import sys
-
-    from world_use.records import inspect, replay
 
     script = tmp_path / "record.py"
     script.write_text('''
@@ -144,15 +147,27 @@ time.sleep(30)
         assert p.stdout.readline().strip() == "persisted"
         p.kill()
         p.wait(timeout=5)
-        record = inspect(folder)
-        assert not (folder / "tape.npz").exists()
-        assert record["summary"]["ticks"] >= 20 and not record["closed"]
-        assert record["jobs"][1]["outcome"]["status"] == "done"
-        assert replay(folder, tmp_path / "replay.gif").stat().st_size > 1000
+        return folder
     finally:
         if p.poll() is None:
             p.kill()
             p.wait(timeout=5)
+
+
+def test_committed_record_survives_process_kill(interrupted_record):
+    from world_use.records import inspect
+
+    record = inspect(interrupted_record)
+    assert not (interrupted_record / "tape.npz").exists()
+    assert record["summary"]["ticks"] >= 20 and not record["closed"]
+    assert record["jobs"][1]["outcome"]["status"] == "done"
+
+
+@pytest.mark.rendering
+def test_interrupted_record_can_be_replayed(interrupted_record, tmp_path):
+    from world_use.records import replay
+
+    assert replay(interrupted_record, tmp_path / "replay.gif").stat().st_size > 1000
 
 
 def test_recovery_prefers_new_chunks_over_an_older_manual_save(tmp_path):
@@ -301,14 +316,16 @@ def test_failed_chunk_commit_retries_without_duplicates_or_early_retirement(tmp_
         with monkeypatch.context() as patch:
             patch.setattr(recorder.os, "replace", full_disk)
             with pytest.raises(OSError, match="disk full"):
-                journal.flush()
+                journal.close()
         assert len(tape.arrays()["t"]) == 4
         assert not list(tmp_path.rglob(".writing-*"))
+        assert not (tmp_path / "complete.json").exists()
         journal.flush()
         journal.flush()
         assert journal.error is None
         assert load_tape(tmp_path)["q"].ravel().tolist() == [0, 1, 2, 3]
         assert journal.summary()["ticks"] == 4
         assert len(tape.arrays()["t"]) == 2
+        assert json.loads((tmp_path / "complete.json").read_text()) == dict(parts=1, events_bytes=0)
     finally:
         journal.close()

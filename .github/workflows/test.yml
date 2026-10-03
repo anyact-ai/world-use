@@ -26,7 +26,14 @@ jobs:
       - name: Install headless rendering libraries
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1-mesa-dri
-      - run: uv run --extra rerun pytest
+      - name: Test including MuJoCo rendering
+        if: runner.os == 'Linux'
+        run: uv run pytest
+      # Hosted macOS VMs have no accelerated OpenGL for MuJoCo's CGL backend.
+      # https://github.com/google-deepmind/mujoco/issues/959
+      - name: Test without GPU-dependent rendering
+        if: runner.os == 'macOS'
+        run: uv run pytest -m 'not rendering'
       - run: uv run python examples/adapters/planar.py
       - name: Verify the installed wheel and packaged resources
         shell: bash
@@ -36,7 +43,11 @@ jobs:
           for task_wheel in dist/*.whl; do
             uv pip install --python "$RUNNER_TEMP/wheel-test/bin/python" "${task_wheel}[mcp,rerun]"
           done
-          "$RUNNER_TEMP/wheel-test/bin/python" scripts/wheel_smoke.py
+          task_camera_args=()
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            task_camera_args+=(--file-camera)
+          fi
+          "$RUNNER_TEMP/wheel-test/bin/python" scripts/wheel_smoke.py "${task_camera_args[@]}"
       - name: Load the published hardware driver without opening CAN
         if: matrix.python == '3.13'
         shell: bash

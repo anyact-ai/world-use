@@ -8,7 +8,7 @@ import pytest
 from PIL import Image
 
 from world_use.config import load_robot, manifest_data
-from world_use.recorder import Tape, save_arrays
+from world_use.recorder import Tape, save_arrays, save_summary
 from world_use.visualization import RecordReader, view
 from world_use.world import World
 
@@ -119,16 +119,62 @@ def test_follow_deduplicates_saved_tape_and_waits_for_final_chunk(run_folder, mo
             save_arrays(run_folder / "tape.npz", samples([0, .1], [0, .5]))
             (run_folder / "events.jsonl").write_text(json.dumps(
                 dict(seq=1, t=.2, kind="closed", level="info", message="closed")) + "\n")
-        elif polls == 2:
+        elif polls == 5:
             save_arrays(run_folder / "tape/000001.npz", samples([.1, .2], [.5, 1]))
-        else:
+        elif polls == 7:
+            save_summary(run_folder / "complete.json",
+                         dict(parts=2, events_bytes=(run_folder / "events.jsonl").stat().st_size))
+        elif polls > 7:
             pytest.fail("following did not stop after close")
 
     monkeypatch.setattr(visualization.time, "sleep", advance)
     output = view(run_folder, output=run_folder / "follow.rrd", follow=True)
     rows = component_rows(output, "/signals/joints/shoulder/measured", "Scalars:scalars")
     assert [t for t, _ in rows] == [0, 100_000_000, 200_000_000]
-    assert polls == 2
+    assert polls == 7
+
+
+def test_reader_observes_completion_and_final_chunks_in_one_snapshot(run_folder, monkeypatch):
+    from world_use import visualization
+
+    (run_folder / "tape").mkdir()
+    save_arrays(run_folder / "tape/000000.npz", samples([0], [0]))
+    load = visualization.load_tape
+
+    def close_during_poll(folder):
+        a = load(folder)
+        save_arrays(folder / "tape/000001.npz", samples([.1], [.5]))
+        save_summary(folder / "complete.json", dict(parts=2, events_bytes=0))
+        return a
+
+    monkeypatch.setattr(visualization, "load_tape", close_during_poll)
+    reader = RecordReader(run_folder)
+    a, _ = reader.poll()
+    assert a["t"].tolist() == [0] and not reader.complete
+    a, _ = reader.poll()
+    assert a["t"].tolist() == [.1] and reader.complete
+
+
+def test_follow_finishes_an_empty_run_only_after_its_final_events(run_folder, monkeypatch):
+    pytest.importorskip("rerun")
+    from world_use import visualization
+
+    log = run_folder / "events.jsonl"
+    line = json.dumps(dict(seq=1, t=.1, kind="closed", level="info", message="closed")) + "\n"
+    log.write_text(line[:20])
+    save_summary(run_folder / "complete.json", dict(parts=0, events_bytes=len(line.encode())))
+    polls = 0
+
+    def advance(_):
+        nonlocal polls
+        polls += 1
+        assert polls == 1, "following did not stop after the committed final event became visible"
+        log.write_text(line)
+
+    monkeypatch.setattr(visualization.time, "sleep", advance)
+    output = view(run_folder, output=run_folder / "empty.rrd", follow=True)
+    assert component_rows(output, "/events", "TextLog:text") == [(100_000_000, ["closed: closed"])]
+    assert polls == 1
 
 
 def test_missing_extra_gives_installation_hint(run_folder, monkeypatch):

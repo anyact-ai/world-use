@@ -10,6 +10,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from world_use.mcp_server import build
 
 
+@pytest.mark.usefixtures("file_camera")
 def test_mcp_tools_drive_the_daemon(daemon):
     _, c = daemon
     server = build(c.url)

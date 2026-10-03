@@ -1,4 +1,5 @@
 """Offscreen cameras. OpenGL lives on one thread; rendering never holds the physics lock."""
+import sys
 from concurrent.futures import ThreadPoolExecutor
 
 from PIL import Image
@@ -40,8 +41,10 @@ class CameraRenderer:
             try:
                 self.renderer = mj.Renderer(model, height=view.height, width=view.width)
             except Exception as e:
-                raise RuntimeError("MuJoCo camera needs OpenGL: on headless Linux install Mesa EGL "
-                                   "or select MUJOCO_GL=osmesa with OSMesa installed") from e
+                hint = ("macOS needs GPU access for native CGL; hosted macOS VMs cannot render"
+                        if sys.platform == "darwin" else
+                        "on headless Linux install Mesa EGL or select MUJOCO_GL=osmesa with OSMesa installed")
+                raise RuntimeError(f"MuJoCo camera needs OpenGL: {hint}") from e
             self.model, self.size = model, size
         assert self.renderer is not None
         option = mj.MjvOption()

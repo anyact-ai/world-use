@@ -86,6 +86,7 @@ def test_http_boundary_rejects_foreign_origins_hosts_and_non_json(client):
     assert client.status()["enabled"]
 
 
+@pytest.mark.usefixtures("file_camera")
 def test_cli_returns_structured_json_and_concise_input_errors(client, tmp_path, capsys):
     import json
 
@@ -260,6 +261,7 @@ def test_checked_run_revalidates_before_its_first_tick(daemon):
     assert job.status == "refused" and np.array_equal(d.k.cmd.q, before)
 
 
+@pytest.mark.rendering
 def test_look_saves_a_picture_with_what_the_kernel_knows_drawn_on_it(daemon):
     _, c = daemon
     r = c.look("top", [{"do": "line", "up": 0.03}])
@@ -346,6 +348,7 @@ def test_the_flight_record_can_be_written_without_stopping(client):
     assert r["summary"]["moving_s"] > 0 and "idle" in c.status()["line"]          # still serving
 
 
+@pytest.mark.usefixtures("file_camera")
 def test_look_with_a_grid_draws_a_ruler_and_nothing_the_kernel_believes(client):
     from world_use import cli
     r = client.look("side", grid=True)

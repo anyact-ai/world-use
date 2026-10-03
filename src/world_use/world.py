@@ -6,6 +6,7 @@ a human touching the scene). Policies read the world instead of re-deriving it f
 from __future__ import annotations
 
 import time
+from copy import deepcopy
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -261,10 +262,12 @@ class World:
         for n, f in (d.get("frames") or {}).items():
             w.frames[n] = Frame(n, np.array(f["T"], float), f.get("source", "config"), f.get("t", time.time()))
         for n, b in (d.get("boxes") or {}).items():
-            w.boxes[n] = Box(n, b["kind"], np.array(b["pose"], float), np.array(b["size"], float), b.get("params", {}),
+            w.boxes[n] = Box(n, b["kind"], np.array(b["pose"], float), np.array(b["size"], float),
+                             deepcopy(b.get("params", {})),
                              b.get("source", "config"), b.get("t", time.time()))
         for k, f in (d.get("facts") or {}).items():
-            w.facts[k] = Fact(k, f["value"], f["source"], f.get("t", time.time()), f.get("note", ""), f.get("stale"))
+            w.facts[k] = Fact(k, deepcopy(f["value"]), f["source"], f.get("t", time.time()),
+                             f.get("note", ""), f.get("stale"))
         if d.get("held"):
             w.held = (d["held"]["name"], np.array(d["held"]["rel"], float))
         return w

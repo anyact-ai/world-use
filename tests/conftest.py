@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from PIL import Image
 
 from world_use import Kernel, RealClock, VirtualClock, World, bodies, cameras
 from world_use.client import Client
@@ -72,6 +73,15 @@ def daemon(tmp_path, rehearser):
 @pytest.fixture
 def client(daemon):
     return daemon[1]
+
+
+@pytest.fixture
+def file_camera(daemon, tmp_path):
+    """Exercise image transport and overlays without requiring a graphics context."""
+    d, _ = daemon
+    path = tmp_path / "camera.png"
+    Image.new("RGB", (800, 600), "gray").save(path)
+    d.cameras["side"] = cameras.FileCamera("side", path, d.cameras["side"].view, max_age_s=300)
 
 
 def supported_object(k, name="block", size=(.04, .04, .06), center=None, *, known=True):

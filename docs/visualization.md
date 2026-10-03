@@ -48,8 +48,10 @@ The viewer reads only new committed chunks and events, usually about one second
 behind control. Camera images update when another client calls `wu look`; this
 is not a continuous camera acquisition service.
 
-Press Ctrl+C in the viewer command's terminal to stop following. A normally closed
-record stops following automatically. Closing the Rerun window or stopping the
+Press Ctrl+C in the viewer command's terminal to stop following. A new record stops
+following automatically once its completion marker and all final data are readable.
+Older records without `complete.json` require Ctrl+C when followed; ordinary offline
+viewing and export still finish immediately. Closing the Rerun window or stopping the
 viewer never stops a robot job or changes torque. Continue to use `wu status`,
 `wu stop`, and the normal home/release procedure to operate the session.
 

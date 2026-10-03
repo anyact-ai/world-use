@@ -30,6 +30,7 @@ A run contains:
 | `events.jsonl` | Submitted plan JSON, structured outcomes, checkpoint questions/answers, contacts, world changes, view paths and annotations |
 | `tape/000000.npz`, … | Append-only telemetry and power-transition chunks; the complete history of a new run |
 | `recording.json` | Missing sample, event, and power-transition counts, only if a recording buffer overran |
+| `complete.json` | Final chunk count and event byte count, committed only after the journal finishes successfully |
 | `summary.json`, `world.json` | Summary and world model at the last explicit save or normal close |
 | `views/` | Saved camera observations |
 
@@ -39,6 +40,9 @@ committed chunks. Format 3 saves and closes flush these chunks without creating 
 second complete `tape.npz`. Readers still accept older `tape.npz` snapshots and
 `tape/power.npz` files. Python integrations should use
 `world_use.recorder.load_tape(run_folder)` to read the complete arrays.
+The `closed` event reports connection closure; `complete.json` confirms that the
+final recording writes succeeded. Live readers wait for that marker and its
+listed data before finishing, including when storage is slow.
 
 The daemon retires committed telemetry from memory. Its pending buffer holds at
 most 30,000 samples (five minutes at 100 Hz), 5,000 power transitions, and the most

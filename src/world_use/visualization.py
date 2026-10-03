@@ -40,8 +40,12 @@ class RecordReader:
         self.initial = True
         self.saved_mtime = None
         self.losses = {}
+        self.complete = False
 
     def poll(self) -> tuple[dict, list[dict]]:
+        # Read completion before listing chunks: a close committed during this poll belongs to the next one.
+        marker = self.folder / "complete.json"
+        complete = json.loads(marker.read_text()) if marker.exists() else None
         paths = set((self.folder / "tape").glob("[0-9]*.npz"))
         saved = self.folder / "tape.npz"
         mtime = saved.stat().st_mtime_ns if saved.exists() else None
@@ -75,6 +79,8 @@ class RecordReader:
                         events[-1]["t"] if events else 0.0)
                 events.append(dict(t=t, kind="recording", level="alarm",
                                    message=f"Incomplete record: {losses}; estimates may span missing observations"))
+        self.complete = (complete is not None and len(self.parts) >= complete["parts"]
+                         and self.offset >= complete["events_bytes"])
         return samples, events
 
 
@@ -147,7 +153,6 @@ class RecordingView:
         self.pending: deque[dict] = deque()
         self.trail: deque[tuple[float, np.ndarray]] = deque(maxlen=200)
         self.box_names: set[str] = set()
-        self.closed = False
         rr = self.rr
         self.rec.log("scene", rr.CoordinateFrame(self.base_frame), rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
         self.rec.log("camera-help", rr.TextDocument(
@@ -195,8 +200,6 @@ class RecordingView:
                 rec.log(self._path("observations", data["camera"]), rr.EncodedImage(path=path))
             else:
                 rec.log("events", rr.TextLog(f"Missing saved observation: {data['path']}", level="WARN"))
-        if event["kind"] == "closed":
-            self.closed = True
 
     def _world(self, tool):
         rr, rec = self.rr, self.rec
@@ -311,19 +314,16 @@ def view(folder: Path | str, *, output: Path | None = None, follow: bool = False
         if output is None:
             rec.send_blueprint(blueprint(viewer.base_frame, follow))
         reader = RecordReader(folder)
-        closing = False
         while True:
             samples, events = reader.poll()
             viewer.append(samples, events)
-            closed = viewer.closed or any(e["kind"] == "closed" for e in viewer.pending)
-            if not follow or closing:
+            if not follow or reader.complete:
                 viewer.finish_events()
                 break
-            # Allow the final telemetry chunk to commit after the closed event is written.
-            closing = closed
             time.sleep(.25)
     except KeyboardInterrupt:
-        pass
+        if viewer is not None:
+            viewer.finish_events()
     finally:
         if output is not None and viewer is not None:
             # Save one complete layout after all camera names are known, including on Ctrl+C.
