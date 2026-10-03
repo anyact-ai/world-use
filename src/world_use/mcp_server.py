@@ -9,7 +9,10 @@ picture itself.
 from __future__ import annotations
 
 import json
+import threading
+from collections import OrderedDict
 from collections.abc import Callable
+from io import BytesIO
 
 from .cli import help_text, job_text
 from .client import DEFAULT_URL, Client, DaemonError
@@ -25,6 +28,8 @@ def build(url: str = DEFAULT_URL):
 
     c = Client(url)
     server = MCPServer("world-use", instructions=INSTRUCTIONS)
+    frames = OrderedDict()
+    frame_lock = threading.Lock()
 
     def call(fn: Callable[[], object]):
         """Preserve the daemon's error as an MCP tool error, with actionable text."""
@@ -76,12 +81,15 @@ def build(url: str = DEFAULT_URL):
         return call(c.status)
 
     @server.tool()
-    def run(plan: list[dict] | dict, wait_s: float = 60.0, rehearse: bool = True) -> str:
+    def run(plan: list[dict] | dict, wait_s: float = 60.0, rehearse: bool = True,
+            requires: list[dict] | None = None) -> str:
         """Run a plan: a list of steps, e.g. [{"do": "line", "up": 0.05}, {"do": "grip", "expect_mm": [35, 45]}].
         Rehearsed on a twin first; if any step would break a limit nothing moves and every problem is listed.
         Returns the outcome and the state line, or the
-        question a checkpoint is waiting on."""
-        return call(lambda: job_text(c.run(plan, wait=wait_s, check=rehearse)))
+        question a checkpoint is waiting on.
+        Evidence prerequisites are [{"evidence": receipt_id, "max_age_s": seconds}]; they apply even without rehearsal.
+        """
+        return call(lambda: job_text(c.run(plan, wait=wait_s, check=rehearse, requires=requires)))
 
     @server.tool()
     def check(plan: list[dict] | dict) -> str:
@@ -103,6 +111,55 @@ def build(url: str = DEFAULT_URL):
             text = f"{r['camera']} camera: {r['drawn']}" + (f"\n{r['check']}" if r.get("check") else "")
             return [text, Image(path=r["path"])]
         return call(shot)
+
+    @server.tool()
+    def camera_frame(camera: str | None = None, depth: bool = False):
+        """Inspect native upright RGB pixels. Request aligned metric depth for measurement (MuJoCo cameras).
+        Returns a frame ID for measure_pixels. Captures are bounded; recapture if an old ID has expired."""
+        def capture():
+            from .perception import EvidenceStore
+            frame = c.frame(camera, depth=depth)
+            with frame_lock:
+                frames[frame.id] = frame
+                while len(frames) > 8 or sum(EvidenceStore.size(f) for f in frames.values()) > 64 * 1024 * 1024:
+                    frames.popitem(last=False)
+            image = BytesIO()
+            frame.image.save(image, format="PNG")
+            return [json.dumps(dict(frame=frame.id, camera=frame.camera, size=frame.image.size,
+                                    depth=frame.depth is not None, age_s=frame.age_s)),
+                    Image(data=image.getvalue(), format="png")]
+        return call(capture)
+
+    @server.tool()
+    def measure_pixels(frame: str, point: list[float] | None = None, box: list[int] | None = None,
+                       target: str | None = None) -> dict:
+        """Measure a point or rectangular visible region from camera_frame; register its source evidence.
+        Coordinates are native pixels; box is [left, top, right, bottom], right/bottom exclusive.
+        A region must contain one visible surface. Geometry is in base-frame metres, not an object pose.
+        Receipt ID can be used in run.requires. World assertions remain explicit add_box/fact calls."""
+        def measurement():
+            import numpy as np
+
+            from .perception import measure
+            with frame_lock:
+                source = frames.get(frame)
+            if source is None:
+                raise ToolError("frame expired; call camera_frame again")
+            try:
+                if (point is None) == (box is None):
+                    raise ValueError("provide exactly one point or box")
+                mask = None
+                if box is not None:
+                    if (len(box) != 4 or not all(isinstance(v, int) for v in box)
+                            or not 0 <= box[0] < box[2] <= source.image.width
+                            or not 0 <= box[1] < box[3] <= source.image.height):
+                        raise ValueError("box must be within the native image")
+                    mask = np.zeros((source.image.height, source.image.width), dtype=bool)
+                    mask[box[1]:box[3], box[0]:box[2]] = True
+                return c.record(evidence=measure(source, point=point, mask=mask, target=target))
+            except ValueError as e:
+                raise ToolError(str(e)) from e
+        return call(measurement)
 
     @server.tool()
     def world() -> str:

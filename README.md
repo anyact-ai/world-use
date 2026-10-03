@@ -104,7 +104,9 @@ checks each step as it starts; call `check` explicitly for a whole-plan rehearsa
 
 For visual feedback inside a procedure, the optional [EdgeTAM tracker](examples/tracking)
 follows a selected object through camera frames. It runs locally with bounded history
-and reports image-space observations, including lost or stale tracking.
+and reports image-space observations, including lost or stale tracking. The
+[RGB-D block example](examples/perception) adds measured geometry, evidence freshness
+checks, visual lift/placement verification, and source evidence in Rerun.
 
 ## What the runtime provides
 

@@ -270,6 +270,8 @@ class Journal:
     """
     MAX_BLOCKS = 5
     MAX_POWER = 5000
+    MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
+    MAX_ARTIFACTS = 64
 
     def __init__(self, tape: Tape, folder: Path, interval: float = 1.0, *, events=None):
         self.tape, self.folder = tape, folder / "tape"
@@ -286,6 +288,9 @@ class Journal:
         self._stop = threading.Event()
         self._closing = False
         self._lock = threading.Lock()
+        self._artifact_lock = threading.Lock()
+        self._artifacts = deque()
+        self._artifact_bytes = self._artifact_lost = 0
         self._thread = threading.Thread(target=self._loop, args=(interval,), name="flight-recorder", daemon=True)
         self._thread.start()
 
@@ -293,9 +298,55 @@ class Journal:
     def losses(self) -> dict:
         row, power = self.tape.bounds
         seq = self.events.first_seq - 1 if self.events else self.seq
-        return dict(samples=self._lost["samples"] + max(0, row - self.row),
+        result = dict(samples=self._lost["samples"] + max(0, row - self.row),
                     events=self._lost["events"] + max(0, seq - self.seq),
                     power_transitions=self._lost["power_transitions"] + max(0, power - self.power))
+        if self._artifact_lost:
+            result["artifacts"] = self._artifact_lost
+        return result
+
+    def artifact(self, identity, size, write, data):
+        """Enqueue owned evidence off the control thread; never wait for storage."""
+        with self._artifact_lock:
+            if self._closing:
+                raise ValueError("recording has closed")
+            while self._artifacts and (self._artifact_bytes + size > self.MAX_ARTIFACT_BYTES
+                                       or len(self._artifacts) >= self.MAX_ARTIFACTS):
+                old, count, _, _ = self._artifacts.popleft()
+                self._artifact_bytes -= count
+                self._lose_artifact(old)
+            if self._artifact_bytes + size > self.MAX_ARTIFACT_BYTES:
+                self._lose_artifact(identity)
+                return False
+            self._artifacts.append((identity, size, write, data))
+            self._artifact_bytes += size
+            return True
+
+    def _lose_artifact(self, identity):
+        self._artifact_lost += 1
+        if self.events:
+            self.events.emit("evidence_lost", "evidence artifact queue overrun", "warn", evidence=identity)
+
+    def _flush_artifacts(self):
+        # A finite batch lets telemetry flush even while captures keep arriving.
+        with self._artifact_lock:
+            count = len(self._artifacts)
+        for _ in range(count):
+            with self._artifact_lock:
+                if not self._artifacts:
+                    break
+                item = self._artifacts.popleft()
+            _identity, size, write, data = item
+            try:
+                write()
+            except OSError:
+                with self._artifact_lock:
+                    self._artifacts.appendleft(item)
+                raise
+            with self._artifact_lock:
+                self._artifact_bytes -= size
+            if self.events:
+                self.events.emit("evidence_saved", "source evidence committed", **data)
 
     @property
     def error(self) -> str | None:
@@ -320,7 +371,9 @@ class Journal:
         with self._lock:
             try:
                 self._flush()
-                if self._closing:
+                with self._artifact_lock:
+                    complete = self._closing and not self._artifacts
+                if complete:
                     save_summary(self.folder.parent / "complete.json",
                                  dict(parts=self.part, events_bytes=self.offset))
             except OSError as e:
@@ -330,6 +383,7 @@ class Journal:
 
     def _flush(self):
         from .events import _plain
+        self._flush_artifacts()
         events = self.events.since(self.seq) if self.events else []
         row, power, a = self.tape.snapshot(self.row, self.power)
         seq = events[0]["seq"] - 1 if events else self.seq
@@ -337,7 +391,8 @@ class Journal:
             lost = dict(samples=self._lost["samples"] + row - self.row,
                         events=self._lost["events"] + seq - self.seq,
                         power_transitions=self._lost["power_transitions"] + power - self.power)
-            save_summary(self.folder.parent / "recording.json", lost)
+            save_summary(self.folder.parent / "recording.json", dict(lost, **(
+                {"artifacts": self._artifact_lost} if self._artifact_lost else {})))
             if row > self.row:
                 self._summary.previous = None
                 if not self._summary.explicit_power:
@@ -346,6 +401,8 @@ class Journal:
                 self._summary.power_last = None
             self._lost = lost
             self.row, self.power, self.seq = row, power, seq
+        elif self._artifact_lost:
+            save_summary(self.folder.parent / "recording.json", dict(self._lost, artifacts=self._artifact_lost))
         # Retry from the last complete batch after a partial write (e.g. a full disk).
         if events:
             path = self.folder.parent / "events.jsonl"
@@ -373,9 +430,10 @@ class Journal:
                 self.flush()
 
     def close(self):
+        with self._artifact_lock:
+            self._closing = True
         self._stop.set()
         self._thread.join()
-        self._closing = True
         self.flush()
 
 

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .cameras import Frame
+    from .perception import Measurement
 
 DEFAULT_URL = os.environ.get("WORLD_USE_URL", "http://127.0.0.1:7431")
 
@@ -47,10 +48,11 @@ class Client:
     def card(self) -> str:
         return self._call("GET", "/card")["card"]
 
-    def run(self, spec, wait: float = 0.0, check: bool = True) -> dict:
+    def run(self, spec, wait: float = 0.0, check: bool = True, *, requires: list[dict] | None = None) -> dict:
         """Rehearse (unless check=False), then run. A plan the kernel would refuse comes back refused, unmoved.
         Each submission includes its own plan."""
-        return self._call("POST", "/run", dict(spec=spec, wait=wait, check=check))
+        return self._call("POST", "/run", dict(spec=spec, wait=wait, check=check,
+                                               requires=[] if requires is None else requires))
 
     def job(self, job_id: int, wait: float = 0.0) -> dict:
         return self._call("GET", f"/jobs/{job_id}?wait={wait}")
@@ -97,12 +99,15 @@ class Client:
         and nothing else); returns its path."""
         return self._call("POST", "/look", dict(camera=camera, spec=spec, grid=grid))
 
-    def frame(self, camera: str | None = None) -> Frame:
+    def frame(self, camera: str | None = None, *, depth: bool = False) -> Frame:
         """Read an unannotated frame in memory, without recording it. Pixels are not downscaled."""
         from urllib.parse import urlencode
 
         from .cameras import Frame
-        query = "?" + urlencode(dict(camera=camera)) if camera is not None else ""
+        params = dict(camera=camera) if camera is not None else {}
+        if depth:
+            params["depth"] = "true"
+        query = "?" + urlencode(params) if params else ""
         return Frame.from_dict(self._call("GET", "/frame" + query))
 
     def help(self) -> dict:
@@ -112,9 +117,12 @@ class Client:
         """Start calibrating a camera from the arm: a job whose checkpoints ask where the tool point is."""
         return self._call("POST", "/calibrate", dict(camera=camera, points=points, spread=spread, wait=wait))
 
-    def record(self, *, context: dict | None = None, note: str = "") -> dict:
+    def record(self, *, context: dict | None = None, note: str = "", evidence: Measurement | None = None) -> dict:
         """Write the flight record so far, without stopping anything."""
-        return self._call("POST", "/record", dict(context=context, note=note))
+        payload = dict(context=context, note=note)
+        if evidence is not None:
+            payload["evidence"] = evidence.request()
+        return self._call("POST", "/record", payload)
 
     def shutdown(self) -> dict:
         return self._call("POST", "/shutdown", {})

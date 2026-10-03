@@ -24,10 +24,12 @@ from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
+from uuid import uuid4
 
 import numpy as np
 
 from .behaviors import (
+    BUILTINS,
     STATUSES,
     Behavior,
     ContactSense,
@@ -48,6 +50,7 @@ from .errors import Refused, explain
 from .events import EventLog
 from .kinematics import Chain
 from .motion import Timing
+from .perception import Requirement
 from .recorder import Journal, Tape, save_summary, session_record
 from .world import World
 
@@ -101,6 +104,7 @@ class Job:
     t_end: float | None = None
     attention: threading.Event = field(default_factory=threading.Event)   # set on waiting or finished
     admission: Callable[[], None] | None = None    # revalidate a checked plan immediately before its first tick
+    requires: tuple[Requirement, ...] = ()
 
     @property
     def finished(self) -> bool:
@@ -108,6 +112,8 @@ class Job:
 
     def to_dict(self) -> dict:
         d: dict = dict(id=self.id, status=self.status, what=self.behavior.describe())
+        if self.requires:
+            d["requires"] = [dict(evidence=r.evidence, max_age_s=r.max_age_s) for r in self.requires]
         if self.question:
             d["question"] = self.question
         if self.outcome:
@@ -196,6 +202,10 @@ class Kernel:
         self.journal = Journal(self.tape, self.run_dir, events=self.events) if self.run_dir else None
         self.heat = Heat()
         self.lock = threading.RLock()
+        self.control_revision = 0
+        self.evidence_session = uuid4().hex
+        self.evidence_now = time.monotonic
+        self.evidence_closed = False
         self.jobs: dict[int, Job] = {}
         self.queue: deque[Job] = deque()
         self.active: Job | None = None
@@ -257,6 +267,7 @@ class Kernel:
         self._on_loop(self._release)
 
     def _enable(self):
+        self.changed()
         if self._loop_thread is not None and not self._loop_thread.is_alive():
             raise Refused("the control loop has stopped, so nothing would command the motors", "no_loop",
                           "restart the daemon")
@@ -286,6 +297,7 @@ class Kernel:
         self.emit("enabled", "torque on")
 
     def _release(self):
+        self.changed()
         with self.lock:
             if not self.enabled and not self.power_uncertain:
                 return
@@ -343,6 +355,7 @@ class Kernel:
 
     def close(self) -> dict:
         """Close the connection (never switches torque off by itself) and write the flight record."""
+        self.evidence_closed = True
         try:
             self.body.close()
         except Exception as e:
@@ -376,16 +389,22 @@ class Kernel:
         return summary
 
     # -- requests (any thread) ---------------------------------------------------------------------
-    def submit(self, spec, admission: Callable[[], None] | None = None) -> Job:
+    def submit(self, spec, admission: Callable[[], None] | None = None, *, requires=()) -> Job:
         """Queue a behavior. A malformed spec is refused here; limits are checked when it starts."""
         behavior = build(spec if isinstance(spec, Behavior) else deepcopy(spec))
+        if requires:
+            self.evidence_capable(behavior)
         with self.lock:
+            self.check_requirements(requires)
             if admission is not None:
                 admission()
+            self.changed()
             job = Job(next(self._ids), behavior, deepcopy(behavior.spec()))
             job.admission = admission
+            job.requires = tuple(requires)
             self.jobs[job.id] = job
-            self.emit("submitted", f"job {job.id}: {behavior.describe()}", job=job.id, spec=job.spec)
+            self.emit("submitted", f"job {job.id}: {behavior.describe()}", job=job.id, spec=job.spec,
+                      requires=job.to_dict().get("requires", []))
             if self.faulted or self.power_uncertain:
                 self._end(job, Outcome("refused", behavior.kind, "the kernel is faulted or motor power is unconfirmed",
                                        hint="check the hardware, then reset"))
@@ -397,6 +416,7 @@ class Kernel:
 
     def stop(self, reason: str = "stop requested"):
         with self.lock:
+            self.changed()
             self._stop = reason
 
     def answer(self, job_id: int, text: str):
@@ -412,6 +432,7 @@ class Kernel:
     def reset(self):
         """Operator: clear a fault after checking the hardware."""
         with self.lock:
+            self.changed()
             if self.power_uncertain:
                 raise Refused("motor power is unconfirmed: release at a freshly measured rest pose first",
                               "power_uncertain")
@@ -440,6 +461,7 @@ class Kernel:
         It stays valid until something is touched. None clears it when the scene changes."""
         steps = None if specs is None else self._home_steps(specs)
         with self.lock:
+            self.changed()
             self.home_route = None if steps is None else (steps, self.events.seq + 1)
         message = "home route cleared" if steps is None else f"home route set ({len(steps)} moves, then fold)"
         self.emit("home_route", message + (f": {note}" if note else ""), steps=steps, note=note)
@@ -488,6 +510,39 @@ class Kernel:
         return plan
 
     # -- services for behaviors (control thread) ---------------------------------------------------
+    def changed(self):
+        """Invalidate checked admission at a control mutation, even if it is subsequently reversed."""
+        with self.lock:
+            self.control_revision += 1
+
+    @staticmethod
+    def evidence_capable(behavior):
+        if type(behavior) not in BUILTINS:
+            raise Refused("evidence prerequisites require built-in behaviors", "evidence_behavior")
+        if isinstance(behavior, Sequence):
+            for child in behavior.steps:
+                Kernel.evidence_capable(child)
+
+    def check_requirements(self, requirements):
+        if not requirements:
+            return
+        if self.evidence_closed:
+            raise Refused("evidence session has closed", "stale_evidence")
+        calibrations = {name: camera.calibration_id for name, camera in self.cameras.items()}
+        for requirement in requirements:
+            requirement.check(self.evidence_session, calibrations, self.evidence_now())
+
+    def check_evidence(self):
+        try:
+            self.check_requirements(self.active.requires if self.active else ())
+        except Refused:
+            self.hold_here()
+            raise
+
+    def start_behavior(self, behavior):
+        self.check_evidence()
+        behavior.start(self)
+
     def set(self, q, dq=None):
         self.cmd.q = np.asarray(q, float).copy()
         self.cmd.dq = np.zeros(self.manifest.n) if dq is None else np.asarray(dq, float).copy()
@@ -556,6 +611,7 @@ class Kernel:
 
     def _use_fit(self, model):
         with self.lock:
+            self.changed()
             model.apply(self.chain)
             use = getattr(self.body, "use_fit", None)
             if use is not None:
@@ -570,6 +626,7 @@ class Kernel:
         return tau if self.fit is None else tau + self.fit.friction_torque(self.cmd.dq)
 
     def touched(self, kind: str, message: str):
+        self.changed()
         e = self.emit(kind, message, world=self.world.to_dict())
         self.last_touch = e["seq"]
 
@@ -669,7 +726,8 @@ class Kernel:
             try:
                 out = job.behavior.tick(self)
             except Refused as e:
-                out = Outcome("refused", job.behavior.kind, str(e), hint=e.hint)
+                self.hold_here()
+                out = Outcome("refused", job.behavior.kind, str(e), dict(rule=e.rule, **e.data), hint=e.hint)
             except Exception as e:                       # a bug in a behavior: hold, never keep going blind
                 self.hold_here()
                 out = Outcome("faulted", job.behavior.kind, f"{type(e).__name__}: {e}")
@@ -693,7 +751,7 @@ class Kernel:
         try:
             if job.admission is not None:
                 job.admission()
-            job.behavior.start(self)
+            self.start_behavior(job.behavior)
         except Refused as e:
             self._end(job, Outcome("refused", job.behavior.kind, str(e), dict(rule=e.rule, **e.data), hint=e.hint))
             return

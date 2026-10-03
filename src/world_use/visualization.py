@@ -88,14 +88,19 @@ def blueprint(base_frame: str, follow: bool, cameras=()):
     import rerun as rr
     import rerun.blueprint as rrb
 
-    images = [rrb.Spatial2DView(name=f"Camera · {name}",
-                               origin=f"/observations/{rr.escape_entity_path_part(name)}") for name in cameras]
+    images = [rrb.Tabs(*[rrb.Spatial2DView(name=f"{label} · {name}",
+                                         origin=f"/{root}/{rr.escape_entity_path_part(name)}")
+                        for root, label in (("observations", "RGB"), ("depth", "Depth"),
+                                            ("evidence_images", "Selected support"))],
+                       rrb.TextDocumentView(name="Evidence", origin=f"/evidence/{rr.escape_entity_path_part(name)}"),
+                       name=f"Camera · {name}") for name in cameras]
     if not images:
         images = [rrb.TextDocumentView(name="Camera observations", origin="/camera-help")]
     return rrb.Blueprint(
         rrb.Vertical(
             rrb.Horizontal(
-                rrb.Spatial3DView(name="Measured robot · estimated world", contents=["/robot/**", "/scene/**"],
+                rrb.Spatial3DView(name="Robot · observed surfaces · estimated world",
+                                  contents=["/robot/**", "/scene/**"],
                                   spatial_information=rrb.SpatialInformation(base_frame),
                                   eye_controls=rrb.EyeControls3D(position=[.65, -.65, .55],
                                                                look_target=[.2, 0, .25], eye_up=[0, 0, 1]),
@@ -200,6 +205,35 @@ class RecordingView:
                 rec.log(self._path("observations", data["camera"]), rr.EncodedImage(path=path))
             else:
                 rec.log("events", rr.TextLog(f"Missing saved observation: {data['path']}", level="WARN"))
+        if event["kind"] == "evidence_saved":
+            self._evidence(data)
+
+    def _evidence(self, data):
+        rr, rec = self.rr, self.rec
+        folder = (self.folder / data["path"]).resolve()
+        if not folder.is_relative_to(self.folder):
+            raise ValueError("recorded evidence path escapes its run folder")
+        if not all((folder / name).is_file() for name in ("rgb.png", "overlay.png", "surfaces.npz")):
+            rec.log("events", rr.TextLog(f"Missing source evidence: {data['path']}", level="WARN"))
+            return
+        m = data["measurement"]
+        camera = m["camera"]
+        capture_t = m["capture_t"] if m.get("capture_t") is not None else m["available_t"]
+        rec.set_time(TIMELINE, duration=capture_t)
+        rec.log(self._path("observations", camera), rr.EncodedImage(path=folder / "rgb.png"))
+        with np.load(folder / "surfaces.npz") as arrays:
+            if "depth" in arrays:
+                rec.log(self._path("depth", camera), rr.DepthImage(arrays["depth"], meter=1))
+            # Derived geometry appears when it became available, never retrospectively as a live belief.
+            rec.set_time(TIMELINE, duration=m["available_t"])
+            path = self._path("scene/observed", m["target"] or m["id"])
+            rec.log(path, rr.Clear(recursive=True))
+            if m["valid"]:
+                rec.log(path, rr.CoordinateFrame(self.base_frame),
+                        rr.Points3D(arrays["points"], colors=[30, 220, 100], radii=.002,
+                                    labels=[f"observed: {m['target'] or 'surface'} at {capture_t:.2f}s"]))
+        rec.log(self._path("evidence_images", camera), rr.EncodedImage(path=folder / "overlay.png"))
+        rec.log(self._path("evidence", camera), rr.TextDocument(json.dumps(m, indent=2)))
 
     def _world(self, tool):
         rr, rec = self.rr, self.rec
@@ -235,6 +269,7 @@ class RecordingView:
     def append(self, samples: dict, events: list[dict]):
         rr, rec = self.rr, self.rec
         cameras = {e["data"]["camera"] for e in events if e["kind"] == "look" and e.get("data", {}).get("camera")}
+        cameras.update(e["data"]["measurement"]["camera"] for e in events if e["kind"] == "evidence_saved")
         if cameras - self.camera_names:
             self.camera_names.update(cameras)
             if self.update_layout:
