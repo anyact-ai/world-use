@@ -171,8 +171,9 @@ def procedure(c: Client, *, condition="verify", tracker=None, evaluate=lambda: N
         # All task waypoints stay over this known open tray. Put down before opening; never release at height.
         c.stop("perception attempt ended")
         current = c.status()["tool"]["work"]
-        execute([{"do": "move_to", "to": [current[0], current[1], .22]},
-                 {"do": "gripper", "aperture_mm": 65}, {"do": "line", "up": .08}], dependent=False)
+        recovery = ([{"do": "move_to", "to": [current[0], current[1], .22]}]
+                    if abs(current[2] - .22) > .001 else [])
+        execute([*recovery, {"do": "gripper", "aperture_mm": 65}, {"do": "line", "up": .08}], dependent=False)
     finally:
         evaluate()   # independent after-release evaluator, before homing changes the withdrawal measurement
         c.home_route([], "known open tray; return from above turn height")

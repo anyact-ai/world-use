@@ -253,3 +253,13 @@ def test_live_procedure_transfers_an_unknown_block_and_verifies_from_pixels(tmp_
     initial = json.loads((tmp_path / "session.json").read_text())["initial"]["world"]
     assert "block" not in initial["boxes"]
     assert len(list((tmp_path / "perception").glob("*/measurement.json"))) >= 4
+
+
+@pytest.mark.rendering
+def test_nominal_missed_grasp_recovers_when_already_at_release_height(tmp_path):
+    from world_use.examples.perception import run
+
+    result = run(tmp_path, condition="nominal", scenario="displaced")
+    assert "closed on nothing" in result["reason"]
+    assert not result["evaluation"]["success"]
+    assert result["return_outcome"]["status"] == "done" and result["torque_off"]
