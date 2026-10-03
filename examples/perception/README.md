@@ -35,6 +35,21 @@ must be reachable from Hugging Face or already cached. The automated tests use
 deterministic masks and the color fixture; their success does not establish
 EdgeTAM accuracy or latency.
 
+The Linux CI vision job downloads the pinned checkpoint and runs the four
+displaced-block conditions plus a missing-block refusal. It checks the independent
+outcomes, visual verification, torque release, recorded evidence, point/box prompts
+and tracking beyond the history window, then exports Rerun. Its `vision-evidence`
+artifact contains full runs and `validation.json`, including inference and control
+timings. Run the same check with vision and Rerun installed:
+
+```sh
+OMP_NUM_THREADS=2 uv run --extra vision --extra rerun python scripts/vision_smoke.py \
+  --output runs/vision-validation
+```
+
+These checks cover this rendered fixture on CPU; they do not establish general
+object-tracking accuracy, GPU behavior or physical RGB-D performance.
+
 ## Inspect what happened
 
 `result.json` separates procedure-side lift/placement checks from the independent

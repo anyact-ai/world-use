@@ -5,6 +5,7 @@ import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 
@@ -71,8 +72,8 @@ class EdgeTAM:
 
     def _load(self, device, model_path):
         try:
-            import torch  # ty: ignore[unresolved-import]
-            import transformers  # ty: ignore[unresolved-import]
+            import torch  # ty: ignore[unresolved-import, unused-ignore-comment]
+            import transformers  # ty: ignore[unresolved-import, unused-ignore-comment]
         except ImportError as e:
             raise ImportError("install world-use[vision] in this procedure's environment to use EdgeTAM") from e
         if transformers.__version__ != TRANSFORMERS_VERSION:
@@ -87,10 +88,12 @@ class EdgeTAM:
         self._torch = torch
         self._dtype = torch.float32 if device == "cpu" else torch.float16
         source = str(model_path) if model_path is not None else MODEL
-        options = {} if model_path is not None else {"revision": REVISION}
+        revision = "main" if model_path is not None else REVISION
         self._model = transformers.EdgeTamVideoModel.from_pretrained(
-            source, dtype=self._dtype, **options).to(device).eval()
-        self._processor = transformers.Sam2VideoProcessor.from_pretrained(source, **options)
+            source, dtype=self._dtype, revision=revision)
+        # Transformers' decorated .to loses its bound signature; it implements nn.Module's contract.
+        cast(torch.nn.Module, self._model).to(device).eval()
+        self._processor = transformers.Sam2VideoProcessor.from_pretrained(source, revision=revision)
         self._recent = max(self._model.config.num_maskmem - 1, self._model.config.max_object_pointers_in_encoder - 1)
 
     def __enter__(self) -> EdgeTAM:
