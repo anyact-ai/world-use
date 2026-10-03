@@ -39,6 +39,7 @@ class RecordReader:
         self.offset = 0
         self.initial = True
         self.saved_mtime = None
+        self.losses = {}
 
     def poll(self) -> tuple[dict, list[dict]]:
         paths = set((self.folder / "tape").glob("[0-9]*.npz"))
@@ -65,6 +66,15 @@ class RecordReader:
                         break
                     events.append(json.loads(line))
                     self.offset += len(line)
+        path = self.folder / "recording.json"
+        if path.exists():
+            losses = json.loads(path.read_text())
+            if losses != self.losses:
+                self.losses = losses
+                t = max(float(samples["t"][-1]) if len(samples.get("t", [])) else 0.0,
+                        events[-1]["t"] if events else 0.0)
+                events.append(dict(t=t, kind="recording", level="alarm",
+                                   message=f"Incomplete record: {losses}; estimates may span missing observations"))
         return samples, events
 
 

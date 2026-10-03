@@ -124,6 +124,7 @@ A plain list is a sequence; the first step that does not end "done" ends the who
   Detection has latency and depends on sensing, noise, and the fitted model; it is not an instantaneous stop.
 - Every other motion also stops on unexpected contact, with a looser threshold. Treat that as information.
 - Inside a `fragile` zone (glass, for example) both thresholds drop sharply.
+  Its `dtau` must be finite and positive, in Nm; the default is 0.3 Nm.
 - If the world knows a surface is there, a guarded move plans only 2 cm past it. Reaching the end without
   contact then means the world model is wrong: look, then correct it.
 - Guard only the last few centimetres: a line to about 2 cm short of where contact should be, then the guarded

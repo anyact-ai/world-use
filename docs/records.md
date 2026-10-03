@@ -28,17 +28,38 @@ A run contains:
 | `robot.urdf` | The geometry used by this run; its limits and gripper description are in `session.json` |
 | `assets/`, `robot-assets.json` | Content-addressed meshes and their original URDF path mapping |
 | `events.jsonl` | Submitted plan JSON, structured outcomes, checkpoint questions/answers, contacts, world changes, view paths and annotations |
-| `tape/*.npz` | Incremental telemetry chunks; `power.npz` keeps power transitions |
-| `tape.npz` | Complete telemetry at the last explicit save or normal close |
+| `tape/000000.npz`, … | Append-only telemetry and power-transition chunks; the complete history of a new run |
+| `recording.json` | Missing sample, event, and power-transition counts, only if a recording buffer overran |
 | `summary.json`, `world.json` | Summary and world model at the last explicit save or normal close |
 | `views/` | Saved camera observations |
 
 Events and telemetry are flushed once per second on a background thread. A process kill may
 lose the current interval and an unfinished event line; it should not lose earlier
-committed chunks. `inspect`, `replay`, and fitting read the newer of the complete
-tape and the chunks. `status --json` reports recording errors; storage failures do
-not fault the robot or prevent release and shutdown. This is local file
-persistence, not a guarantee against storage-device failure.
+committed chunks. Format 3 saves and closes flush these chunks without creating a
+second complete `tape.npz`. Readers still accept older `tape.npz` snapshots and
+`tape/power.npz` files. Python integrations should use
+`world_use.recorder.load_tape(run_folder)` to read the complete arrays.
+
+The daemon retires committed telemetry from memory. Its pending buffer holds at
+most 30,000 samples (five minutes at 100 Hz), 5,000 power transitions, and the most
+recent 5,000 events. Short storage failures can recover from that buffer. If a
+failure or producer overrun exhausts it, the oldest entries are dropped; status
+reports the loss immediately and the recorder persists the counts when storage
+recovers. `inspect` and Rerun flag incomplete records. Sample and power indices in
+the chunks identify gaps; durations do not count across them. Event sequence
+numbers likewise identify missing events. Offline readers retain every committed
+entry; a live event poll only returns the recent window and reports skipped
+entries in its `missed` field.
+
+Saved summaries accumulate lifetime durations and extrema without loading the
+history. After 8,192 powered tick intervals, their median and p99 use a uniform
+sample of that size, identified by `tick_percentile_sample`; the maximum remains
+exact. Offline `inspect` computes exact percentiles from committed samples.
+Embedded kernels without a run folder retain their whole tape for rehearsal.
+
+`status --json` reports recording errors; storage failures do not fault the robot
+or prevent release and shutdown. This is local file persistence, not a guarantee
+against storage-device failure.
 
 Record the context an integration knows, without coupling the runtime to a model SDK:
 

@@ -64,3 +64,32 @@ def test_slow_zone_requires_a_positive_finite_speed(speed):
     params = {} if speed is None else {"speed": speed}
     with pytest.raises(ValueError, match="speed"):
         World().add_box("careful", "slow", [0, 0, 0], [1, 1, 1], **params)
+
+
+@pytest.mark.parametrize("dtau", [None, 0, -1, float("nan"), float("inf"), "nan", "-inf", "bad", []])
+def test_fragile_zone_rejects_invalid_limits_on_creation_and_restore(dtau):
+    world = World()
+    original = world.add_box("glass", "fragile", [0, 0, 0], [1, 1, 1])
+    assert original.params["dtau"] == 0.3
+    with pytest.raises(ValueError, match="dtau"):
+        world.add_box("glass", "fragile", [0, 0, 0], [1, 1, 1], dtau=dtau)
+    assert world.boxes["glass"] is original
+    saved = world.to_dict()
+    saved["boxes"]["glass"]["params"]["dtau"] = dtau
+    with pytest.raises(ValueError, match="dtau"):
+        World.from_dict(saved)
+
+
+def test_rejected_fragile_update_cannot_disable_contact_detection(k):
+    from world_use.daemon import Daemon
+
+    k.tick()
+    original = k.world.add_box("glass", "fragile", k.tool[:3, 3], [1, 1, 1], dtau=0.3)
+    with pytest.raises(ValueError, match="dtau"):
+        Daemon._world(SimpleNamespace(k=k), {"box": dict(name="glass", kind="fragile", center=[0, 0, 0],
+                                                       size=[2, 2, 2], dtau="nan")})
+    assert k.world.boxes["glass"] is original
+    k.rebias()
+    k.state = replace(k.state, tau=k.state.tau + [0.8, 0, 0, 0, 0, 0])
+    trips = [k._collision() for _ in range(5)]
+    assert trips[-1] is not None and trips[-1].kind == "contact"

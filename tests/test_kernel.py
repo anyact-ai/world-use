@@ -912,7 +912,7 @@ def test_the_flight_record_is_written_when_the_adapter_fails_to_close(tmp_path):
         raise OSError("pcan uninitialize failed: PCAN_ERROR_ILLHW")
     body.close = unplugged
     k.close()
-    assert (tmp_path / "summary.json").exists() and (tmp_path / "tape.npz").exists()
+    assert (tmp_path / "summary.json").exists() and list((tmp_path / "tape").glob("[0-9]*.npz"))
     assert any(e["kind"] == "adapter" and "ILLHW" in e["message"] for e in k.events.since(0))
 
 

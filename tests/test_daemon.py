@@ -166,6 +166,23 @@ def test_facts_and_events(client):
     assert ev["last"] >= 1 and any(e["kind"] == "connected" for e in ev["events"])
 
 
+def test_event_poll_reports_a_missed_window_and_advances_only_through_returned_events():
+    from types import SimpleNamespace
+
+    from world_use.daemon import Daemon
+    from world_use.events import EventLog
+
+    log = EventLog(keep=2)
+    for i in range(4):
+        log.emit("test", str(i))
+    daemon = SimpleNamespace(k=SimpleNamespace(events=log))
+    status, result = Daemon.api(daemon, "GET", "/events", {"since": 0}, {})
+    assert status == 200 and result["missed"] == 2
+    assert [e["seq"] for e in result["events"]] == [3, 4] and result["last"] == 4
+    _, result = Daemon.api(daemon, "GET", "/events", {"since": 4}, {})
+    assert result == dict(events=[], missed=0, last=4)
+
+
 def test_run_rehearses_and_refuses_the_whole_plan_with_every_problem_before_anything_moves(daemon):
     d, c = daemon
     before = d.k.cmd.q.copy()
@@ -324,7 +341,8 @@ def test_the_flight_record_can_be_written_without_stopping(client):
     c.run({"do": "line", "up": 0.02, "duration": 0.5}, wait=10)
     r = c.record()
     run = Path(r["run"])
-    assert {"tape.npz", "summary.json", "world.json"} <= {f.name for f in run.iterdir()}
+    assert {"tape", "summary.json", "world.json"} <= {f.name for f in run.iterdir()}
+    assert list((run / "tape").glob("[0-9]*.npz"))
     assert r["summary"]["moving_s"] > 0 and "idle" in c.status()["line"]          # still serving
 
 

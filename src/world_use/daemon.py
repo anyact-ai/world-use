@@ -111,7 +111,8 @@ class Daemon:
         if method == "GET" and route == ["events"]:
             since = int(query.get("since", 0))
             events = k.events.wait(since, wait) if wait else k.events.since(since)
-            return 200, dict(events=events, last=k.events.seq)
+            return 200, dict(events=events, last=events[-1]["seq"] if events else since,
+                             missed=max(0, events[0]["seq"] - since - 1) if events else 0)
         if method == "GET" and route[0] == "jobs" and len(route) == 2:
             return self._job(int(route[1]), wait)
         if method == "GET" and route == ["world"]:

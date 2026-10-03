@@ -190,7 +190,7 @@ class Kernel:
         self.run_dir = Path(run_dir).expanduser().resolve() if run_dir else None
         if self.run_dir:
             self.run_dir.mkdir(parents=True, exist_ok=True)
-        self.events = EventLog(keep=None if self.run_dir else 5000, clock=self.clock.now, t0=self.t0)
+        self.events = EventLog(clock=self.clock.now, t0=self.t0)
         self.tape = Tape(m.n)
         self.tape.mark_power(0.0, False)
         self.journal = Journal(self.tape, self.run_dir, events=self.events) if self.run_dir else None
@@ -353,8 +353,10 @@ class Kernel:
                 self.journal.close()
             return self.save_record()
         except OSError as e:
+            summary = (self.journal.summary(until=self.clock.now() - self.t0) if self.journal else
+                       self.tape.summary(self.manifest.rate_hz, until=self.clock.now() - self.t0))
             return dict(body=self.manifest.name, recording_error=str(e),
-                        **self.tape.summary(self.manifest.rate_hz, until=self.clock.now() - self.t0))
+                        **summary)
 
     def save_record(self) -> dict:
         """Write the flight record so far (tape, summary, world and events), without
@@ -363,9 +365,9 @@ class Kernel:
         until = self.clock.now() - self.t0
         if not self.run_dir:
             return dict(body=self.manifest.name, **self.tape.summary(rate, until=until))
-        if self.journal:
-            self.journal.flush()
-        summary = dict(body=self.manifest.name, **self.tape.save(self.run_dir / "tape.npz", rate, until=until))
+        assert self.journal is not None
+        self.journal.flush()
+        summary = dict(body=self.manifest.name, **self.journal.summary(until=until))
         summary["events"] = self.events.seq
         save_summary(self.run_dir / "summary.json", summary)
         with self.lock:                                  # the control thread moves held boxes about

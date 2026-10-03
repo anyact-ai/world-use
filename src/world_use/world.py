@@ -73,6 +73,14 @@ class Box:
             raise ValueError("box size must be three finite, positive lengths")
         if self.pose.shape != (4, 4) or not np.isfinite(self.pose).all():
             raise ValueError("box pose must be a finite 4x4 transform")
+        if self.kind == "fragile":
+            try:
+                dtau = float(self.params.get("dtau", 0.3))
+            except (TypeError, ValueError):
+                raise ValueError("a fragile zone needs a finite, positive dtau in Nm") from None
+            if not np.isfinite(dtau) or dtau <= 0:
+                raise ValueError("a fragile zone needs a finite, positive dtau in Nm")
+            self.params = dict(self.params, dtau=dtau)
         if self.kind == "slow":
             speed = float(self.params.get("speed", float("nan")))
             if not np.isfinite(speed) or speed <= 0:

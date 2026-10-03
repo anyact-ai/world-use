@@ -114,7 +114,9 @@ a twin from those data without importing the hardware driver or a body registry.
 
 Records include startup state, plans and structured outcomes. A background journal saves
 events and incremental telemetry once per second; offline inspection can recover committed chunks
-without the daemon. See the [record format](docs/records.md).
+without the daemon. Persisted runs retire saved telemetry and bound pending buffers;
+storage overruns remain visible in status and the record. Summaries accumulate off
+the control thread without rebuilding the complete tape. See the [record format](docs/records.md).
 
 ## Two loops, one runtime
 

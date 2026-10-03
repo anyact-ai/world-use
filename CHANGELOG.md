@@ -13,6 +13,10 @@
 - Archive robot meshes with run records, and save timestamped demo camera frames
   for synchronized viewing. Clearly label reconstructed world estimates.
 - Wait for the final gripper command's feedback before declaring an empty grasp.
+- Reject nonfinite and nonpositive fragile-zone contact thresholds on creation and restore.
+- Bound daemon recording buffers, retain complete committed history in chunks, and report
+  buffer overruns in status, inspection, and Rerun. Save lifetime summaries without
+  rebuilding telemetry in memory; long-run timing percentiles use a bounded sample.
 - Clear gripper velocity on stop while retaining its position; home load-bearing joints
   within their configured rest tolerance and planning limits, even when the session started elsewhere.
 - Report camera capture timeouts and correct calibration of resized 360-camera views.
@@ -42,6 +46,10 @@
 an explicit plan or plan file; the daemon no longer stores a shared “last checked” plan.
 New record readers also accept existing `tape.npz` files. Visual replay needs the
 new `session.json` metadata.
+
+**Record format:** new runs use format 3 with telemetry and power transitions in
+`tape/*.npz`, without a duplicate `tape.npz` snapshot. Use `load_tape(run_folder)`
+for complete arrays. Existing records remain readable; see [records](docs/records.md).
 
 **Simulation change:** the `lag_s` and `stiffness` options are removed. Custom
 simulation URDFs need inertias and collision geometry; grippers currently require

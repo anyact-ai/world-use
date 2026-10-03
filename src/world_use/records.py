@@ -41,9 +41,12 @@ def inspect(folder: Path | str) -> dict:
         elif e["kind"] == "finished":
             jobs.setdefault(data["job"], {}).update(outcome=data.get("outcome", {"status": data["status"]}))
     a = load_tape(folder)
+    summary = Tape._summary(a, None)
+    if (folder / "recording.json").exists():
+        summary["recording_lost"] = json.loads((folder / "recording.json").read_text())
     return dict(run=str(folder.resolve()), session=session,
                 closed=any(e["kind"] == "closed" for e in log),
-                summary=Tape._summary(a, None), jobs=jobs,
+                summary=summary, jobs=jobs,
                 incidents=[e for e in log if e["level"] in ("warn", "alarm")],
                 observations=[e for e in log if e["kind"] in ("look", "annotation", "answer")])
 
@@ -55,6 +58,8 @@ def describe(record: dict) -> str:
              f"world-use {meta.get('package_version', 'unknown')} | "
              + ("closed normally" if record["closed"] else "open or interrupted record"),
              f"{s.get('ticks', 0)} samples; powered {s.get('powered_s', 0)} s; moving {s.get('moving_s', 0)} s"]
+    if "recording_lost" in s:
+        lines.append(f"INCOMPLETE RECORD: {s['recording_lost']}; durations and extrema may be incomplete")
     for job, data in record["jobs"].items():
         out = data.get("outcome", {})
         lines.append(f"job {job}: {out.get('status', 'no recorded outcome')} {out.get('message', '')}".rstrip())
