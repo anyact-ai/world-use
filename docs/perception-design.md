@@ -210,12 +210,14 @@ not evidence of learned tracking quality. Every condition uses the same after-re
 evaluator. Preserve raw records and denominators for any published comparison.
 
 Geometry, expiry, cache bounds, storage failure, replay timing and the live block
-path have regression coverage. Real EdgeTAM accuracy/latency, held-out positions,
-long occlusions, calibration perturbations and slow-inference/control contention
-require measured evaluation with the pinned model weights. The automated suite
-uses deterministic masks and the color fixture; it does not establish learned
-tracking accuracy or inference latency. Do not claim a learned-perception
-benchmark from those fixture runs.
+path, including delayed inference and missed-grasp recovery, have regression
+coverage. The core suite uses deterministic masks and the color fixture. A separate
+CPU vision CI job runs the pinned EdgeTAM model through the task and beyond its
+tracking history window, retaining source evidence, prompt masks and timing data.
+These fixed-fixture checks do not establish general tracking accuracy. Held-out
+positions, long occlusions, calibration perturbations, GPU execution and hardware
+RGB-D still need measured evaluation. Do not claim a learned-perception benchmark
+from these integration runs.
 
 ## Work that waits for evidence
 

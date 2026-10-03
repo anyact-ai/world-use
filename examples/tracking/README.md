@@ -85,7 +85,9 @@ advancing tracking. Camera read errors propagate to the procedure.
 
 An empty mask reports `lost`. `tracked` means the model produced a mask, not that
 the identity is correct. Rotation and occlusion can cause loss or drift; inspect
-the scene and call `select` again when needed. A new selection replaces the old
+the scene and call `select` again when needed. A point prompt can include the
+object's cast shadow; use a box to constrain the selection and inspect the mask
+before using its geometry. A new selection replaces the old
 session without reloading the weights. Tracking does not estimate depth, establish
 a grasp, or verify a placement by itself. Initialize the model before powering a
 physical arm; camera or tracker failure does not change the kernel's power policy.

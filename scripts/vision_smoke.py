@@ -23,7 +23,7 @@ from world_use.records import inspect
 from world_use.vision import MODEL, REVISION, EdgeTAM
 
 
-def replay(image_path: Path) -> dict:
+def replay(image_path: Path, output: Path) -> dict:
     """Check point/box prompts and forward history past the model's retention window."""
     with Image.open(image_path) as source:
         image = source.convert("RGB")
@@ -31,9 +31,13 @@ def replay(image_path: Path) -> dict:
     ys, xs = np.nonzero(expected)
     assert len(xs), "the replay fixture must contain the visible block"
     box = [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1]
+    output.mkdir()
+    image.save(output / "rgb.png")
+    Image.fromarray(expected).save(output / "color-reference.png")
     samples = []
     with EdgeTAM(device="cpu", max_age_s=15) as tracker:
         for prompt in ({"point": (float(np.median(xs)), float(np.median(ys)))}, {"box": box}):
+            seed = None
             for index in range(20):
                 frame = Frame(image.copy(), "replay")
                 started = time.monotonic()
@@ -43,14 +47,24 @@ def replay(image_path: Path) -> dict:
                 assert observation.mask is not None
                 overlap = float(np.count_nonzero(observation.mask & expected)
                                 / np.count_nonzero(observation.mask | expected))
-                assert overlap > .75, f"fixture mask drifted: IoU={overlap:.3f}"
+                if seed is None:
+                    seed = observation.mask.copy()
+                stability = float(np.count_nonzero(observation.mask & seed)
+                                  / np.count_nonzero(observation.mask | seed))
+                assert stability > .9, f"static selection drifted: IoU={stability:.3f}"
+                # A point can select the shadow too; only the task's box constrains the object outline.
+                if "box" in prompt:
+                    assert overlap > .75, f"fixture mask drifted: IoU={overlap:.3f}"
+                if index in (0, 19):
+                    Image.fromarray(observation.mask).save(output / f"{next(iter(prompt))}-{index}.png")
                 # Exercise the real upstream session, which the offline contract tests cannot load.
                 session = tracker._session
                 assert not session.processed_frames
                 for outputs in session.output_dict_per_obj.values():
                     assert len(outputs["non_cond_frame_outputs"]) <= tracker._recent
                     assert len(outputs["cond_frame_outputs"]) == 1
-                samples.append(dict(prompt=next(iter(prompt)), index=index, inference_s=elapsed, iou=overlap))
+                samples.append(dict(prompt=next(iter(prompt)), index=index, inference_s=elapsed,
+                                    iou=overlap, seed_iou=stability))
     return dict(frames=samples)
 
 
@@ -89,7 +103,7 @@ def main():
 
         verified = root / "verify-displaced"
         first = report["runs"]["verify-displaced"]["result"]["observations"][0]["evidence"]
-        report["replay"] = replay(verified / "perception" / first / "rgb.png")
+        report["replay"] = replay(verified / "perception" / first / "rgb.png", root / "replay")
         rrd = root / "verify-displaced.rrd"
         subprocess.run([sys.executable, "-m", "world_use", "view", str(verified), "--out", str(rrd)], check=True)
         from rerun.chunk import RrdReader
