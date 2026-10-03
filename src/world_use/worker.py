@@ -54,17 +54,24 @@ def _check(snap: plan.Snapshot, spec, timeout_s: float) -> plan.Report:
 def _reach_line(snap: plan.Snapshot) -> str:
     t = plan.twin_from(snap)
     t.cmd.q = np.asarray(snap.q_cmd, float)
-    return views.reach_line(t)
+    try:
+        return views.reach_line(t)
+    finally:
+        t.close()
 
 
 def _prepare(snap: plan.Snapshot, spec) -> dict:
     t = plan.twin_from(snap)
     t.cmd.q = np.asarray(snap.q_cmd, float)
-    b = build(spec)
-    if not isinstance(b, PathBehavior):
-        raise Refused("only path behaviors need trajectory preparation", "spec")
-    b.prepare(t)
-    return vars(b)
+    try:
+        b = build(spec)
+        if not isinstance(b, PathBehavior):
+            raise Refused("only path behaviors need trajectory preparation", "spec")
+        b.prepare(t)
+        return vars(b)
+    finally:
+        t.close()
+
 
 
 class Rehearser:

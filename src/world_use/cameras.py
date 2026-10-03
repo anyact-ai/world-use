@@ -35,10 +35,6 @@ from PIL import Image, ImageDraw, ImageFont
 MAX_SIDE = 1024                        # pictures are scaled down to this: plenty for a model, cheap in context
 
 INK = (32, 36, 42)
-BG = (243, 244, 246)
-GRID = (214, 218, 224)
-KIND = {"surface": (201, 178, 143), "object": (226, 128, 60), "keep_out": (220, 60, 60), "fragile": (60, 170, 210),
-        "slow": (230, 190, 40)}
 MODEL = (22, 140, 80)                  # what the kernel believes: outlines
 TOOL = (200, 30, 160)
 PLAN = (40, 90, 230)
@@ -236,10 +232,7 @@ class SimCamera(Camera):
         self.lens, self.body = lens, body
 
     def snap(self, k) -> Image.Image:
-        b = self.body
-        g = b.manifest.gripper
-        opening = None if g is None or b.grip is None else g.aperture(b.grip)
-        return render(self.lens, b.world, b.chain, b.q, g, opening)
+        return self.body.render(self.lens)
 
 
 def equirect_dirs(u, v) -> np.ndarray:
@@ -400,67 +393,7 @@ def _corners(box) -> np.ndarray:
     return local @ box.pose[:3, :3].T + box.pose[:3, 3]
 
 
-FACES = ((0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3))
 EDGES = ((0, 1), (1, 3), (3, 2), (2, 0), (4, 5), (5, 7), (7, 6), (6, 4), (0, 4), (1, 5), (2, 6), (3, 7))
-
-
-def render(view: View, world, chain, q, gripper=None, opening=None, ss: int = 2) -> Image.Image:
-    """A plain, legible picture of the scene: the floor grid, every box shaded by kind, the arm as a stick figure."""
-    v = view.scaled(view.width * ss, view.height * ss)
-    img = Image.new("RGB", (v.width, v.height), BG)
-    d = ImageDraw.Draw(img, "RGBA")
-    work = world.frame("work").T if "work" in world.frames else np.eye(4)
-    for i in np.arange(-0.2, 0.81, 0.1):              # a 10 cm grid on the floor of the work frame
-        for a, b in (([i, -0.5, 0], [i, 0.5, 0]), ([-0.2, i - 0.3, 0], [0.8, i - 0.3, 0])):
-            _line(d, v, work[:3, :3] @ a + work[:3, 3], work[:3, :3] @ b + work[:3, 3], GRID, 1 * ss)
-    items: list[tuple[float, str, tuple]] = []         # (depth, kind, payload): drawn far to near
-    light = np.array([0.3, -0.5, 0.8]) / np.linalg.norm([0.3, -0.5, 0.8])
-    for box in world.boxes.values():
-        pts = _corners(box)
-        uv, z = v.project(pts)
-        if (z <= 0.01).any():
-            continue
-        base = KIND.get(box.kind, (150, 150, 150))
-        zone = box.kind in ("keep_out", "fragile", "slow")
-        for face in FACES:
-            p = pts[list(face)]
-            normal = np.cross(p[1] - p[0], p[3] - p[0])
-            normal /= np.linalg.norm(normal) + 1e-12
-            if normal @ (p.mean(0) - v.T[:3, 3]) >= 0:
-                continue                                # facing away
-            shade = 0.62 + 0.38 * max(0.0, float(normal @ light))
-            fill = tuple(int(c * shade) for c in base) + ((70,) if zone else (255,))
-            items.append((float(z[list(face)].mean()), "poly", ([tuple(uv[j]) for j in face], fill)))
-    pts = chain.points(q)
-    uv, z = v.project(pts)
-    for a in range(1, len(pts) - 1):
-        if min(z[a], z[a + 1]) > 0.01 and np.linalg.norm(pts[a + 1] - pts[a]) > 1e-4:
-            width = max(2, int(v.fx * 0.028 / max(0.05, (z[a] + z[a + 1]) / 2)))
-            items.append((float((z[a] + z[a + 1]) / 2), "seg", (tuple(uv[a]), tuple(uv[a + 1]), width, (70, 76, 86))))
-    if gripper is not None:
-        T = chain.fk(q)
-        ahead = T[:3, :3] @ np.asarray(gripper.approach, float)
-        side = T[:3, :3] @ np.asarray(gripper.opens_along, float)
-        half = 0.5 * (opening if opening is not None else 0.04) + 0.006
-        tip = T[:3, 3]
-        for sgn in (-1, 1):
-            p0, p1 = tip - 0.045 * ahead + sgn * half * side, tip + 0.008 * ahead + sgn * half * side
-            (u0, u1), zz = v.project([p0, p1])
-            if zz.min() > 0.01:
-                width = max(2, int(v.fx * 0.012 / max(0.05, zz.mean())))
-                items.append((float(zz.mean()) - 0.001, "seg", (tuple(u0), tuple(u1), width, INK)))
-    items.sort(key=lambda it: -it[0])
-    for _, kind, payload in items:
-        if kind == "poly":
-            corners, fill = payload
-            d.polygon(corners, fill=fill, outline=tuple(int(c * 0.55) for c in fill[:3]) + (fill[3],))
-        else:
-            a, b, width, colour = payload
-            d.line([a, b], fill=colour, width=width)
-            for p in (a, b):
-                r = width / 2
-                d.ellipse([p[0] - r, p[1] - r, p[0] + r, p[1] + r], fill=colour)
-    return img.resize((view.width, view.height), Image.Resampling.LANCZOS)
 
 
 def overlay(img: Image.Image, view: View | None, k, path=None, caption: str = "") -> Image.Image:

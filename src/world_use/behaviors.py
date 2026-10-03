@@ -691,6 +691,7 @@ class Grip(Behavior):
             self.pre.start(k)
         self.speed = speed * np.sign(g.closed - g.open)     # units/s, towards closed
         self.phase, self.contact, self.wait = "open", None, 0
+        self.closed_wait = int(np.ceil(.2 * k.manifest.rate_hz))
 
     def tick(self, k):
         g, st, p = k.manifest.gripper, k.state, self.params
@@ -713,7 +714,9 @@ class Grip(Behavior):
             nxt = k.cmd.gripper + self.speed / k.manifest.rate_hz
             if (nxt - self.floor) * np.sign(g.open - g.closed) <= 0:
                 k.set_gripper(self.floor)
-                return self._no_contact(k)
+                # Read the response to the last command before deciding the fingers found nothing.
+                self.closed_wait -= 1
+                return self._no_contact(k) if self.closed_wait <= 0 else None
             k.set_gripper(nxt, self.speed)
             return None
         # Contact can leave the fingers behind the command. Approach the bounded squeeze target smoothly.

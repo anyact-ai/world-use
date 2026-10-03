@@ -41,6 +41,9 @@ def setup(scenario="nominal", output: Path | None = None):
 
 def pickup(k) -> list[dict]:
     block = k.world.from_base("work", k.world.boxes["block"].pose[:3, 3])
+    # The URDF tool frame is at the fingertips. Put the block inside the 30 mm pads.
+    approach = k.world.frame("work").T[:3, :3].T @ k.tool[:3, :3] @ np.asarray(k.manifest.gripper.approach)
+    block = block + .02 * approach
     high = float(k.world.from_base("work", k.tool[:3, 3])[2] + .08)
     return [{"do": "line", "up": .08}, {"do": "gripper", "aperture_mm": 65},
             {"do": "move_to", "to": [float(block[0]), float(block[1]), high]},
@@ -50,8 +53,10 @@ def pickup(k) -> list[dict]:
 
 def placement(k) -> list[dict]:
     tool = k.world.from_base("work", k.tool[:3, 3])
+    block = k.world.from_base("work", k.world.boxes["block"].pose[:3, 3])
+    target = TARGET + tool - block
     return [{"do": "line", "up": .08},
-            {"do": "move_to", "to": [float(TARGET[0]), float(TARGET[1]), float(tool[2] + .08)]},
+            {"do": "move_to", "to": [float(target[0]), float(target[1]), float(tool[2] + .08)]},
             {"do": "line", "up": -.07}, {"do": "gripper", "aperture_mm": 65},
             {"do": "line", "up": .07}]
 
@@ -74,8 +79,8 @@ def run(output: Path, scenario="nominal", *, video=True) -> dict:
         raise FileExistsError(f"use an empty output directory: {output}")
     k, truth = setup(scenario, output)
     frames, next_frame, phase = [], 0.0, "Approach and grip"
-    lens = cameras.View.look_at(truth.to_base("work", [.62, -.65, .52]),
-                                truth.to_base("work", [.29, 0, .17]), size=(720, 450))
+    lens = cameras.View.look_at(truth.to_base("work", [.72, -.85, .65]),
+                                truth.to_base("work", [.20, 0, .25]), size=(720, 450))
     camera = cameras.SimCamera("demo", lens, k.body)
 
     def execute(spec):
@@ -90,6 +95,12 @@ def run(output: Path, scenario="nominal", *, video=True) -> dict:
             k.tick()
             if video and k.clock.now() + 1e-9 >= next_frame:
                 img = camera.picture(k)
+                observations = output / "views"
+                observations.mkdir(exist_ok=True)
+                path = observations / f"{len(frames):04d}-demo.jpg"
+                img.save(path, quality=90)
+                k.emit("look", "demo camera: simulation truth", camera="demo", path=f"views/{path.name}",
+                       drawn="MuJoCo simulation", size=list(img.size))
                 draw = ImageDraw.Draw(img)
                 draw.rectangle((0, 0, img.width, 40), fill=(248, 248, 248))
                 draw.text((16, 11), f"SIMULATION  /  {phase}  /  {k.clock.now():.1f}s  /  3x playback",

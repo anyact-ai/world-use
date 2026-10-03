@@ -1,0 +1,137 @@
+import json
+import shutil
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+from PIL import Image
+
+from world_use.config import load_robot, manifest_data
+from world_use.recorder import Tape, save_arrays
+from world_use.visualization import RecordReader, view
+from world_use.world import World
+
+
+def samples(times, angles):
+    tape = Tape(2)
+    for t, angle in zip(times, angles, strict=True):
+        tape.add(t, True, True, 1, [0, 0], [angle, 0], [1, 2], [30, 40], None, None, None)
+    return tape.arrays()
+
+
+@pytest.fixture
+def run_folder(tmp_path):
+    manifest = load_robot(Path(__file__).parents[1] / "examples/adapters/planar.toml")
+    folder = tmp_path / "record"
+    folder.mkdir()
+    shutil.copyfile(manifest.urdf, folder / "robot.urdf")
+    model = manifest_data(manifest) | {"urdf": "robot.urdf"}
+    world = World()
+    world.add_box("block", "object", [.35, 0, .2], [.04] * 3)
+    world.held = ("block", np.eye(4))
+    (folder / "session.json").write_text(json.dumps(dict(
+        body="test arm", mode="simulation", package_version="test",
+        initial=dict(model=model, world=world.to_dict(), q=[0, 0], q_start=[0, 0], gripper=None))))
+    return folder
+
+
+def test_follow_reader_retains_partial_events_and_reads_new_chunks_once(run_folder):
+    folder = run_folder
+    (folder / "tape").mkdir()
+    event = json.dumps(dict(seq=1, t=0, kind="connected", level="info", message="ready")) + "\n"
+    (folder / "events.jsonl").write_text(event[:20])
+    save_arrays(folder / "tape/000000.npz", samples([0], [0]))
+    reader = RecordReader(folder)
+    a, events = reader.poll()
+    assert a["t"].tolist() == [0] and events == []
+    (folder / "events.jsonl").write_text(event)
+    save_arrays(folder / "tape/000001.npz", samples([1], [.5]))
+    a, events = reader.poll()
+    assert a["t"].tolist() == [1] and events[0]["message"] == "ready"
+    assert reader.poll() == ({}, [])
+
+
+def component_rows(path, entity, component):
+    from rerun.chunk import RrdReader
+    out = []
+    for chunk in RrdReader(path).stream():
+        if chunk.entity_path != entity:
+            continue
+        batch = chunk.to_record_batch()
+        if component not in batch.schema.names:
+            continue
+        times = batch.column("elapsed").cast("int64").to_pylist()
+        out.extend(zip(times, batch.column(component).to_pylist(), strict=True))
+    return sorted(out, key=lambda pair: pair[0])
+
+
+def test_export_preserves_measurements_world_changes_and_camera_timing_after_move(run_folder, monkeypatch):
+    rr = pytest.importorskip("rerun")
+    rr.set_strict_mode(True)
+    from world_use import bodies
+
+    monkeypatch.setattr(bodies, "make", lambda *a, **kw: pytest.fail("viewer opened a robot"))
+    save_arrays(run_folder / "tape.npz", samples([0, .1, .2], [0, np.pi / 2, 0]))
+    (run_folder / "views").mkdir()
+    Image.new("RGB", (16, 16), "red").save(run_folder / "views/camera.png")
+    events = [dict(seq=1, t=.1, kind="look", level="info", message="captured",
+                   data=dict(camera="side", path="views/camera.png")),
+              dict(seq=2, t=.2, kind="world_state", level="info", message="removed",
+                   data=dict(world=World().to_dict())),
+              dict(seq=3, t=.3, kind="closed", level="info", message="closed")]
+    (run_folder / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+    moved = run_folder.with_name("moved")
+    run_folder.rename(moved)
+    output = view(moved, output=moved / "view.rrd")
+    from rerun.chunk import RrdReader
+    assert len(RrdReader(output).blueprints()) == 1
+    measured = component_rows(output, "/signals/joints/shoulder/measured", "Scalars:scalars")
+    assert [v[0] for _, v in measured] == pytest.approx([0, 90, 0])
+    assert [t for t, _ in measured] == [0, 100_000_000, 200_000_000]
+    rotations = component_rows(output, "/transforms/shoulder", "Transform3D:quaternion")
+    assert next(v[0] for t, v in rotations if t == 100_000_000) == pytest.approx([0, 0, 2**-.5, 2**-.5])
+    positions = component_rows(output, "/scene/world/block", "Transform3D:translation")
+    assert next(v[0] for t, v in positions if t == 100_000_000) == pytest.approx([0, .35, .2], abs=1e-6)
+    parents = component_rows(output, "/scene/world/block", "Transform3D:parent_frame")
+    assert all(value == ["robot/base"] for _, value in parents)
+    frames = component_rows(output, "/scene/world/block", "CoordinateFrame:frame")
+    assert all(value == ["world/block"] for _, value in frames)
+    clears = component_rows(output, "/scene/world/block", "Clear:is_recursive")
+    assert clears == [(200_000_000, [True])]
+    images = component_rows(output, "/observations/side", "EncodedImage:blob")
+    assert images[0][0] == 100_000_000
+    assert component_rows(output, "/events", "TextLog:text")[-1] == (300_000_000, ["closed: closed"])
+
+
+def test_follow_deduplicates_saved_tape_and_waits_for_final_chunk(run_folder, monkeypatch):
+    pytest.importorskip("rerun")
+    from world_use import visualization
+
+    (run_folder / "tape").mkdir()
+    save_arrays(run_folder / "tape/000000.npz", samples([0], [0]))
+    polls = 0
+
+    def advance(_):
+        nonlocal polls
+        polls += 1
+        if polls == 1:
+            save_arrays(run_folder / "tape.npz", samples([0, .1], [0, .5]))
+            (run_folder / "events.jsonl").write_text(json.dumps(
+                dict(seq=1, t=.2, kind="closed", level="info", message="closed")) + "\n")
+        elif polls == 2:
+            save_arrays(run_folder / "tape/000001.npz", samples([.1, .2], [.5, 1]))
+        else:
+            pytest.fail("following did not stop after close")
+
+    monkeypatch.setattr(visualization.time, "sleep", advance)
+    output = view(run_folder, output=run_folder / "follow.rrd", follow=True)
+    rows = component_rows(output, "/signals/joints/shoulder/measured", "Scalars:scalars")
+    assert [t for t, _ in rows] == [0, 100_000_000, 200_000_000]
+    assert polls == 2
+
+
+def test_missing_extra_gives_installation_hint(run_folder, monkeypatch):
+    monkeypatch.setitem(sys.modules, "rerun", None)
+    with pytest.raises(ValueError, match=r"world-use\[rerun\]"):
+        view(run_folder, output=run_folder / "view.rrd")

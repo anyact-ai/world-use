@@ -165,7 +165,7 @@ def twin_from(s: Snapshot, manifest: Manifest | None = None) -> Kernel:
     if manifest is None:
         manifest = manifest_from_data(s.model)
     world = World.from_dict(s.world)
-    body = SimBody(manifest, world, q=s.q, gripper=s.gripper, temp_c=s.temp)
+    body = SimBody(manifest, World.from_dict(s.world), q=s.q, gripper=s.gripper, temp_c=s.temp)
     t = Kernel(body, world, VirtualClock(manifest.rate_hz), ik_weights=s.ik_weights, auto_answer=True)
     t.connect()                       # the world already holds the session's frames, so they are kept
     if s.fit is not None:             # the twin weighs its links, and feels friction, as the robot's own fit says
@@ -200,6 +200,13 @@ def check(spec, k: Kernel, timeout_s: float = 900.0) -> Report:
 
 def rehearse(spec, t: Kernel, timeout_s: float = 900.0) -> Report:
     """Run spec on the twin t (see check) and report what happened."""
+    try:
+        return _rehearse(spec, t, timeout_s)
+    finally:
+        t.close()
+
+
+def _rehearse(spec, t: Kernel, timeout_s: float) -> Report:
     if isinstance(spec, Plan):
         spec = spec.spec()
     t.envelope.rehearsal = []

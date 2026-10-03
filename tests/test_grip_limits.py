@@ -16,15 +16,29 @@ def test_invalid_grip_parameters_never_move_the_gripper(k, params):
     assert np.all(k.tape.arrays()["grip_cmd"] == before)
 
 
-def test_contact_squeeze_obeys_position_and_speed_limits(lifted):
+def test_contact_squeeze_obeys_position_and_speed_limits(lifted, monkeypatch):
     k = lifted
     k.run({"do": "gripper", "to": 0.4})
     g = k.manifest.gripper
-    p = k.tool[:3, 3]
-    k.world.add_box("thin", "object", center=p, size=[0.04, 0.001, 0.04], frame="base", grip_width=0.001)
+    from dataclasses import replace
+    read = k.body.read
+    # A repeatable contact measurement close to the lower limit isolates command bounding.
+    monkeypatch.setattr(k.body, "read", lambda: replace(read(), gripper_tau=.7 if k.cmd.gripper < .12 else 0))
     first = len(k.tape)
     out = k.run({"do": "grip", "speed": g.v_max})
     assert out.ok
     commands = k.tape.arrays()["grip_cmd"][first - 1:]
     assert commands.min() >= g.closed and commands.max() <= g.open
     assert np.abs(np.diff(commands)).max() * k.manifest.rate_hz <= g.v_max + 1e-9
+
+
+def test_grip_reads_contact_after_issuing_the_final_close_command(lifted, monkeypatch):
+    from dataclasses import replace
+
+    k = lifted
+    assert k.run({"do": "gripper", "to": .15}).ok
+    read = k.body.read
+    closed = k.manifest.gripper.closed
+    monkeypatch.setattr(k.body, "read", lambda: replace(read(), gripper_tau=.7 if k.cmd.gripper == closed else 0))
+    assert k.run({"do": "grip"}).ok
+    assert any(e["kind"] == "grip" for e in k.events.since(0))

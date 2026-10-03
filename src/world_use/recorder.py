@@ -245,6 +245,8 @@ def session_record(k, **context) -> dict:
     initial = asdict(snap)
     urdf = Path(k.manifest.urdf).read_bytes()
     if k.run_dir:
+        from .robot_assets import archive
+        archive(Path(k.manifest.urdf), k.run_dir)
         _atomic(k.run_dir / "robot.urdf", lambda f: f.write(urdf))
         initial["model"]["urdf"] = "robot.urdf"
     return dict(format_version=2, created_at=datetime.now(UTC).isoformat(), package_version=__version__,

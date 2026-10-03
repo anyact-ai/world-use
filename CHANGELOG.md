@@ -2,6 +2,17 @@
 
 ## 0.3.0 (unreleased)
 
+- Replace the kinematic simulator with MuJoCo for execution, rehearsal, cameras,
+  and replay. Bundle Seeed's reBot visual and collision meshes with their license.
+  Grasps use frictional contacts; objects can slip, tip, and fall. Actuator and
+  thermal parameters remain approximate, not hardware-calibrated.
+- Add optional Rerun visualization (`world-use[rerun]`, `wu view`) with the actual
+  robot model, measured/commanded joint plots, torque, temperature, gripper state,
+  camera observations, and execution events. Follow committed live records or
+  export portable `.rrd` files without opening a robot driver.
+- Archive robot meshes with run records, and save timestamped demo camera frames
+  for synchronized viewing. Clearly label reconstructed world estimates.
+- Wait for the final gripper command's feedback before declaring an empty grasp.
 - Clear gripper velocity on stop while retaining its position; home load-bearing joints
   within their configured rest tolerance and planning limits, even when the session started elsewhere.
 - Report camera capture timeouts and correct calibration of resized 360-camera views.
@@ -31,6 +42,11 @@
 an explicit plan or plan file; the daemon no longer stores a shared “last checked” plan.
 New record readers also accept existing `tape.npz` files. Visual replay needs the
 new `session.json` metadata.
+
+**Simulation change:** the `lag_s` and `stiffness` options are removed. Custom
+simulation URDFs need inertias and collision geometry; grippers currently require
+two opposed prismatic fingers with an aperture calibration. Headless camera
+rendering needs EGL or OSMesa. See [simulation](docs/simulation.md).
 
 Robot loading and the runtime now reject prismatic arm joints: actions, telemetry,
 and monitoring support rotational joints only. Offline `Chain` kinematics is unchanged.

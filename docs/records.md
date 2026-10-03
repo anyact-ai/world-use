@@ -4,14 +4,21 @@
 wu inspect runs/YOUR-RUN
 wu inspect runs/YOUR-RUN --json
 wu replay runs/YOUR-RUN --out replay.gif --speed 3
+wu view runs/YOUR-RUN                         # requires world-use[rerun]
+wu view runs/YOUR-RUN --out recording.rrd      # headless export
 ```
 
-Both commands run offline. Replay reconstructs measured joints and the recorded
+These commands run offline. Replay reconstructs measured joints and the recorded
 world model with the saved robot geometry. It does not operate a robot or
 re-run the plan. Original camera observations remain under `views/`; the rendered
-replay is labeled separately. New records include the robot description and URDF,
+replay is labeled separately. New records include the robot description, URDF, and meshes,
 so they remain usable after moving the run folder or uninstalling its driver.
-Older records without a saved model use the installed built-in geometry.
+Older records without a saved model use the installed built-in geometry. A saved
+reBot URDF without archived meshes can use the bundled meshes only when its URDF
+matches exactly; custom records need their original assets.
+
+The optional [Rerun viewer](visualization.md) synchronizes the 3D reconstruction,
+telemetry, events, and saved observations. It can also follow a running recorder.
 
 A run contains:
 
@@ -19,6 +26,7 @@ A run contains:
 | --- | --- |
 | `session.json` | Format/package version, source and URDF hashes, adapter, startup configuration, initial world/command/measurement snapshot, fitted model |
 | `robot.urdf` | The geometry used by this run; its limits and gripper description are in `session.json` |
+| `assets/`, `robot-assets.json` | Content-addressed meshes and their original URDF path mapping |
 | `events.jsonl` | Submitted plan JSON, structured outcomes, checkpoint questions/answers, contacts, world changes, view paths and annotations |
 | `tape/*.npz` | Incremental telemetry chunks; `power.npz` keeps power transitions |
 | `tape.npz` | Complete telemetry at the last explicit save or normal close |

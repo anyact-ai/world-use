@@ -179,13 +179,15 @@ class Kernel:
         if [j.name for j in self.manifest.joints] != self.chain.joint_names:
             raise ValueError(f"manifest joints must follow URDF chain order: {self.chain.joint_names}")
         self.world = world or World()
+        if getattr(body, "world", None) is self.world:
+            self.world = World.from_dict(self.world.to_dict())
         self.clock = clock or RealClock(self.manifest.rate_hz)
         self.t0 = self.clock.now()
         m = self.manifest
         self.timing = Timing(m.rate_hz, m.speed, m.auto_accel, m.min_move_s)
         self.ik_weights = ik_weights
         self.auto_answer = auto_answer             # twin checks: assume the expected answer at checkpoints
-        self.run_dir = Path(run_dir) if run_dir else None
+        self.run_dir = Path(run_dir).expanduser().resolve() if run_dir else None
         if self.run_dir:
             self.run_dir.mkdir(parents=True, exist_ok=True)
         self.events = EventLog(keep=None if self.run_dir else 5000, clock=self.clock.now, t0=self.t0)

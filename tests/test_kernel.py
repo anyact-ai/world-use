@@ -4,7 +4,7 @@ import time
 
 import numpy as np
 import pytest
-from conftest import Q_REST, make_kernel
+from conftest import Q_REST, make_kernel, supported_object, table_below
 
 from world_use import Kernel, RealClock, Refused, World, bodies
 
@@ -22,7 +22,8 @@ def test_an_idle_watchdog_trip_cancels_motion_before_it_starts(k, monkeypatch, t
     monkeypatch.setattr(k.envelope, "watch", lambda *args: Trip(trip, "injected watchdog finding"))
     k.tick()
     assert job.status == "cancelled" and k.active is None
-    assert np.array_equal(k.cmd.q, before)
+    assert np.array_equal(k.cmd.q, before if trip == "hot" else k.state.q)
+    assert not np.any(k.cmd.dq)
     assert k.faulted == (trip == "fault")
 
 
@@ -109,11 +110,13 @@ def test_turning_the_base_at_table_height_is_refused(k):
 def test_touchdown_finds_a_table_and_stops_on_it(lifted):
     k = lifted
     top = k.chain.fk(k.state.q)[2, 3] - 0.04
-    k.world.add_box("table", "surface", center=[0.3, 0, top - 0.01], size=[1, 1, 0.02])   # same world as the sim
+    table_below(k)
     out = k.run({"do": "touchdown", "max": 0.08})
     assert out.ok, out.message
-    assert abs(out.data["moved_m"] - 0.04) < 0.006
-    assert abs(k.chain.fk(k.state.q)[2, 3] - top) < 0.003
+    # Mesh fingers touch before the empty tool point between their tips reaches the table.
+    assert .02 < out.data["moved_m"] < .04
+    assert k.body.data.ncon > 0
+    assert top < k.chain.fk(k.state.q)[2, 3] < top + .02
     assert k.last_touch > 0
 
 
@@ -130,8 +133,7 @@ def test_moving_into_something_unknown_trips_the_watchdog_and_holds():
     sim_world = World()
     k = make_kernel(sim_world=sim_world)
     assert k.run({"do": "line", "forward": 0.08, "up": 0.06}).ok
-    top = k.chain.fk(k.state.q)[2, 3] - 0.03
-    sim_world.add_box("box nobody mentioned", "surface", center=[0.3, 0, top - 0.05], size=[1, 1, 0.1])
+    table_below(k, .03, name="box nobody mentioned", known=False)
     out = k.run({"do": "line", "up": -0.06})
     assert out.status == "surprise"
     assert np.abs(k.cmd.q - k.state.q).max() < 0.01                 # holding where it is, not pressing on
@@ -140,12 +142,11 @@ def test_moving_into_something_unknown_trips_the_watchdog_and_holds():
 
 def test_grip_on_an_object_reports_where_the_fingers_met_it(lifted):
     k = lifted
-    tool = k.chain.fk(k.state.q)[:3, 3]
-    k.body.world.add_box("block", "object", center=tool, size=[0.03, 0.012, 0.03], grip_width=0.012)
+    supported_object(k, size=[.03, .012, .04])
     out = k.run({"do": "grip", "start": 3.0, "expect": [0.4, 1.0], "squeeze": 0.05})
     assert out.ok, out.message
     assert abs(out.data["contact_at"] - (0.05 + 0.012 / 0.020)) < 0.08
-    assert out.data["holding_effort"] < -0.5
+    assert out.data["holding_effort"] < 0  # measured closing effort from the physical actuator
 
 
 def test_grip_on_nothing_is_a_surprise(lifted):
@@ -156,8 +157,7 @@ def test_grip_on_nothing_is_a_surprise(lifted):
 def test_grip_outside_the_expected_width_is_a_surprise(lifted):
     k = lifted
     assert k.run({"do": "gripper", "to": 3.0}).ok                  # open wider than the object before it appears
-    tool = k.chain.fk(k.state.q)[:3, 3]
-    k.body.world.add_box("big", "object", center=tool, size=[0.04, 0.04, 0.03], grip_width=0.04)
+    supported_object(k, name="big", size=[.04, .04, .04])
     out = k.run({"do": "grip", "start": 3.0, "expect": [0.4, 1.0]})
     assert out.status == "surprise" and out.observed > 1.0
 
@@ -454,8 +454,7 @@ def test_motion_time_is_measured(k):
 
 def test_after_touching_down_the_arm_can_lift_off_even_if_it_rests_a_hair_inside_the_modelled_table(lifted):
     k = lifted
-    top = k.chain.fk(k.state.q)[2, 3] - 0.04
-    k.world.add_box("table", "surface", center=[0.3, 0, top - 0.01], size=[1, 1, 0.02])
+    table_below(k)
     assert k.run({"do": "touchdown", "max": 0.08}).ok
     k.world.boxes["table"].pose[2, 3] += 0.002                   # the model says the table is 2 mm higher
     assert k.run({"do": "line", "up": 0.03}).ok
@@ -466,8 +465,7 @@ def test_after_touching_down_the_arm_can_lift_off_even_if_it_rests_a_hair_inside
 def test_an_intended_touchdown_inside_a_fragile_zone_ends_done_not_surprise(lifted):
     k = lifted
     tool = k.chain.fk(k.state.q)[:3, 3]
-    top = tool[2] - 0.03
-    k.world.add_box("glass shelf", "surface", center=[0.3, 0, top - 0.01], size=[1, 1, 0.02])
+    table_below(k, .03, name="glass shelf")
     k.world.add_box("near glass", "fragile", center=tool - [0, 0, 0.03], size=[0.3, 0.3, 0.1], dtau=0.4)
     out = k.run({"do": "touchdown", "max": 0.06})
     assert out.ok, out.message
@@ -476,17 +474,16 @@ def test_an_intended_touchdown_inside_a_fragile_zone_ends_done_not_surprise(lift
 def test_grip_takes_millimetres(lifted):
     k = lifted
     assert k.run({"do": "gripper", "aperture_mm": 60}).ok          # open before the object appears between the jaws
-    tool = k.chain.fk(k.state.q)[:3, 3]
-    k.body.world.add_box("block", "object", center=tool, size=[0.04, 0.04, 0.04])
+    supported_object(k, size=[.04, .04, .04])
     out = k.run({"do": "grip", "start_mm": 60, "expect_mm": [35, 45]})
-    assert out.ok and "40 mm" in out.message and "'block'" in out.message
+    assert out.ok and "mm" in out.message and "'block'" in out.message
+    assert 35 <= k.manifest.gripper.aperture(out.data["contact_at"]) * 1000 <= 45
 
 
 def test_grip_outside_the_expected_millimetres_says_so_in_millimetres(lifted):
     k = lifted
     assert k.run({"do": "gripper", "aperture_mm": 60}).ok
-    tool = k.chain.fk(k.state.q)[:3, 3]
-    k.body.world.add_box("block", "object", center=tool, size=[0.04, 0.04, 0.04])
+    supported_object(k, size=[.04, .04, .04])
     out = k.run({"do": "grip", "start_mm": 60, "expect_mm": [10, 20]})
     assert out.status == "surprise" and "10..20 mm" in out.message
 
@@ -497,10 +494,8 @@ def test_a_gripped_object_moves_with_the_tool_in_the_model_and_lands_where_it_is
     k = make_kernel(sim_world=truth)
     assert k.run({"do": "line", "forward": 0.08, "up": 0.06}).ok
     assert k.run({"do": "gripper", "aperture_mm": 60}).ok
-    top = k.chain.fk(k.state.q)[2, 3] - 0.09
-    for w in (k.world, truth):
-        w.add_box("tray", "surface", center=[0.3, 0, top - 0.01], size=[0.6, 0.6, 0.02])
-        w.add_box("block", "object", center=k.chain.fk(k.state.q)[:3, 3] + [0, 0, -0.01], size=[0.04, 0.04, 0.08])
+    supported_object(k, size=[.04, .04, .08])
+    top = k.world.boxes["block support"].top
     assert k.run({"do": "grip", "start_mm": 60, "expect_mm": [35, 45]}).ok
     assert k.world.held is not None and k.world.held[0] == "block"
     before = k.world.boxes["block"].pose[:3, 3].copy()
@@ -665,8 +660,7 @@ def test_torque_noise_does_not_read_as_contact_and_real_contact_still_does():
     for _ in range(3):
         out = k.run({"do": "guarded", "up": -0.02, "dtau": 0.6, "expect_contact": False})
         assert out.ok and "no contact" in out.message, out.message
-    p = k.chain.fk(k.state.q)[:3, 3]
-    k.world.add_box("table", "surface", center=[p[0], p[1], p[2] - 0.03], size=[0.4, 0.4, 0.02], frame="base")
+    table_below(k, .02)
     out = k.run({"do": "touchdown", "max": 0.05, "dtau": 0.6})
     assert out.ok and "contact after" in out.message and "noise raised the threshold" in out.message, out.message
 
@@ -732,13 +726,15 @@ def test_a_joint_on_its_rest_stop_is_not_judged_and_is_re_zeroed_until_it_leaves
 
 
 
-def test_a_gripper_trip_ends_the_gripper_step_inside_a_plan_too(lifted):
+def test_a_gripper_trip_ends_the_gripper_step_inside_a_plan_too(lifted, monkeypatch):
     """Alone, a gripper step closing on something too wide ended at the first trip; inside a plan it tripped on
     every tick and still ended "done"."""
     k = lifted
     assert k.run({"do": "gripper", "to": 3.0}).ok
-    p = k.chain.fk(k.state.q)[:3, 3]
-    k.world.add_box("block", "object", center=p, size=[0.04, 0.04, 0.06], frame="base")
+    supported_object(k)
+    from dataclasses import replace
+    read = k.body.read
+    monkeypatch.setattr(k.body, "read", lambda: replace(read(), gripper_tau=5 if k.cmd.gripper < 2.3 else 0))
     out = k.run([{"do": "hold", "seconds": 0.1}, {"do": "gripper", "to": 1.0}])
     assert out.status == "surprise" and out.message.startswith("step 2/2: gripper")
     assert sum(e["kind"] == "gripper_trip" for e in k.events.since(0)) == 1
@@ -763,8 +759,7 @@ def test_a_grip_of_the_wrong_width_still_holds_and_home_does_not_let_go():
     truth = World()                                           # the simulator knows the block, the kernel does not
     k = make_kernel(sim_world=truth)
     assert k.run([{"do": "line", "forward": 0.08, "up": 0.06}, {"do": "gripper", "to": 3.0}]).ok
-    p = k.chain.fk(k.state.q)[:3, 3]
-    truth.add_box("block", "object", center=p, size=[0.04, 0.04, 0.06], frame="base")
+    supported_object(k, known=False)
     out = k.run({"do": "grip", "expect_mm": [10, 20]})
     assert out.status == "surprise" and k.held_at is not None and k.world.held is None
     k.set_home_route([])
@@ -780,8 +775,7 @@ def test_grip_squeezes_by_the_grippers_own_amount(lifted):
     k = lifted
     assert k.manifest.gripper.squeeze == 0.05 and "grip squeezes 0.05 rad past contact" in views.card(k)
     assert k.run({"do": "gripper", "to": 3.0}).ok
-    p = k.chain.fk(k.state.q)[:3, 3]
-    k.world.add_box("block", "object", center=p, size=[0.04, 0.04, 0.06], frame="base")
+    supported_object(k)
     out = k.run({"do": "grip"})
     assert out.ok and abs(k.cmd.gripper - (out.data["contact_at"] - 0.05)) < 2e-3
 
@@ -868,12 +862,11 @@ def _across(k):
 def test_grasp_searches_on_the_spot_after_a_miss_and_holds_what_it_finds(lifted):
     k = lifted
     tool = k.chain.fk(k.state.q)[:3, 3]
-    k.body.world.add_box("block", "object", center=tool + 0.012 * _across(k), size=[0.004, 0.004, 0.03],
-                         grip_width=0.012, frame="base")
+    supported_object(k, size=[.004, .012, .04], center=tool - .046 * _across(k))
     assert k.run({"do": "grip", "start": 3.0}).status == "surprise"          # a plain grip misses it
-    out = k.run({"do": "grasp", "start": 3.0, "expect": [0.4, 1.0], "search_mm": [[-12, 0], [12, 0]]})
-    assert out.ok and out.data["tries"] == 3 and out.data["offset_mm"] == [12.0, 0.0], out.message
-    assert np.linalg.norm(k.chain.fk(k.state.q)[:3, 3] - (tool + 0.012 * _across(k))) < 0.003
+    out = k.run({"do": "grasp", "start": 3.0, "expect": [0.4, 1.0], "search_mm": [[12, 0], [-64, 0]]})
+    assert out.ok and out.data["tries"] == 3 and out.data["offset_mm"] == [-64.0, 0.0], out.message
+    assert np.linalg.norm(k.chain.fk(k.state.q)[:3, 3] - (tool - 0.064 * _across(k))) < 0.003
     assert any(e["kind"] == "grasp_retry" for e in k.events.since(0))
 
 
@@ -884,15 +877,14 @@ def test_grasp_that_finds_nothing_is_a_surprise_after_its_last_try(lifted):
 
 def test_a_weak_grip_is_a_surprise_and_grasp_retries_it(lifted):
     k = lifted
-    tool = k.chain.fk(k.state.q)[:3, 3]
-    k.body.world.add_box("block", "object", center=tool, size=[0.004, 0.004, 0.03], grip_width=0.012, frame="base")
+    supported_object(k, size=[.012, .012, .04])
     firm = k.run({"do": "grip", "start": 3.0, "expect": [0.4, 1.0]})
     assert firm.ok and firm.data["holding_effort"] is not None
     k.run({"do": "gripper", "to": 3.0})
-    weak = k.run({"do": "grip", "start": 3.0, "hold_effort": 2 * abs(firm.data["holding_effort"])})
+    weak = k.run({"do": "grip", "start": 3.0, "hold_effort": max(.2, 2 * abs(firm.data["holding_effort"]))})
     assert weak.status == "surprise" and "weak grip" in weak.message, weak.message
     k.run({"do": "gripper", "to": 3.0})
-    strict = 2 * abs(firm.data["holding_effort"])
+    strict = max(.2, 2 * abs(firm.data["holding_effort"]))
     out = k.run({"do": "grasp", "start": 3.0, "hold_effort": strict, "search_mm": [[4, 0]]})
     assert out.status == "surprise" and out.data["tries"] == 2 and "weak grip" in out.message
     assert any(e["kind"] == "grasp_retry" and "weak grip" in e["message"] for e in k.events.since(0))
@@ -904,9 +896,8 @@ def test_grasp_lifts_past_the_turn_height_before_it_shifts(lifted):
     up = float(k.world.from_base("work", tool)[2])
     k.envelope.override("turn_height", up + 0.03, "the base may only turn 3 cm higher")    # 8 mm would not do
     along = np.cross(_across(k), [0.0, 0.0, 1.0])                  # sideways: a shift this way turns the base
-    k.body.world.add_box("block", "object", center=tool + 0.04 * along, size=[0.004, 0.004, 0.03],
-                         grip_width=0.012, frame="base")
-    out = k.run({"do": "grasp", "start": 3.0, "expect": [0.4, 1.0], "search_mm": [[0, 40], [0, -40]]})
+    supported_object(k, size=[.012, .012, .04], center=tool + .065 * along + .018 * _across(k))
+    out = k.run({"do": "grasp", "start": 3.0, "expect": [0.4, 1.0], "search_mm": [[0, 65], [0, -65]]})
     assert out.ok and out.data["tries"] in (2, 3), out.message
 
 
@@ -946,11 +937,10 @@ def test_a_gripper_trip_ends_the_grasp_without_retrying(lifted, monkeypatch, pha
     k.tick()
     assert job.status == "surprise" and k.active is None
     assert k.cmd.gripper == k.state.gripper and k.cmd.gripper_v == 0
-    frozen = k.cmd.gripper
     for _ in range(5):
         k.clock.wait()
         k.tick()
-    assert k.cmd.gripper == pytest.approx(frozen)
+    assert k.cmd.gripper == k.state.gripper and k.cmd.gripper_v == 0
     assert sum(e["kind"] == "grasp_retry" for e in k.events.since(0)) == retries
 
 

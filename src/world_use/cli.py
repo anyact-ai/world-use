@@ -145,6 +145,10 @@ def main(argv=None) -> int:
     p.add_argument("run", type=Path)
     p.add_argument("--out", type=Path)
     p.add_argument("--speed", type=float, default=1.0)
+    p = sub.add_parser("view", help="open a read-only Rerun viewer for the local daemon or a recorded run")
+    p.add_argument("run", nargs="?", type=Path, help="run folder; defaults to the local daemon's active record")
+    p.add_argument("--follow", action="store_true", help="follow new samples in the supplied run folder")
+    p.add_argument("--out", type=Path, help="save a portable .rrd instead of opening a window")
     p = sub.add_parser("calibrate", help="find where a camera is from the arm: answer where it sees the tool point")
     p.add_argument("camera")
     p.add_argument("--points", type=int, default=8, help="corners of the box to visit (6-8)")
@@ -213,6 +217,18 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     c = Client(a.url)
     try:
+        if a.cmd == "view":
+            from .visualization import view
+            folder = a.run
+            if folder is None:
+                recorded = c.status().get("recording", {}).get("path")
+                if not recorded:
+                    raise ValueError("the daemon has no run folder; start it with --runs or supply a saved run")
+                folder = Path(recorded)
+            result = view(folder, output=a.out, follow=a.follow or a.run is None)
+            if result is not None:
+                print(json.dumps(dict(path=str(result))) if a.json else result)
+            return 0
         if a.cmd == "demo":
             from .examples.pick_place import run
             result = run(a.out, a.scenario, video=not a.no_video)
@@ -286,7 +302,7 @@ def main(argv=None) -> int:
         print(f"{a.cmd}: {e}", file=sys.stderr)
         return 2
     except OSError as e:
-        if a.cmd in ("demo", "inspect", "replay", "fit", "policy", "up"):
+        if a.cmd in ("demo", "inspect", "replay", "view", "fit", "policy", "up"):
             print(f"{a.cmd}: {e}", file=sys.stderr)
             return 2
         print(f"cannot reach the daemon at {a.url} ({e}); start it with: wu up", file=sys.stderr)

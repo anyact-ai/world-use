@@ -22,6 +22,14 @@ def main():
         subprocess.run([sys.executable, "-m", "world_use", "demo", "--out", str(root / "demo"), "--no-video"],
                        check=True, cwd=root, stdout=subprocess.DEVNULL)
         assert inspect(root / "demo")["closed"]
+        moved = root / "moved-record"
+        (root / "demo").rename(moved)
+        subprocess.run([sys.executable, "-m", "world_use", "view", str(moved),
+                        "--out", str(root / "demo.rrd")], check=True, cwd=root, stdout=subprocess.DEVNULL)
+        from rerun.chunk import RrdReader
+        recording = RrdReader(root / "demo.rrd")
+        assert recording.recordings() and recording.blueprints()
+        assert any("visual_geometries" in c.entity_path for c in recording.stream())
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
@@ -30,6 +38,7 @@ def main():
                                   str(port), "--runs", str(root / "runs")], cwd=root,
                                  stdout=log, stderr=subprocess.STDOUT)
             c = Client(f"http://127.0.0.1:{port}")
+            viewer = None
             try:
                 deadline = time.monotonic() + 20
                 while not c.alive():
@@ -38,7 +47,13 @@ def main():
                         raise RuntimeError(log.read())
                     time.sleep(.05)
                 assert c.status()["session"]["mode"] == "simulation"
+                viewer_cwd = root / "viewer"
+                viewer_cwd.mkdir()
+                viewer = subprocess.Popen([sys.executable, "-m", "world_use", "--url", c.url,
+                                           "view", "--out", str(root / "live.rrd")],
+                                          cwd=viewer_cwd, stdout=log, stderr=subprocess.STDOUT)
                 assert Path(c.look("side")["path"]).is_file()
+                assert not c.status()["enabled"]
                 c.enable()
                 assert c.run({"do": "line", "up": .06}, wait=10)["status"] == "done"
                 c.home_route([])
@@ -51,11 +66,18 @@ def main():
                 c.shutdown()
                 p.wait(timeout=10)
                 assert p.returncode == 0
+                viewer.wait(timeout=20)
+                assert viewer.returncode == 0
+                live = RrdReader(root / "live.rrd")
+                assert any(c.entity_path == "/observations/side" for c in live.stream())
             finally:
+                if viewer is not None and viewer.poll() is None:
+                    viewer.terminate()
+                    viewer.wait(timeout=5)
                 if p.poll() is None:
                     p.kill()                # this script only ever creates a simulated daemon
                     p.wait(timeout=5)
-    print("Installed wheel: demo, policy, camera, MCP, checked motion, home and shutdown passed")
+    print("Installed wheel: demo, portable Rerun export, policy, camera, MCP, checked motion, home and shutdown passed")
 
 
 if __name__ == "__main__":

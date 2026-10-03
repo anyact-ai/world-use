@@ -122,11 +122,12 @@ def test_home_routes_reject_checkpoints_and_can_be_cleared_from_the_cli(client):
     assert "not available" in client.status()["home"]
 
 
-def test_check_does_not_move_the_robot(client):
-    before = client.status()["joints_deg"]
+def test_check_does_not_move_the_robot(daemon):
+    d, client = daemon
+    before = d.k.cmd.q.copy()
     r = client.check({"do": "line", "up": 0.05})
     assert r["ok"] and "check passed" in r["text"]
-    assert np.allclose(client.status()["joints_deg"], before, atol=0.01)
+    np.testing.assert_array_equal(d.k.cmd.q, before)
 
 
 def test_frame_returns_native_pixels_without_creating_records(daemon, tmp_path):
@@ -167,14 +168,14 @@ def test_facts_and_events(client):
 
 def test_run_rehearses_and_refuses_the_whole_plan_with_every_problem_before_anything_moves(daemon):
     d, c = daemon
-    before = c.status()["joints_deg"]
+    before = d.k.cmd.q.copy()
     jobs = len(d.k.jobs)
     r = c.run([{"do": "line", "up": 0.03}, {"do": "line", "left": 0.05}, {"do": "joints", "delta_deg": {"1": 130}}],
               wait=5)
     assert r["status"] == "refused" and r["id"] is None
     assert "step 2/3" in r["incident"] and "step 3/3" in r["incident"] and "from here" in r["incident"]
     assert len(d.k.jobs) == jobs                                        # not even the first step was submitted
-    assert np.allclose(c.status()["joints_deg"], before, atol=0.01)
+    np.testing.assert_array_equal(d.k.cmd.q, before)
 
 
 def test_run_without_the_rehearsal_is_refused_by_the_kernel_at_the_step(client):

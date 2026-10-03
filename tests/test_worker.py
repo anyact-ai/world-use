@@ -73,6 +73,7 @@ def test_preparation_keeps_feedback_and_stop_responsive(k):
     import numpy as np
 
     pending = Future()
+    before = k.cmd.q.copy()
     k.planner = SimpleNamespace(prepare=lambda spec, robot: (pending, plan.snapshot(robot)))
     job = k.submit([{"do": "line", "up": 0.03}])
     for _ in range(50):
@@ -80,7 +81,7 @@ def test_preparation_keeps_feedback_and_stop_responsive(k):
         k.clock.wait()
     assert job.status == "running" and not job.behavior.moves
     assert len(k.tape) == 50 and k.feedback_at == pytest.approx(k.clock.now() - k.clock.dt)
-    assert np.allclose(k.cmd.q, k.q_start)
+    np.testing.assert_array_equal(k.cmd.q, before)
     k.stop("operator stop during planning")
     k.tick()
     assert job.status == "stopped" and not pending.done()

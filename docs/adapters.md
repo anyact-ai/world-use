@@ -113,7 +113,9 @@ For robots with a `turn_clearance` rule, an operator can set
 with `turn_reason` explaining the scene clearance. This replaces the default
 height relative to the starting pose and applies to execution and rehearsal.
 
-`--body sim` uses the same robot description with `[simulation]` settings. Driver
+`--body sim` uses MuJoCo with the same robot description and `[simulation]` settings.
+Provide valid inertias, collision geometry, and every referenced visual mesh;
+see [simulation requirements](simulation.md#other-robots). Driver
 options stay with the driver. Existing `sim`, `sim:rebot`, `rebot` and
 `[body_options]` simulation workcells continue to work. The built-in reBot driver
 uses its own model; a different robot uses its own adapter and description.

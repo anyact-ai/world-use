@@ -13,9 +13,12 @@ wu inspect runs/block-demo
 wu replay runs/block-demo --out runs/block-replay.gif
 ```
 
-`wu demo` runs a **scripted policy** in the included kinematic simulator. It makes
+`wu demo` runs a **scripted policy** in the MuJoCo simulator. It makes
 no model API calls and does not connect to a running daemon or physical hardware.
-Its GIF contains frames captured during that simulation, at 3× playback.
+Its GIF contains frames captured during that simulation, at 3× playback. The same
+frames are saved under `views/` with timestamps in the event log. With the
+optional Rerun extra, `wu view runs/block-demo` shows them alongside the robot,
+world estimates, telemetry, and events on a scrubbable timeline.
 `wu replay` separately reconstructs the recorded joints and world model; those
 frames are labeled as a reconstruction, not original camera observations.
 Use a new output directory for each run.
@@ -59,5 +62,6 @@ The reference discards the disproved box position, opens, retreats, and returns
 home. It does not retry the same guess. This recovery is specific to the example's
 clear tray; a different scene needs a different return route.
 
-These are small regression scenarios. The simulator does not model slip, tipping,
-or realistic grasp forces, and these results do not predict hardware success.
+These are small regression scenarios with rigid-body contacts and frictional
+grasps. Servo gains, friction, and heating remain approximate; these results do
+not predict hardware success. See the [simulation model](../../docs/simulation.md).

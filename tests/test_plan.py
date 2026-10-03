@@ -1,6 +1,7 @@
 """Rehearsal: a plan checked on a twin reports what will happen, and nothing real moves."""
 import numpy as np
 import pytest
+from conftest import table_below
 
 from world_use import Plan, Refused, check
 
@@ -16,8 +17,7 @@ def test_plan_builds_a_spec_from_any_registered_behavior():
 
 def test_check_rehearses_on_a_twin_without_moving_the_robot(lifted):
     k = lifted
-    top = k.chain.fk(k.state.q)[2, 3] - 0.04
-    k.world.add_box("table", "surface", center=[0.3, 0, top - 0.01], size=[1, 1, 0.02])
+    table_below(k)
     q_before, sim_q_before = k.cmd.q.copy(), k.body.q.copy()
     p = Plan().touchdown(max=0.08).checkpoint(ask="is it on the table?").line(up=0.05)
     report = check(p, k)
