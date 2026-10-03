@@ -33,7 +33,8 @@ from .config import load_robot, load_workcell
 from .errors import Refused, explain
 from .fit import load as load_fit
 from .kernel import Kernel
-from .plan import Report, snapshot
+from .perception import EvidenceStore
+from .plan import Report, same_start, snapshot
 from .worker import Rehearser
 from .world import World
 
@@ -55,6 +56,7 @@ class Daemon:
             workcell_digest=hashlib.sha256(b"{}").hexdigest())
         self.cameras = dict(cams or {})
         kernel.cameras = self.cameras                    # the card lists them
+        self.evidence = EvidenceStore(kernel)
         kernel.record_session(session=self.session, config=config or {})
         self.shots = 0
         self.calibrations: dict[int, dict] = {}         # job id -> camera, picture size and, once solved, the result
@@ -119,13 +121,23 @@ class Daemon:
             return 200, dict(k.world.to_dict(), text=views.world_text(k))
         if method == "GET" and route == ["frame"]:
             _, cam = self._camera(query.get("camera"))
-            return 200, cam.capture(k).to_dict()
+            depth = str(query.get("depth", "false")).lower()
+            if depth not in ("true", "false", "1", "0"):
+                raise ValueError("depth must be true or false")
+            if depth in ("true", "1"):
+                if not isinstance(cam, cameras.SimCamera):
+                    raise Refused("this camera does not provide aligned metric depth", "missing_depth")
+                frame = cam.capture(k, depth=True)
+            else:
+                frame = cam.capture(k)
+            elapsed = k.clock.now() - k.t0 - (time.monotonic() - frame.timestamp)
+            return 200, self.evidence.remember(replace(frame, elapsed=elapsed)).to_dict()
         if method != "POST":
             return 404, dict(error=f"no route {method} /{path.strip('/')}")
         if route == ["run"]:
             if body.get("checked"):
                 raise Refused("submit the plan explicitly; checked plans are no longer shared between clients", "spec")
-            return self._run(body["spec"], wait, bool(body.get("check", True)))
+            return self._run(body["spec"], wait, bool(body.get("check", True)), body.get("requires", []))
         if route == ["look"]:
             return 200, self.look(body.get("camera"), body.get("spec"), bool(body.get("grid")))
         if route == ["check"]:
@@ -161,6 +173,12 @@ class Daemon:
         if route == ["calibrate"]:
             return self.calibrate(body["camera"], int(body.get("points", 8)), body.get("spread"), wait)
         if route == ["record"]:
+            if "evidence" in body:
+                receipt = self.evidence.register(body["evidence"])
+                if body.get("context") or body.get("note"):
+                    k.emit("annotation", body.get("note", "measurement context"),
+                           context=body.get("context", {}), evidence=receipt["id"])
+                return 200, receipt
             if body.get("context") or body.get("note"):
                 k.emit("annotation", body.get("note", "agent context"), context=body.get("context", {}))
             return 200, dict(summary=k.save_record(), run=str(k.run_dir) if k.run_dir else None)
@@ -168,10 +186,14 @@ class Daemon:
             return 200, dict(summary=self.shutdown())
         return 404, dict(error=f"no route POST /{path.strip('/')}")
 
-    def _run(self, spec, wait: float, rehearse: bool) -> tuple[int, dict]:
+    def _run(self, spec, wait: float, rehearse: bool, requires=None) -> tuple[int, dict]:
         """Rehearse an idle snapshot, then admit only while that snapshot is still current."""
-        build(spec)                  # malformed plans are request errors, before rehearsal or queueing
+        behavior = build(spec)       # malformed plans are request errors, before rehearsal or queueing
         k = self.k
+        requirements = self.evidence.resolve([] if requires is None else requires)
+        if requirements:
+            k.evidence_capable(behavior)
+            k.check_requirements(requirements)
         report: Report | None = None
         admission = None
         if rehearse:
@@ -183,20 +205,19 @@ class Daemon:
                     raise Refused("checked runs need an idle robot; another job is running, queued or stopping",
                                   "busy", "wait for it to finish, then retry")
                 snap = snapshot(k)
-                seq = k.events.seq
+                revision = k.control_revision
                 jobs = len(k.jobs)
 
             def admission():
-                current = snapshot(k)
+                gripper = k.state.gripper
                 # Temperature may drift while holding. Motion, scene/limit changes, lifecycle events and any
                 # intervening submission invalidate the check. Small encoder noise is allowed (0.01 rad/unit).
-                changed = (replace(current, q=snap.q, gripper=snap.gripper, temp=snap.temp) != snap
-                           or not np.allclose(current.q, snap.q, atol=0.01, rtol=0)
-                           or ((current.gripper is None) != (snap.gripper is None))
-                           or (current.gripper is not None and snap.gripper is not None
-                               and abs(current.gripper - snap.gripper) > 0.01))
+                changed = (not same_start(snap, k)
+                           or ((gripper is None) != (snap.gripper is None))
+                           or (gripper is not None and snap.gripper is not None
+                               and abs(gripper - snap.gripper) > 0.01))
                 own_job = k.active is not None and k.active.admission is admission
-                if (changed or k.events.seq != seq + int(own_job) or len(k.jobs) != jobs + int(own_job)
+                if (changed or k.control_revision != revision + int(own_job) or len(k.jobs) != jobs + int(own_job)
                         or k.queue or k._stop is not None or (k.active is not None and not own_job)
                         or not k.enabled or k.faulted or k.power_uncertain):
                     raise Refused("the robot or scene changed during rehearsal; nothing started", "stale_check",
@@ -208,7 +229,7 @@ class Daemon:
                         + self.rehearser.reach_line(k))
                 return 200, dict(id=None, status="refused", incident=text, rehearsal=report.to_dict(),
                                  line=views.state_line(k))
-        job = k.submit(spec, admission=admission)
+        job = k.submit(spec, admission=admission, requires=requirements)
         code, d = self._job(job.id, wait)
         if report is not None:
             d["rehearsal"] = dict(seconds=report.seconds, moving_s=report.moving_s, ok=report.ok)
@@ -311,15 +332,18 @@ class Daemon:
         why = calibrate.installable(fit, points, size)
         lines = calibrate.keep(fit, points, cut)
         if why is None:
-            if cut is None:
-                cam.view = fit.view
-            else:
-                pose = np.eye(4)
-                pose[:3, :3], pose[:3, 3] = fit.R.T @ cut.R.T, fit.C
-                cut.install(pose)
-            k.world.assert_fact(f"camera.{name}", lines.replace("\n", "; "),
-                                f"wu calibrate, job {job.id}: {len(fit.used)} points, fit {fit.rms:.0f} px")
-            k.emit("calibrated", f"{name}: fit {fit.rms:.0f} px, {fit.loo_rms:.0f} px each from the others; installed")
+            with k.lock:
+                k.changed()
+                if cut is None:
+                    cam.view = fit.view
+                else:
+                    pose = np.eye(4)
+                    pose[:3, :3], pose[:3, 3] = fit.R.T @ cut.R.T, fit.C
+                    cut.install(pose)
+                k.world.assert_fact(f"camera.{name}", lines.replace("\n", "; "),
+                                    f"wu calibrate, job {job.id}: {len(fit.used)} points, fit {fit.rms:.0f} px")
+                k.emit("calibrated",
+                       f"{name}: fit {fit.rms:.0f} px, {fit.loo_rms:.0f} px each from the others; installed")
         return dict(installed=why is None, lines=lines,
                     text=calibrate.describe(name, fit, answers, pixels, size, why, lines, cut is not None))
 
@@ -338,6 +362,7 @@ class Daemon:
         return 200, d
 
     def _world(self, body: dict) -> tuple[int, dict]:
+        self.k.changed()
         w = self.k.world
         if "fact" in body:
             f = body["fact"]

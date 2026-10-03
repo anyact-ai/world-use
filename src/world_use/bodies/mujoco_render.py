@@ -2,6 +2,7 @@
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
+import numpy as np
 from PIL import Image
 
 from .mujoco_scene import mj
@@ -29,10 +30,10 @@ class CameraRenderer:
             self.renderer = None
             self.model = None
 
-    def render(self, model, data, view):
-        return THREAD.submit(self._render, model, data, view).result()
+    def render(self, model, data, view, *, depth=False):
+        return THREAD.submit(self._render, model, data, view, depth).result()
 
-    def _render(self, model, data, view):
+    def _render(self, model, data, view, depth):
         if self.closed:
             raise RuntimeError("simulation camera is closed")
         size = (view.width, view.height)
@@ -54,10 +55,21 @@ class CameraRenderer:
             camera.pos = view.T[:3, 3]
             camera.forward = view.T[:3, 2]
             camera.up = -view.T[:3, 1]
-            near = .01
-            camera.frustum_near, camera.frustum_far = near, 20
+            near = model.vis.map.znear * model.stat.extent
+            far = model.vis.map.zfar * model.stat.extent
+            camera.frustum_near, camera.frustum_far = near, far
             camera.frustum_bottom = -(view.height - view.cy) * near / view.fy
             camera.frustum_top = view.cy * near / view.fy
             camera.frustum_center = (view.width / 2 - view.cx) * near / view.fx
             camera.frustum_width = view.width * near / (2 * view.fx)
-        return Image.fromarray(self.renderer.render())
+        self.renderer.disable_depth_rendering()
+        rgb = Image.fromarray(self.renderer.render())
+        if not depth:
+            return rgb
+        try:
+            self.renderer.enable_depth_rendering()
+            distance = self.renderer.render().copy()
+            distance[(distance <= 0) | (distance >= far * .999)] = np.nan
+            return rgb, distance
+        finally:
+            self.renderer.disable_depth_rendering()

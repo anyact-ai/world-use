@@ -132,6 +132,8 @@ class PathBehavior(Behavior):
             self.__dict__.update(prepared)
             self._pending = None
             k.rebias()
+        if self.i == 0:
+            k.check_evidence()
         return True
 
     def tick(self, k):
@@ -600,6 +602,8 @@ class Gripper(Behavior):
         self.i, self.settle = 0, int(0.3 * k.manifest.rate_hz)
 
     def tick(self, k):
+        if self.i == 0:
+            k.check_evidence()
         if self.i < len(self.traj):
             k.set_gripper(self.traj[self.i], self.v[self.i])
             self.i += 1
@@ -688,7 +692,7 @@ class Grip(Behavior):
         self.pre = None
         if start is not None and abs(start - here) > 0.02:             # open to the start width first, smoothly
             self.pre = Gripper(to=start)
-            self.pre.start(k)
+            k.start_behavior(self.pre)
         self.speed = speed * np.sign(g.closed - g.open)     # units/s, towards closed
         self.phase, self.contact, self.wait = "open", None, 0
         self.closed_wait = int(np.ceil(.2 * k.manifest.rate_hz))
@@ -700,6 +704,7 @@ class Grip(Behavior):
         if self.phase == "open":
             if self.pre is not None and self.pre.tick(k) is None:
                 return None
+            k.check_evidence()
             self.phase = "close"
         if self.phase == "close":
             effort = 0.0 if st.gripper_tau is None else abs(st.gripper_tau)
@@ -822,7 +827,7 @@ class Grasp(Behavior):
         while True:
             if self.current is None:
                 self.current = self.queue.popleft()
-                self.current.start(k)
+                k.start_behavior(self.current)
             out = self.current.tick(k)
             if out is None:
                 return None
@@ -948,7 +953,7 @@ class Sequence(Behavior):
                 k.rebias()
                 k.envelope.context = f"step {self.i + 1}/{len(self.steps)}: {self.current.describe()}"
                 try:
-                    self.current.start(k)
+                    k.start_behavior(self.current)
                 except Refused as e:
                     return Outcome("refused", self.current.kind, f"step {self.i + 1}/{len(self.steps)}: {e}",
                                    dict(step=self.i + 1, rule=e.rule), hint=e.hint)
@@ -986,6 +991,7 @@ class Sequence(Behavior):
 
 REGISTRY: dict[str, type[Behavior]] = {c.kind: c for c in (Joints, Line, Lines, MoveTo, Guarded, Touchdown, Gripper,
                                                             Grip, Grasp, Hold, Checkpoint, Sequence)}
+BUILTINS = frozenset(REGISTRY.values())
 
 
 def register(cls: type[Behavior]) -> type[Behavior]:

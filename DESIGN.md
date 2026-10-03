@@ -153,6 +153,15 @@ observations carry frame identity and age, and do not update world facts or comm
 body. Procedures decide how to use them between checked phases; inference never belongs
 in a behavior tick. See the [tracking example](examples/tracking).
 
+MuJoCo frames optionally include aligned metric depth and copied calibration. Pure
+measurement helpers describe visible surfaces; `Client.record(evidence=...)` registers
+their source pixels. `Client.run(..., requires=[...])` checks session, calibration and
+capture age before admission and subsequent steps, including with rehearsal disabled.
+Observations do not invalidate checked plans; control mutations still do. Source
+artifacts persist in a bounded background queue and appear in Rerun at their capture
+and availability times. See the [contracts and limits](docs/perception-design.md)
+and [perception-assisted block example](examples/perception).
+
 ## Where it goes
 
 Start with repeatable tasks on one arm. The [block example](examples/pick-place) gives

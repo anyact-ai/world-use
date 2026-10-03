@@ -210,16 +210,28 @@ class SimBody:
             mj.mj_forward(self.model, self.data)
 
     def render(self, view):
+        return self._capture(view, depth=False)[0]
+
+    def capture(self, view):
+        """RGB-D and tool pose from one physics snapshot, without advancing the scene."""
+        (rgb, depth), tool, timestamp = self._capture(view, depth=True)
+        return rgb, depth, tool, timestamp
+
+    def _capture(self, view, *, depth):
+        import time
+
         from .mujoco_render import CameraRenderer
         with self.lock:
             self._ensure_scene()
             model = self.model
             data = mj.MjData(model)
             mj.mj_copyData(data, model, self.data)
+            timestamp = time.monotonic()
+            tool = self.chain.fk(self.q).copy()
             if self._renderer is None:
                 self._renderer = CameraRenderer()
             renderer = self._renderer
-        return renderer.render(model, data, view)
+        return renderer.render(model, data, view, depth=depth), tool, timestamp
 
     def _update_world(self):
         d, m = self.data, self.model
