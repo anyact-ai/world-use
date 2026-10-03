@@ -6,6 +6,7 @@ a human touching the scene). Policies read the world instead of re-deriving it f
 from __future__ import annotations
 
 import time
+from copy import deepcopy
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -73,6 +74,14 @@ class Box:
             raise ValueError("box size must be three finite, positive lengths")
         if self.pose.shape != (4, 4) or not np.isfinite(self.pose).all():
             raise ValueError("box pose must be a finite 4x4 transform")
+        if self.kind == "fragile":
+            try:
+                dtau = float(self.params.get("dtau", 0.3))
+            except (TypeError, ValueError):
+                raise ValueError("a fragile zone needs a finite, positive dtau in Nm") from None
+            if not np.isfinite(dtau) or dtau <= 0:
+                raise ValueError("a fragile zone needs a finite, positive dtau in Nm")
+            self.params = dict(self.params, dtau=dtau)
         if self.kind == "slow":
             speed = float(self.params.get("speed", float("nan")))
             if not np.isfinite(speed) or speed <= 0:
@@ -188,7 +197,7 @@ class World:
         return dict(centre=centre, size=box.size.copy(), yaw_deg=float(np.degrees(np.arctan2(R[1, 0], R[0, 0]))),
                     top=float(centre[2] + R[2, 2] * box.size[2] / 2))
 
-    # -- objects in the hand ----------------------------------------------------------------------
+    # -- estimated object attachment (not simulation physics) --------------------------------------
     def object_at(self, p, margin: float = 0.005) -> Box | None:
         """The object whose box holds point p (the tool point between the jaws), if any."""
         for box in self.of_kind("object"):
@@ -197,7 +206,7 @@ class World:
         return None
 
     def grab(self, tool_T) -> Box | None:
-        """The object at the tool point now rides along with the tool."""
+        """Estimate that the object at the tool point is attached to the tool."""
         box = self.object_at(tool_T[:3, 3])
         if box is not None:
             self.held = (box.name, np.linalg.inv(tool_T) @ box.pose)
@@ -209,7 +218,7 @@ class World:
             self.boxes[name].pose = np.asarray(tool_T) @ rel
 
     def drop(self) -> Box | None:
-        """Let go: the object lands upright on the highest surface under it (no physics, no tipping)."""
+        """Estimate an upright placement on the highest surface below; MuJoCo resolves actual motion."""
         if self.held is None:
             return None
         box = self.boxes.get(self.held[0])
@@ -253,10 +262,12 @@ class World:
         for n, f in (d.get("frames") or {}).items():
             w.frames[n] = Frame(n, np.array(f["T"], float), f.get("source", "config"), f.get("t", time.time()))
         for n, b in (d.get("boxes") or {}).items():
-            w.boxes[n] = Box(n, b["kind"], np.array(b["pose"], float), np.array(b["size"], float), b.get("params", {}),
+            w.boxes[n] = Box(n, b["kind"], np.array(b["pose"], float), np.array(b["size"], float),
+                             deepcopy(b.get("params", {})),
                              b.get("source", "config"), b.get("t", time.time()))
         for k, f in (d.get("facts") or {}).items():
-            w.facts[k] = Fact(k, f["value"], f["source"], f.get("t", time.time()), f.get("note", ""), f.get("stale"))
+            w.facts[k] = Fact(k, deepcopy(f["value"]), f["source"], f.get("t", time.time()),
+                             f.get("note", ""), f.get("stale"))
         if d.get("held"):
             w.held = (d["held"]["name"], np.array(d["held"]["rel"], float))
         return w

@@ -16,12 +16,19 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = ["numpy>=1.26", "pillow>=10.1"]
+dependencies = [
+    "mujoco>=3.14,<4",
+    "numpy>=1.26",
+    "pillow>=10.1",
+]
 
 [project.optional-dependencies]
 rebot = ["motorbridge==0.5.5"]
 mcp = ["mcp>=2.2"]
 vision = ["torch==2.14.0", "torchvision==0.29.1", "transformers==5.15.1", "timm>=1.0.30,<2"]
+rerun = [
+    "rerun-sdk>=0.38.1,<0.39",
+]
 
 [project.scripts]
 wu = "world_use.cli:main"
@@ -30,7 +37,7 @@ wu = "world_use.cli:main"
 Repository = "https://github.com/anyact-ai/world-use"
 
 [dependency-groups]
-dev = ["pytest>=9", "ruff>=0.16", "ty>=0.0.84", "mcp>=2.2"]
+dev = ["pytest>=9", "ruff>=0.16", "ty>=0.0.84", "mcp>=2.2", "rerun-sdk>=0.38.1,<0.39"]
 
 [build-system]
 requires = ["hatchling"]
@@ -50,3 +57,4 @@ ignore = ["RUF005", "RUF012"]    # tuple concatenation reads fine; behavior exam
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["rendering: requires a working MuJoCo OpenGL context (unavailable on hosted macOS VMs)"]

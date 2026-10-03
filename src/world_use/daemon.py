@@ -111,7 +111,8 @@ class Daemon:
         if method == "GET" and route == ["events"]:
             since = int(query.get("since", 0))
             events = k.events.wait(since, wait) if wait else k.events.since(since)
-            return 200, dict(events=events, last=k.events.seq)
+            return 200, dict(events=events, last=events[-1]["seq"] if events else since,
+                             missed=max(0, events[0]["seq"] - since - 1) if events else 0)
         if method == "GET" and route[0] == "jobs" and len(route) == 2:
             return self._job(int(route[1]), wait)
         if method == "GET" and route == ["world"]:
@@ -240,7 +241,7 @@ class Daemon:
         tool = k.world.from_base("work", k.chain.fk(k.state.q)[:3, 3])
         drawn = ("magenta cross = tool point; green outlines = the boxes the kernel knows; F/L/U = work axes"
                  + ("; blue = the plan's tool path" if report is not None else "")
-                 + ("; floor grid: 10 cm squares" if isinstance(cam, cameras.SimCamera) else "")) \
+                 + ("; MuJoCo simulation" if isinstance(cam, cameras.SimCamera) else "")) \
             if cam.view is not None else "no calibration for this camera, so nothing is drawn on it"
         caption = f"{name} | t+{k.clock.now() - k.t0:.0f}s | tool F{tool[0]:+.3f} L{tool[1]:+.3f} U{tool[2]:+.3f}"
         img = cameras.overlay(img, cam.view, k, None if report is None else report.tool_path, caption)

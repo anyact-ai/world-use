@@ -45,6 +45,20 @@ wu home-route '[]' && wu home && wu down
 `check` rehearses without running. A failed limit check starts nothing. The final
 line uses this example's clear return path, releases at rest, and closes the session.
 
+For an interactive 3D viewer with synchronized cameras, joint plots, and events:
+
+```sh
+uv tool install --force --python 3.13 "world-use[rerun] @ git+https://github.com/anyact-ai/world-use"
+wu view runs/block-demo
+wu view                       # follow the local daemon's recording
+```
+
+Rerun is optional and runs outside the control loop. The viewer shows measured
+joints and the estimated world alongside saved camera observations. Closing it
+does not stop a job. See [visualization and headless export](docs/visualization.md).
+
+![MuJoCo block demo in Rerun: measured robot and estimated world, camera observation, joint plots, and events](docs/assets/simulation-rerun.png)
+
 ## Give it to an agent
 
 Start the daemon and give your agent `wu policy`, the installed operating brief,
@@ -109,10 +123,11 @@ Telemetry is saved in background chunks so an interrupted process still leaves
 an inspectable record. [Record format and replay](docs/records.md) explain what is
 preserved. `wu fit` can estimate link masses and joint friction from recorded runs.
 
-The simulator approximates contact and heating; it does not model slipping,
-tipping, or general rigid-body dynamics. Keep-outs use padded link segments and
-surface checks use the tool point. Fingers, payloads, and self-collision need
-separate clearance. A passing rehearsal depends on what the world model knows.
+The simulator uses MuJoCo with the real reBot meshes, rigid-body contacts,
+frictional grasps, and rendered cameras. Objects can slip, tip, and fall.
+Actuator and thermal models remain approximate. Planning still uses padded link
+keep-outs and tool-point surface checks; a passing rehearsal depends on what the
+world model knows. See [simulation setup and assumptions](docs/simulation.md).
 
 For physical hardware, use the [reBot setup guide](docs/rebot.md). Keep an operator
 at the motor-supply switch. A stopped job still holds with torque; a raised arm
@@ -144,5 +159,5 @@ inspired writing and testing robot programs outside the control loop, and
 
 ## License
 
-Apache-2.0. The reBot URDF is Seeed Studio's, under CERN-OHL-W-2.0;
+Apache-2.0. The reBot URDF and meshes are Seeed Studio's, under CERN-OHL-W-2.0;
 see the [notice](src/world_use/bodies/rebot/NOTICE.md).

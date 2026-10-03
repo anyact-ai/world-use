@@ -23,14 +23,15 @@ jobs:
       - run: uv sync --locked
       - run: uv run ruff check .
       - run: uv run ty check src
-      - run: uv run pytest
+      - run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1-mesa-dri
+      - run: uv run --extra rerun pytest
       - run: uv build
       - name: Check the wheel before publishing
         shell: bash
         run: |
           uv venv "$RUNNER_TEMP/wheel-test"
           for task_wheel in dist/*.whl; do
-            uv pip install --python "$RUNNER_TEMP/wheel-test/bin/python" "${task_wheel}[mcp]"
+            uv pip install --python "$RUNNER_TEMP/wheel-test/bin/python" "${task_wheel}[mcp,rerun]"
           done
           "$RUNNER_TEMP/wheel-test/bin/python" scripts/wheel_smoke.py
       - run: uv publish --trusted-publishing always

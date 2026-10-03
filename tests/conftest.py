@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from PIL import Image
 
 from world_use import Kernel, RealClock, VirtualClock, World, bodies, cameras
 from world_use.client import Client
@@ -21,7 +22,9 @@ def make_kernel(world=None, sim_world=None, q=Q_REST, gripper=1.0, **sim_options
 
 @pytest.fixture
 def k():
-    return make_kernel()
+    robot = make_kernel()
+    yield robot
+    robot.close()
 
 
 @pytest.fixture
@@ -29,7 +32,8 @@ def lifted():
     """Kernel with the arm 8 cm forward and 6 cm up from rest (the pose used on hardware)."""
     k = make_kernel()
     assert k.run({"do": "line", "forward": 0.08, "up": 0.06}).ok
-    return k
+    yield k
+    k.close()
 
 
 @pytest.fixture(scope="session")
@@ -61,8 +65,40 @@ def daemon(tmp_path, rehearser):
     yield d, c
     d.stop_loop.set()
     d.http.shutdown()
+    d.control.join(timeout=5)
+    d.http.server_close()
+    d.k.close()
 
 
 @pytest.fixture
 def client(daemon):
     return daemon[1]
+
+
+@pytest.fixture
+def file_camera(daemon, tmp_path):
+    """Exercise image transport and overlays without requiring a graphics context."""
+    d, _ = daemon
+    path = tmp_path / "camera.png"
+    Image.new("RGB", (800, 600), "gray").save(path)
+    d.cameras["side"] = cameras.FileCamera("side", path, d.cameras["side"].view, max_age_s=300)
+
+
+def supported_object(k, name="block", size=(.04, .04, .06), center=None, *, known=True):
+    """Place an upright object inside the finger pads, on a pedestal clear of the arm."""
+    ahead = k.tool[:3, :3] @ np.asarray(k.manifest.gripper.approach)
+    point = k.tool[:3, 3] - .018 * ahead if center is None else np.asarray(center, float)
+    yaw = np.degrees(np.arctan2(ahead[1], ahead[0]))
+    for w in (k.world, k.body.world) if known else (k.body.world,):
+        w.add_box(name, "object", center=point, size=size, yaw_deg=yaw)
+        bottom = point[2] - size[2] / 2
+        w.add_box(name + " support", "surface", center=[point[0], point[1], bottom - .005],
+                  size=[max(.02, size[0]), max(.02, size[1]), .01], yaw_deg=yaw)
+
+
+def table_below(k, distance=.04, *, name="table", known=True):
+    point = k.tool[:3, 3].copy()
+    point[2] -= distance + .01
+    for w in (k.world, k.body.world) if known else (k.body.world,):
+        w.add_box(name, "surface", center=point, size=[.07, .10, .02])
+    return point[2] + .01

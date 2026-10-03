@@ -73,6 +73,7 @@ def test_a_tour_on_the_simulator_calibrates_a_camera_that_sees_it():
     assert len(seen) >= 6 and fit.rms < 16 and miss < 15
 
 
+@pytest.mark.rendering
 def test_the_daemon_calibrates_a_camera_and_installs_it(client, daemon):
     d, c = daemon
     lens = d.cameras["side"].lens

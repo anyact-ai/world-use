@@ -41,9 +41,12 @@ def inspect(folder: Path | str) -> dict:
         elif e["kind"] == "finished":
             jobs.setdefault(data["job"], {}).update(outcome=data.get("outcome", {"status": data["status"]}))
     a = load_tape(folder)
+    summary = Tape._summary(a, None)
+    if (folder / "recording.json").exists():
+        summary["recording_lost"] = json.loads((folder / "recording.json").read_text())
     return dict(run=str(folder.resolve()), session=session,
                 closed=any(e["kind"] == "closed" for e in log),
-                summary=Tape._summary(a, None), jobs=jobs,
+                summary=summary, jobs=jobs,
                 incidents=[e for e in log if e["level"] in ("warn", "alarm")],
                 observations=[e for e in log if e["kind"] in ("look", "annotation", "answer")])
 
@@ -55,6 +58,8 @@ def describe(record: dict) -> str:
              f"world-use {meta.get('package_version', 'unknown')} | "
              + ("closed normally" if record["closed"] else "open or interrupted record"),
              f"{s.get('ticks', 0)} samples; powered {s.get('powered_s', 0)} s; moving {s.get('moving_s', 0)} s"]
+    if "recording_lost" in s:
+        lines.append(f"INCOMPLETE RECORD: {s['recording_lost']}; durations and extrema may be incomplete")
     for job, data in record["jobs"].items():
         out = data.get("outcome", {})
         lines.append(f"job {job}: {out.get('status', 'no recorded outcome')} {out.get('message', '')}".rstrip())
@@ -90,24 +95,31 @@ def replay(folder: Path | str, output: Path | str, fps: int = 12, speed: float =
     view = cameras.View.look_at(world.to_base("work", [.7, -.8, .65]),
                                 world.to_base("work", [.30, 0, .18]), size=(800, 500))
     changes = [e for e in events(folder) if "world" in e.get("data", {})]
+    from .bodies.sim import SimBody
+    scene = SimBody(manifest, world)
     change, frames = 0, []
     times = np.arange(a["t"][0], a["t"][-1] + 0.5 * speed / fps, speed / fps)
     if len(times) > 7200:
         raise ValueError("replay exceeds 7200 frames; increase --speed")
-    for t in times:
-        i = min(int(np.searchsorted(a["t"], t)), len(a["t"]) - 1)
-        while change < len(changes) and changes[change]["t"] <= a["t"][i]:
-            world = World.from_dict(changes[change]["data"]["world"])
-            change += 1
-        world.carry(chain.fk(a["q"][i]))
-        g = manifest.gripper
-        opening = g.aperture(a["grip"][i]) if g is not None and np.isfinite(a["grip"][i]) else None
-        img = cameras.render(view, world, chain, a["q"][i], g, opening)
-        draw = ImageDraw.Draw(img)
-        draw.rectangle((0, 0, img.width, 34), fill=(246, 246, 246))
-        draw.text((14, 8), f"RECORDED JOINTS + WORLD MODEL  |  {t:.1f}s  |  {speed:g}x",
-                  fill=cameras.INK, font=ImageFont.load_default(size=15))
-        frames.append(img)
+    try:
+        for t in times:
+            i = min(int(np.searchsorted(a["t"], t)), len(a["t"]) - 1)
+            while change < len(changes) and changes[change]["t"] <= a["t"][i]:
+                world = World.from_dict(changes[change]["data"]["world"])
+                change += 1
+            world.carry(chain.fk(a["q"][i]))
+            g = manifest.gripper
+            grip = float(a["grip"][i]) if g is not None and np.isfinite(a["grip"][i]) else (g.closed if g else None)
+            scene.world = world
+            scene.reset(a["q"][i], grip)
+            img = scene.render(view)
+            draw = ImageDraw.Draw(img)
+            draw.rectangle((0, 0, img.width, 34), fill=(246, 246, 246))
+            draw.text((14, 8), f"RECORDED JOINTS + WORLD MODEL  |  {t:.1f}s  |  {speed:g}x",
+                      fill=cameras.INK, font=ImageFont.load_default(size=15))
+            frames.append(img)
+    finally:
+        scene.close()
     output.parent.mkdir(parents=True, exist_ok=True)
     frames[0].save(output, save_all=True, append_images=frames[1:], duration=round(1000 / fps), loop=0)
     return output.resolve()

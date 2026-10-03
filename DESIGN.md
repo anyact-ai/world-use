@@ -114,7 +114,9 @@ a twin from those data without importing the hardware driver or a body registry.
 
 Records include startup state, plans and structured outcomes. A background journal saves
 events and incremental telemetry once per second; offline inspection can recover committed chunks
-without the daemon. See the [record format](docs/records.md).
+without the daemon. Persisted runs retire saved telemetry and bound pending buffers;
+storage overruns remain visible in status and the record. Summaries accumulate off
+the control thread without rebuilding the complete tape. See the [record format](docs/records.md).
 
 ## Two loops, one runtime
 
@@ -134,8 +136,15 @@ So world-use serves both loops with the same kernel, behaviors and records:
 - **Between them**: online runs leave flight records; those records tune the twin and become test cases for
   the next offline iteration.
 
-We do not require ROS, a GPU simulator or an industrial arm. The core is numpy, Pillow and the standard library,
-so a laptop and a low-cost arm are enough.
+The core uses MuJoCo for simulation, numpy for planning, and Pillow for image overlays.
+MuJoCo steps rigid-body dynamics and renders the same scene with the robot's meshes;
+gripping uses frictional contacts. The kernel's world remains an estimate, separate from
+simulation truth, and rehearsals use that estimate. Servo parameters and motor heating
+remain approximate. See [simulation](docs/simulation.md) for the model and rendering requirements.
+Neither ROS nor a GPU is required. The optional Rerun viewer consumes committed
+flight records in a separate process. It never imports a hardware driver or
+rehearses a plan; its 3D objects are labeled as estimates. See
+[visualization](docs/visualization.md).
 
 Optional perception runs in the procedure's process. `Client.frame()` reads an unannotated
 camera frame without adding a flight-record image; `look` remains the recorded, annotated
@@ -155,7 +164,7 @@ Near-term work should follow experiments:
 
 - Improve camera setup and estimation where users lose time getting a trustworthy scene.
 - Fit the twin from recorded hardware behavior. `wu fit` already estimates link masses,
-  centres of mass and friction; richer contact, thermal models and a physics adapter need
+  centres of mass and friction; better contact, actuator and thermal parameters need
   measurements to justify them.
 - Compare model-authored plans and live checkpoint decisions on the same tasks, keeping
   prompts, observations, interventions and measured outcomes with the records.

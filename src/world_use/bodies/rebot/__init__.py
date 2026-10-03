@@ -59,7 +59,7 @@ def work_frame(chain: Chain, q) -> np.ndarray:
 REST = Rest(q=(0.0,) * 6, joints=(1, 2, 3), tol=0.15, stops=(1, 2))
 MANIFEST = Manifest(
     name="reBot Arm B601-RS",
-    urdf=HERE / "ReBot_Arm_RS.urdf",
+    urdf=HERE / "urdf" / "ReBot_Arm_RS.urdf",
     tool_link="gripper_end",
     joints=tuple(JointSpec(name, lo, hi, v_max=0.8, a_max=6.0, track_tol=tol, tau_max=tmax, tau_hold_max=hold,
                            excursion_exempt=(name == "joint6"), contact_dtau=contact)

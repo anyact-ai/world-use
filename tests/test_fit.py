@@ -93,7 +93,8 @@ def test_the_kernel_judges_torque_by_the_fit_and_so_do_its_body_and_twin():
     with pytest.raises(ValueError, match="another arm"):
         k.use_fit(replace(truth(), body="another arm"))
     k.use_fit(truth())
-    assert k.fit is not None and k.body.friction is not None
+    assert k.fit is not None
+    assert k.body.model.body("link3").mass[0] == pytest.approx(truth().links["link3"][0])
     assert any(e["kind"] == "fit" for e in k.events.since(0))
     q = np.radians([0, 55, 54, -19, 0, 0])
     k.cmd.dq = np.array([0, 0, 0.2, 0, 0, 0])

@@ -86,6 +86,7 @@ def test_http_boundary_rejects_foreign_origins_hosts_and_non_json(client):
     assert client.status()["enabled"]
 
 
+@pytest.mark.usefixtures("file_camera")
 def test_cli_returns_structured_json_and_concise_input_errors(client, tmp_path, capsys):
     import json
 
@@ -122,11 +123,12 @@ def test_home_routes_reject_checkpoints_and_can_be_cleared_from_the_cli(client):
     assert "not available" in client.status()["home"]
 
 
-def test_check_does_not_move_the_robot(client):
-    before = client.status()["joints_deg"]
+def test_check_does_not_move_the_robot(daemon):
+    d, client = daemon
+    before = d.k.cmd.q.copy()
     r = client.check({"do": "line", "up": 0.05})
     assert r["ok"] and "check passed" in r["text"]
-    assert np.allclose(client.status()["joints_deg"], before, atol=0.01)
+    np.testing.assert_array_equal(d.k.cmd.q, before)
 
 
 def test_frame_returns_native_pixels_without_creating_records(daemon, tmp_path):
@@ -165,16 +167,33 @@ def test_facts_and_events(client):
     assert ev["last"] >= 1 and any(e["kind"] == "connected" for e in ev["events"])
 
 
+def test_event_poll_reports_a_missed_window_and_advances_only_through_returned_events():
+    from types import SimpleNamespace
+
+    from world_use.daemon import Daemon
+    from world_use.events import EventLog
+
+    log = EventLog(keep=2)
+    for i in range(4):
+        log.emit("test", str(i))
+    daemon = SimpleNamespace(k=SimpleNamespace(events=log))
+    status, result = Daemon.api(daemon, "GET", "/events", {"since": 0}, {})
+    assert status == 200 and result["missed"] == 2
+    assert [e["seq"] for e in result["events"]] == [3, 4] and result["last"] == 4
+    _, result = Daemon.api(daemon, "GET", "/events", {"since": 4}, {})
+    assert result == dict(events=[], missed=0, last=4)
+
+
 def test_run_rehearses_and_refuses_the_whole_plan_with_every_problem_before_anything_moves(daemon):
     d, c = daemon
-    before = c.status()["joints_deg"]
+    before = d.k.cmd.q.copy()
     jobs = len(d.k.jobs)
     r = c.run([{"do": "line", "up": 0.03}, {"do": "line", "left": 0.05}, {"do": "joints", "delta_deg": {"1": 130}}],
               wait=5)
     assert r["status"] == "refused" and r["id"] is None
     assert "step 2/3" in r["incident"] and "step 3/3" in r["incident"] and "from here" in r["incident"]
     assert len(d.k.jobs) == jobs                                        # not even the first step was submitted
-    assert np.allclose(c.status()["joints_deg"], before, atol=0.01)
+    np.testing.assert_array_equal(d.k.cmd.q, before)
 
 
 def test_run_without_the_rehearsal_is_refused_by_the_kernel_at_the_step(client):
@@ -242,6 +261,7 @@ def test_checked_run_revalidates_before_its_first_tick(daemon):
     assert job.status == "refused" and np.array_equal(d.k.cmd.q, before)
 
 
+@pytest.mark.rendering
 def test_look_saves_a_picture_with_what_the_kernel_knows_drawn_on_it(daemon):
     _, c = daemon
     r = c.look("top", [{"do": "line", "up": 0.03}])
@@ -323,10 +343,12 @@ def test_the_flight_record_can_be_written_without_stopping(client):
     c.run({"do": "line", "up": 0.02, "duration": 0.5}, wait=10)
     r = c.record()
     run = Path(r["run"])
-    assert {"tape.npz", "summary.json", "world.json"} <= {f.name for f in run.iterdir()}
+    assert {"tape", "summary.json", "world.json"} <= {f.name for f in run.iterdir()}
+    assert list((run / "tape").glob("[0-9]*.npz"))
     assert r["summary"]["moving_s"] > 0 and "idle" in c.status()["line"]          # still serving
 
 
+@pytest.mark.usefixtures("file_camera")
 def test_look_with_a_grid_draws_a_ruler_and_nothing_the_kernel_believes(client):
     from world_use import cli
     r = client.look("side", grid=True)

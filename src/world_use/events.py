@@ -19,6 +19,11 @@ class EventLog:
         self.clock = clock
         self.t0 = clock() if t0 is None else t0
 
+    @property
+    def first_seq(self) -> int:
+        with self.lock:
+            return self.buf[0]["seq"] if self.buf else self.seq + 1
+
     def emit(self, kind: str, message: str, level: str = "info", **data) -> dict:
         with self.cond:
             self.seq += 1
