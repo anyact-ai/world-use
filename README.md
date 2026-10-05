@@ -18,11 +18,10 @@ Early development. Tested in simulation and on one physical arm. The
 
 ## Try it
 
-Requires Python 3.13+; these examples use Python 3.14.
-[uv](https://docs.astral.sh/uv/) can install it for you.
+Requires Python 3.13+. [uv](https://docs.astral.sh/uv/) can install it for you.
 
 ```sh
-uv tool install --python 3.14 "git+https://github.com/anyact-ai/world-use"
+uv tool install --python 3.13 "git+https://github.com/anyact-ai/world-use"
 wu demo --out runs/block-demo
 wu inspect runs/block-demo
 ```
@@ -49,7 +48,7 @@ line uses this example's clear return path, releases at rest, and closes the ses
 For an interactive 3D viewer with synchronized cameras, joint plots, and events:
 
 ```sh
-uv tool install --force --python 3.14 "world-use[rerun] @ git+https://github.com/anyact-ai/world-use"
+uv tool install --force --python 3.13 "world-use[rerun] @ git+https://github.com/anyact-ai/world-use"
 wu view runs/block-demo
 wu view                       # follow the local daemon's recording
 ```
@@ -70,7 +69,7 @@ returns an incident. `wu help` lists the actions and their parameters.
 For MCP clients:
 
 ```sh
-uv tool install --python 3.14 "world-use[mcp] @ git+https://github.com/anyact-ai/world-use"
+uv tool install --python 3.13 "world-use[mcp] @ git+https://github.com/anyact-ai/world-use"
 wu up --workcell block
 wu mcp
 ```
@@ -92,7 +91,7 @@ With an enabled daemon running, save the example below as `task.py`. The CLI
 installation has an isolated environment; run the script with its own dependency:
 
 ```sh
-uv run --python 3.14 --with "world-use @ git+https://github.com/anyact-ai/world-use" python task.py
+uv run --python 3.13 --with "world-use @ git+https://github.com/anyact-ai/world-use" python task.py
 ```
 
 ```python
