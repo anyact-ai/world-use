@@ -109,8 +109,8 @@ class Tape:
             while len(self._power) > 1 and self._power_count - len(self._power) < power:
                 self._power.popleft()
 
-    def summary(self, rate_hz: float, *, until: float | None = None) -> dict:
-        """Elapsed durations, not tick counts divided by the nominal rate (kept for API compatibility)."""
+    def summary(self, *, until: float | None = None) -> dict:
+        """Elapsed durations, not tick counts divided by the nominal rate."""
         return self._summary(self.arrays(), until)
 
     @staticmethod
@@ -120,12 +120,6 @@ class Tape:
         summary = _Summary(a["q"].shape[1] if "q" in a else 0, exact=True)
         summary.add(a)
         return summary.result(until)
-
-    def save(self, path: Path, rate_hz: float, *, until: float | None = None):
-        a = self.arrays()
-        if a:
-            save_arrays(path, a)
-        return self._summary(a, until)
 
 
 class _Summary:
@@ -247,6 +241,7 @@ def _atomic(path: Path, write):
         try:
             write(f)
             f.flush()
+            os.fchmod(f.fileno(), 0o644)      # temporary files start private; records read like events.jsonl
             os.fsync(f.fileno())
             os.replace(temp, path)
         finally:
@@ -438,29 +433,28 @@ class Journal:
 
 
 def load_tape(folder: Path | str) -> dict:
-    """Read a normal save or recover committed chunks after process loss. Never replay commands to a robot."""
+    """A record's committed telemetry, also after process loss. Never replay commands to a robot."""
     folder = Path(folder)
+    chunks = sorted((folder / "tape").glob("[0-9]*.npz"))
+    if not chunks and (folder / "tape.npz").exists():
+        chunks = [folder / "tape.npz"]               # 0.2.0 saved the whole tape at close
+    return read_chunks(chunks)
+
+
+def read_chunks(paths) -> dict:
+    """Telemetry chunks joined in the given order."""
     parts = []
-    for path in sorted((folder / "tape").glob("[0-9]*.npz")):
+    for path in paths:
         with np.load(path) as f:
             parts.append(dict(f))
-    a = {key: np.concatenate([p[key] for p in parts]) for key in parts[0]} if parts else {}
-    if (folder / "tape.npz").exists():
-        with np.load(folder / "tape.npz") as f:
-            saved = dict(f)
-        if not a or len(saved.get("t", [])) >= len(a["t"]):
-            a = saved
-    if (folder / "tape" / "power.npz").exists():
-        with np.load(folder / "tape" / "power.npz") as f:
-            a.update(dict(f))
-    return a
+    return {key: np.concatenate([p[key] for p in parts]) for key in parts[0]} if parts else {}
 
 
 def session_record(k, **context) -> dict:
     from dataclasses import asdict
     from datetime import UTC, datetime
 
-    from . import __version__, bodies
+    from . import __version__
     from .plan import snapshot
 
     source = hashlib.sha256()
@@ -478,8 +472,6 @@ def session_record(k, **context) -> dict:
         initial["model"]["urdf"] = "robot.urdf"
     return dict(format_version=3, created_at=datetime.now(UTC).isoformat(), package_version=__version__,
                 source_sha256=source.hexdigest(),
-                adapter=next((n for n, m in bodies.manifests().items() if m is k.manifest),
-                             f"{type(k.body).__module__}:{type(k.body).__qualname__}"),
                 body=k.manifest.name, mode="simulation" if getattr(k.body, "simulated", False) else "hardware",
                 urdf_sha256=hashlib.sha256(urdf).hexdigest(),
                 initial=initial, **context)

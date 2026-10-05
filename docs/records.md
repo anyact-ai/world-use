@@ -11,11 +11,10 @@ wu view runs/YOUR-RUN --out recording.rrd      # headless export
 These commands run offline. Replay reconstructs measured joints and the recorded
 world model with the saved robot geometry. It does not operate a robot or
 re-run the plan. Original camera observations remain under `views/`; the rendered
-replay is labeled separately. New records include the robot description and URDF, and
-copies of a custom robot's meshes, so they remain usable after moving the run folder or
-uninstalling its driver. A built-in robot's meshes ship with world-use: a record finds
-them when its URDF matches the installed one exactly. Older records without a saved
-model use the installed built-in geometry; custom records need their original assets.
+replay is labeled separately. A record keeps the robot description and its URDF, and
+copies of a custom robot's meshes, so it stays usable after moving the run folder or
+uninstalling the robot's driver. A built-in robot's meshes ship with world-use; a record
+finds them when its URDF matches the installed one exactly.
 
 The optional [Rerun viewer](visualization.md) synchronizes the 3D reconstruction,
 telemetry, events, and saved observations. It can also follow a running recorder.
@@ -24,11 +23,11 @@ A run contains:
 
 | File | Contents |
 | --- | --- |
-| `session.json` | Format/package version, source and URDF hashes, adapter, startup configuration, initial world/command/measurement snapshot, fitted model |
+| `session.json` | Package version, source and URDF hashes, body name and mode, the daemon's startup identity and workcell, and the initial snapshot: robot description, world, commanded and measured state, fitted model |
 | `robot.urdf` | The geometry used by this run; its limits and gripper description are in `session.json` |
 | `assets/`, `robot-assets.json` | A custom robot's content-addressed meshes and their original URDF path mapping; a built-in robot's license notices |
 | `events.jsonl` | Submitted plan JSON, structured outcomes, checkpoint questions/answers, contacts, world changes, view paths and annotations |
-| `tape/000000.npz`, … | Append-only telemetry and power-transition chunks; the complete history of a new run |
+| `tape/000000.npz`, … | Telemetry and power transitions, appended in chunks; together the complete history |
 | `recording.json` | Missing sample, event, and power-transition counts, only if a recording buffer overran |
 | `complete.json` | Final chunk count and event byte count, committed only after the journal finishes successfully |
 | `summary.json`, `world.json` | Summary and world model at the last explicit save or normal close |
@@ -36,13 +35,15 @@ A run contains:
 
 Events and telemetry are flushed once per second on a background thread. A process kill may
 lose the current interval and an unfinished event line; it should not lose earlier
-committed chunks. Format 3 saves and closes flush these chunks without creating a
-second complete `tape.npz`. Readers still accept older `tape.npz` snapshots and
-`tape/power.npz` files. Python integrations should use
+committed chunks. Python integrations should use
 `world_use.recorder.load_tape(run_folder)` to read the complete arrays.
 The `closed` event reports connection closure; `complete.json` confirms that the
 final recording writes succeeded. Live readers wait for that marker and its
 listed data before finishing, including when storage is slow.
+
+Runs recorded by world-use 0.2.0 hold their telemetry in one `tape.npz` and have
+no `session.json`. `wu inspect` and `wu fit` read them; replay and the viewer
+need the robot description in `session.json`.
 
 The daemon retires committed telemetry from memory. Its pending buffer holds at
 most 30,000 samples (five minutes at 100 Hz), 5,000 power transitions, and the most

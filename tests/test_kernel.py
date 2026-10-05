@@ -447,7 +447,7 @@ def test_heat_budget_is_reported(lifted):
 def test_motion_time_is_measured(k):
     k.run({"do": "line", "forward": 0.08, "up": 0.06, "duration": 3.0})
     k.run({"do": "hold", "seconds": 3.0})
-    s = k.tape.summary(k.manifest.rate_hz)
+    s = k.tape.summary()
     assert abs(s["moving_s"] - 3.0) < 0.1 and abs(s["moving_share"] - 0.5) < 0.05
     assert s["tick_ms"] == dict(median=10.0, p99=10.0, max=10.0)
 

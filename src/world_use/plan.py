@@ -218,7 +218,7 @@ def _rehearse(spec, t: Kernel, timeout_s: float) -> Report:
     steps = [e["message"] for e in events if e["kind"] == "step_done"]
     if not steps and out.ok:
         steps = [out.message]
-    summary = t.tape.summary(t.manifest.rate_hz)
+    summary = t.tape.summary()
     tool = t.world.from_base("work", t.chain.fk(t.state.q)[:3, 3])
     turned = None
     g = t.manifest.gripper

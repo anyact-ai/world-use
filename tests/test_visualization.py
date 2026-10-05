@@ -91,7 +91,8 @@ def test_export_preserves_measurements_world_changes_and_camera_timing_after_mov
     from world_use import bodies
 
     monkeypatch.setattr(bodies, "make", lambda *a, **kw: pytest.fail("viewer opened a robot"))
-    save_arrays(run_folder / "tape.npz", samples([0, .1, .2], [0, np.pi / 2, 0]))
+    (run_folder / "tape").mkdir()
+    save_arrays(run_folder / "tape/000000.npz", samples([0, .1, .2], [0, np.pi / 2, 0]))
     (run_folder / "views").mkdir()
     Image.new("RGB", (16, 16), "red").save(run_folder / "views/camera.png")
     events = [dict(seq=1, t=.1, kind="look", level="info", message="captured",
@@ -123,7 +124,7 @@ def test_export_preserves_measurements_world_changes_and_camera_timing_after_mov
     assert component_rows(output, "/events", "TextLog:text")[-1] == (300_000_000, ["closed: closed"])
 
 
-def test_follow_deduplicates_saved_tape_and_waits_for_final_chunk(run_folder, monkeypatch):
+def test_follow_waits_for_the_final_chunk_after_close(run_folder, monkeypatch):
     pytest.importorskip("rerun")
     from world_use import visualization
 
@@ -135,7 +136,6 @@ def test_follow_deduplicates_saved_tape_and_waits_for_final_chunk(run_folder, mo
         nonlocal polls
         polls += 1
         if polls == 1:
-            save_arrays(run_folder / "tape.npz", samples([0, .1], [0, .5]))
             (run_folder / "events.jsonl").write_text(json.dumps(
                 dict(seq=1, t=.2, kind="closed", level="info", message="closed")) + "\n")
         elif polls == 5:
@@ -158,15 +158,15 @@ def test_reader_observes_completion_and_final_chunks_in_one_snapshot(run_folder,
 
     (run_folder / "tape").mkdir()
     save_arrays(run_folder / "tape/000000.npz", samples([0], [0]))
-    load = visualization.load_tape
+    read = visualization.read_chunks
 
-    def close_during_poll(folder):
-        a = load(folder)
-        save_arrays(folder / "tape/000001.npz", samples([.1], [.5]))
-        save_summary(folder / "complete.json", dict(parts=2, events_bytes=0))
+    def close_during_poll(paths):
+        a = read(paths)
+        save_arrays(run_folder / "tape/000001.npz", samples([.1], [.5]))
+        save_summary(run_folder / "complete.json", dict(parts=2, events_bytes=0))
         return a
 
-    monkeypatch.setattr(visualization, "load_tape", close_during_poll)
+    monkeypatch.setattr(visualization, "read_chunks", close_during_poll)
     reader = RecordReader(run_folder)
     a, _ = reader.poll()
     assert a["t"].tolist() == [0] and not reader.complete
@@ -194,6 +194,24 @@ def test_follow_finishes_an_empty_run_only_after_its_final_events(run_folder, mo
     output = view(run_folder, output=run_folder / "empty.rrd", follow=True)
     assert component_rows(output, "/events", "TextLog:text") == [(100_000_000, ["closed: closed"])]
     assert polls == 1
+
+
+def test_a_gripper_the_viewer_cannot_move_is_drawn_static_with_a_warning(run_folder):
+    rr = pytest.importorskip("rerun")
+    rr.set_strict_mode(True)
+    urdf = run_folder / "robot.urdf"
+    urdf.write_text(urdf.read_text().replace("</robot>", """
+  <link name="jaw"><visual><geometry><box size="0.04 0.01 0.01"/></geometry></visual></link>
+  <joint name="jaw" type="revolute">
+    <parent link="forearm"/><child link="jaw"/><origin xyz="0.15 0 0"/><axis xyz="0 0 1"/>
+    <limit lower="0" upper="1" effort="1" velocity="1"/>
+  </joint>
+</robot>"""))
+    (run_folder / "tape").mkdir()
+    save_arrays(run_folder / "tape/000000.npz", samples([0, .1], [0, .5]))
+    output = view(run_folder, output=run_folder / "jaw.rrd")
+    assert [t for t, _ in component_rows(output, "/transforms/jaw", "Transform3D:quaternion")] == [0]
+    assert any("jaw" in text[0] for _, text in component_rows(output, "/events", "TextLog:text"))
 
 
 def test_missing_extra_gives_installation_hint(run_folder, monkeypatch):

@@ -38,10 +38,11 @@ Invalid results clear the associated observed surface. Missing source artifacts
 produce a warning in the event pane.
 
 The viewer loads the saved URDF and meshes without opening an adapter or running
-physics. It supports the runtime's rotational arm joints and calibrated grippers
-with two prismatic fingers. Missing geometry is reported explicitly. Saved
-telemetry remains available through `wu inspect` even when a viewer cannot load
-an older record's missing model.
+physics. It moves the runtime's rotational arm joints and a calibrated gripper
+with two prismatic fingers; other gripper joints stay where the URDF puts them,
+with a warning in the event pane. Missing geometry is reported explicitly. Runs
+recorded by world-use 0.2.0 have no saved model to view; `wu inspect` still reads
+their telemetry.
 
 ## Follow a running session
 
@@ -56,12 +57,13 @@ The viewer reads only new committed chunks and events, usually about one second
 behind control. Camera images update when another client calls `wu look` or
 registers measurement evidence; this is not continuous camera acquisition.
 
-Press Ctrl+C in the viewer command's terminal to stop following. A new record stops
-following automatically once its completion marker and all final data are readable.
-Older records without `complete.json` require Ctrl+C when followed; ordinary offline
-viewing and export still finish immediately. Closing the Rerun window or stopping the
-viewer never stops a robot job or changes torque. Continue to use `wu status`,
-`wu stop`, and the normal home/release procedure to operate the session.
+Press Ctrl+C in the viewer command's terminal to stop following. Following stops
+automatically once the record's completion marker and all final data are readable.
+A record whose process was killed never gets `complete.json`, so following it needs
+Ctrl+C; ordinary offline viewing and export still finish immediately. Closing the
+Rerun window or stopping the viewer never stops a robot job or changes torque.
+Continue to use `wu status`, `wu stop`, and the normal home/release procedure to
+operate the session.
 
 The run folder must be readable on the viewer's host. For a remote daemon, copy
 its record or mount its recording directory and supply that path explicitly.

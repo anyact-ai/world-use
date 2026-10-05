@@ -377,17 +377,16 @@ class Kernel:
             return self.save_record()
         except OSError as e:
             summary = (self.journal.summary(until=self.clock.now() - self.t0) if self.journal else
-                       self.tape.summary(self.manifest.rate_hz, until=self.clock.now() - self.t0))
+                       self.tape.summary(until=self.clock.now() - self.t0))
             return dict(body=self.manifest.name, recording_error=str(e),
                         **summary)
 
     def save_record(self) -> dict:
         """Write the flight record so far (tape, summary, world and events), without
         closing: a run can be studied while it goes on. Returns the summary."""
-        rate = self.manifest.rate_hz
         until = self.clock.now() - self.t0
         if not self.run_dir:
-            return dict(body=self.manifest.name, **self.tape.summary(rate, until=until))
+            return dict(body=self.manifest.name, **self.tape.summary(until=until))
         assert self.journal is not None
         self.journal.flush()
         summary = dict(body=self.manifest.name, **self.journal.summary(until=until))
