@@ -102,6 +102,9 @@ parameters. A list runs in order and ends at the first step that does not end "d
 - After release, withdraw clear and check the expected position and depth in a fresh frame. Before regrasping
   a released object, remeasure it from the approach view: it may have settled since the previous judgement.
   If it now meets the intended outcome, leave it; choose recovery only from a fresh measured discrepancy.
+- Batch independent measurements from the same capture when the interface supports it. Once the task's
+  placement and stability checks pass, complete the power handoff below and report; repeat a check only if
+  its evidence is ambiguous, stale, or something changed.
 
 ## Contact
 
