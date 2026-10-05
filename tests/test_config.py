@@ -107,17 +107,15 @@ def test_invalid_robot_descriptions_fail_before_a_driver_is_loaded(tmp_path, old
         make_body("no_such_driver:Body", {"robot": str(path)})
 
 
-def test_prismatic_joints_are_offline_kinematics_only(tmp_path):
+def test_prismatic_arm_joints_are_rejected(tmp_path):
     urdf = tmp_path / "linear.urdf"
     urdf.write_text((EXAMPLE / "planar.urdf").read_text().replace('type="revolute"', 'type="prismatic"', 1))
     path = tmp_path / "robot.toml"
     path.write_text((EXAMPLE / "planar.toml").read_text().replace('urdf = "planar.urdf"', 'urdf = "linear.urdf"'))
-    body = SimBody(replace(load_robot(EXAMPLE / "planar.toml"), urdf=urdf))
-    assert body.chain.fk([.1, 0])[2, 3] == pytest.approx(.3)
     with pytest.raises(ValueError, match="rotational arm joints only; prismatic joints are unsupported"):
         load_robot(path)
     with pytest.raises(ValueError, match="rotational arm joints only; prismatic joints are unsupported"):
-        Kernel(body)
+        SimBody(replace(load_robot(EXAMPLE / "planar.toml"), urdf=urdf))
 
 
 def test_supported_rest_uses_joint_names_and_preserves_release_rules(tmp_path):

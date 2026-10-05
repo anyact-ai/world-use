@@ -31,29 +31,33 @@ class Trip:
 
 
 class Envelope:
-    def __init__(self, manifest: Manifest, chain: Chain, world: World, q_start):
+    def __init__(self, manifest: Manifest, chain: Chain, world: World, q_start, emit=None):
         self.m, self.chain, self.world = manifest, chain, world
         self.q_start = np.asarray(q_start, float)
-        self.max_excursion = manifest.max_excursion
         self.overrides: dict[str, dict] = {}
+        self.emit = emit or (lambda *args, **data: None)
         self.rehearsal: list[tuple[str, list[Refused]]] | None = None   # a twin's record of problems, else None
         self.context = ""                                                  # the step being planned, for that record
         if not np.isfinite(manifest.link_radius_m) or manifest.link_radius_m < 0:
             raise ValueError("link_radius_m must be finite and nonnegative")
 
+    @property
+    def max_excursion(self) -> float | None:
+        over = self.overrides.get("max_excursion")
+        return self.m.max_excursion if over is None else over["value"]
+
     def override(self, key: str, value, reason: str):
-        """Operator-only loosening, e.g. max_excursion for one task. Recorded with its reason. turn_height is the
-        lowest tool height (work frame, m) at which the turn-clearance joints may turn, instead of start + clearance."""
-        if key == "max_excursion":
-            self.overrides[key] = dict(value=value, reason=reason, was=self.max_excursion)
-            self.max_excursion = value
-        elif key == "turn_height":
-            if isinstance(value, bool) or not isinstance(value, Real) or not np.isfinite(value):
-                raise ValueError("turn_height must be a finite number")
-            was = None if self.m.turn_clearance is None else self._turn_height(self.m.turn_clearance[1])
-            self.overrides[key] = dict(value=float(value), reason=reason, was=was)
-        else:
+        """Operator-only loosening for this session, kept with its reason and logged. max_excursion (rad) replaces
+        the manifest's; turn_height is the lowest tool height (work frame, m) at which the turn-clearance joints may
+        turn, instead of start + clearance."""
+        if key not in ("max_excursion", "turn_height"):
             raise KeyError(f"no override named {key!r}")
+        if isinstance(value, bool) or not isinstance(value, Real) or not np.isfinite(value):
+            raise ValueError(f"{key} must be a finite number")
+        was = self.max_excursion if key == "max_excursion" else self.turn_height()
+        self.overrides[key] = dict(value=float(value), reason=reason, was=was)
+        shown = f"{np.degrees(value):.0f} deg" if key == "max_excursion" else f"U{value:+.3f}"
+        self.emit("override", f"operator override: {key} {shown}: {reason}", "warn", key=key, **self.overrides[key])
 
     # -- before motion ----------------------------------------------------------------------------
     def bounds(self, q_from) -> tuple[np.ndarray, np.ndarray]:
@@ -125,7 +129,7 @@ class Envelope:
             problems.append(Refused(f"the tool would go {1000 * depth:.0f} mm into {name!r}", "surface",
                                     "stop above it, or use a guarded move (touchdown) to make contact", box=name))
         keep_out, slow = self.world.of_kind("keep_out"), self.world.of_kind("slow")
-        entered, too_fast = set(), set()
+        entered, peak = set(), {}
         previous, previous_tool = q_from, tool0
         if keep_out or slow:
             for q in full:
@@ -138,13 +142,17 @@ class Envelope:
                                                 "go around it", box=box.name))
                 speed = float(np.linalg.norm(pts[-1] - previous_tool) * rate)
                 for box in slow:
-                    if (box.name not in too_fast and speed > box.params["speed"] + 1e-9
+                    if (speed > max(box.params["speed"], peak.get(box.name, 0.0)) + 1e-9
                             and box.intersects_segment(previous_tool, pts[-1])):
-                        too_fast.add(box.name)
-                        problems.append(Refused(f"tool speed {speed:.3f} m/s in slow zone {box.name!r}; "
-                                                f"limit {box.params['speed']:.3f}", "slow",
-                                                "give the move a longer duration", box=box.name))
+                        peak[box.name] = speed
                 previous, previous_tool = q, pts[-1]
+        for box in slow:
+            if box.name in peak:              # a longer duration slows the whole path down in proportion
+                speed, limit = peak[box.name], box.params["speed"]
+                seconds = float(np.ceil(10 * len(path) / rate * speed / limit) / 10)
+                problems.append(Refused(f"tool speed would peak at {speed:.3f} m/s in slow zone {box.name!r}; "
+                                        f"limit {limit:.3f}", "slow", f"give the move at least {seconds:.1f} s",
+                                        box=box.name, min_seconds=seconds))
         turn = self.turn_problem(full, rate)
         if turn is not None:
             problems.append(turn)
@@ -188,8 +196,7 @@ class Envelope:
         why = (f"an operator override: {self.overrides['turn_height']['reason']}" if "turn_height" in self.overrides
                else f"{100 * above:.0f} cm above the start height")
         return Refused(f"this turns {names} with the tool at U{z:+.3f}; turning needs U{need:+.3f} or higher "
-                       f"({why}), or the gripper sweeps across the table",
-                       "turn_clearance", f"lift at least {lift} cm more first", tool_up=round(z, 4),
+                       f"({why})", "turn_clearance", f"lift at least {lift} cm more first", tool_up=round(z, 4),
                        need_up=round(need, 4))
 
     # -- during motion ----------------------------------------------------------------------------

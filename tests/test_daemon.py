@@ -156,7 +156,8 @@ def test_home_routes_reject_checkpoints_and_can_be_cleared_from_the_cli(client):
 
     with pytest.raises(DaemonError, match="not allowed in a home route"):
         client.home_route([{"do": "checkpoint", "ask": "clear?"}])
-    assert client.home_route([])["ok"]
+    route = client.home_route([])
+    assert route["ok"] and route["home"].startswith("set")
     assert cli.main(["--url", client.url, "home-route", "null"]) == 0
     assert "not available" in client.status()["home"]
 

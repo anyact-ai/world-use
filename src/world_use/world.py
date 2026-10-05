@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .errors import Refused
 from .geometry import rot_z
 
 KINDS = ("surface", "object", "keep_out", "fragile", "slow")
@@ -156,7 +157,7 @@ class World:
 
     def frame(self, name: str) -> Frame:
         if name not in self.frames:
-            raise KeyError(f"unknown frame {name!r}; known: {sorted(self.frames)}")
+            raise Refused(f"unknown frame {name!r}; frames: {', '.join(self.frames)}", "frame")
         return self.frames[name]
 
     def to_base(self, frame: str, p) -> np.ndarray:
@@ -271,6 +272,3 @@ class World:
         if d.get("held"):
             w.held = (d["held"]["name"], np.array(d["held"]["rel"], float))
         return w
-
-    def copy(self) -> World:
-        return World.from_dict(self.to_dict())

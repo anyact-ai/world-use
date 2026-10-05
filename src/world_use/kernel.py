@@ -43,6 +43,7 @@ from .behaviors import (
     Sequence,
     build,
     fragile_dtau,
+    walk,
 )
 from .body import Body, JointState
 from .envelope import MARGIN, Envelope, Trip
@@ -52,6 +53,7 @@ from .kinematics import Chain
 from .motion import Timing
 from .perception import Requirement
 from .recorder import Journal, Tape, save_summary, session_record
+from .validation import references
 from .world import World
 
 TERMINAL = (*STATUSES, "cancelled")            # a queued job that never started ends "cancelled"
@@ -151,26 +153,20 @@ class Heat:
             self.samples.append((t, np.asarray(temp, float)))
             self.last_t = t
 
-    def slope_per_min(self) -> np.ndarray | None:
-        settled = [s for s in self.samples if s[0] >= self.since + self.WARMUP_S]
+    def minutes_left(self, limit: float) -> tuple[int, float, float] | None:
+        """(joint index, temperature, minutes until limit) for the joint that gets there first, if rising. Request
+        threads ask while the control thread updates, so it reads a copy of the samples."""
+        settled = [s for s in list(self.samples) if s[0] >= self.since + self.WARMUP_S]
         if len(settled) < 5:
             return None
         t = np.array([s[0] for s in settled])
         T = np.array([s[1] for s in settled])
         tc = t - t.mean()
-        return (tc @ (T - T.mean(0))) / (tc @ tc) * 60.0
-
-    def minutes_left(self, limit: float) -> tuple[int, float, float] | None:
-        """(joint index, temperature, minutes until limit) for the joint that gets there first, if rising."""
-        if not self.samples:
-            return None
-        T, slope = self.samples[-1][1], self.slope_per_min()
-        if slope is None:
-            return None
+        slope = (tc @ (T - T.mean(0))) / (tc @ tc) * 60.0
         with np.errstate(divide="ignore", invalid="ignore"):
-            left = np.where(slope > 0.05, (limit - T) / slope, np.inf)
+            left = np.where(slope > 0.05, (limit - T[-1]) / slope, np.inf)
         i = int(np.nanargmin(left))
-        return (i, float(T[i]), float(left[i])) if np.isfinite(left[i]) else None
+        return (i, float(T[-1][i]), float(left[i])) if np.isfinite(left[i]) else None
 
 
 class Kernel:
@@ -184,8 +180,6 @@ class Kernel:
                  auto_answer: bool = False):
         self.body, self.manifest = body, body.manifest
         self.chain = Chain(self.manifest.urdf, self.manifest.tool_link)
-        if any(j.type == "prismatic" for j in self.chain.active):
-            raise ValueError("the runtime supports rotational arm joints only; prismatic joints are unsupported")
         if self.chain.n != self.manifest.n:
             raise ValueError(f"URDF chain to {self.manifest.tool_link} has {self.chain.n} joints; "
                              f"manifest has {self.manifest.n}")
@@ -230,7 +224,7 @@ class Kernel:
         self.last_touch = 0                        # event seq of the last contact (0 = none this session)
         self.home_route: tuple[list, int] | None = None   # (specs, event seq when set)
         self._thermal_home: Job | None = None
-        self._hot_alarm_t = -np.inf
+        self._finding: tuple[str, int | None] | None = None   # the watchdog finding of the last tick, reported once
         self._warned: set[int] = set()
         self._sense: ContactSense | None = None    # collision check for every move (guarded moves add their own)
         self.held_at: float | None = None          # where the fingers closed on something, known to the world or not
@@ -250,7 +244,7 @@ class Kernel:
         self.feedback_at, self._feedback_stamp = self.clock.now(), st.t
         self.cmd = Command(self.q_start.copy(), np.zeros(self.manifest.n), st.gripper)
         self.grip_start = st.gripper
-        self.envelope = Envelope(self.manifest, self.chain, self.world, self.q_start)
+        self.envelope = Envelope(self.manifest, self.chain, self.world, self.q_start, self.emit)
         for name, T in (self.manifest.frames(self.chain, self.q_start) if self.manifest.frames else {}).items():
             if name not in self.world.frames:        # a twin inherits the real session's frames, never recomputes them
                 self.world.add_frame(name, T, source=f"{self.manifest.name}, at session start")
@@ -399,11 +393,13 @@ class Kernel:
 
     # -- requests (any thread) ---------------------------------------------------------------------
     def submit(self, spec, admission: Callable[[], None] | None = None, *, requires=()) -> Job:
-        """Queue a behavior. A malformed spec is refused here; limits are checked when it starts."""
+        """Queue a behavior. A malformed spec, or one naming a frame or joint this robot lacks, is refused here;
+        limits are checked when it starts. While a thermal return runs, the job ends refused at once."""
         behavior = build(spec if isinstance(spec, Behavior) else deepcopy(spec))
         if requires:
             self.evidence_capable(behavior)
         with self.lock:
+            self._references(behavior)
             self.check_requirements(requires)
             if admission is not None:
                 admission()
@@ -419,6 +415,9 @@ class Kernel:
                                        hint="check the hardware, then reset"))
             elif not self.enabled:
                 self._end(job, Outcome("refused", behavior.kind, "torque is off: enable first", hint="enable"))
+            elif self._thermal_home is not None:
+                self._end(job, Outcome("refused", behavior.kind, "a motor is too hot: the thermal return is running "
+                                       "and ends with torque off at rest", hint="let the motors cool, then enable"))
             else:
                 self.queue.append(job)
         return job
@@ -448,21 +447,16 @@ class Kernel:
             self.faulted = False
         self.emit("reset", "fault cleared by operator", "warn")
 
-    @staticmethod
-    def _home_steps(specs: list) -> list:
+    def _home_steps(self, specs: list) -> list:
         """Emergency returns must not depend on answers, holds, contact, or arbitrary plugin behavior."""
-        def check(step):
-            if type(step) is Sequence:
-                for child in step.steps:
-                    check(child)
-            elif type(step) not in (Joints, Line, Lines, MoveTo, Gripper):
-                raise Refused(f"{step.kind} is not allowed in a home route; use only motion and gripper steps",
-                              "home_route_step", "resolve questions before setting the route; use null to clear it")
-
         if not isinstance(specs, list):
             raise Refused("a home route must be a list of steps, or null to clear it", "home_route_step")
         route = build(specs)
-        check(route)
+        for step in walk(route):
+            if type(step) not in (Sequence, Joints, Line, Lines, MoveTo, Gripper):
+                raise Refused(f"{step.kind} is not allowed in a home route; use only motion and gripper steps",
+                              "home_route_step", "resolve questions before setting the route; use null to clear it")
+        self._references(route)
         return deepcopy(route.spec()["steps"])
 
     def set_home_route(self, specs: list | None, note: str = "") -> None:
@@ -549,8 +543,26 @@ class Kernel:
             raise
 
     def start_behavior(self, behavior):
+        """Start the running job's behavior or one of its steps. Every runner (a plan, a grasp, a grip's opening)
+        starts steps here, so each re-zeroes the contact check and names its place in the plan for rehearsals."""
         self.check_evidence()
+        self.rebias()
+        step, where = self._step()
+        self.envelope.context = ": ".join([*where, (step or behavior).describe()])
         behavior.start(self)
+
+    def _step(self) -> tuple[Behavior | None, list[str]]:
+        """The running job's innermost current step, and where it is in the plan: ["step 2/3", "step 1/2"]."""
+        step, where = (None if self.active is None else self.active.behavior), []
+        while isinstance(step, Sequence) and step.current is not None:
+            where.append(f"step {step.i + 1}/{len(step.steps)}")
+            step = step.current
+        return step, where
+
+    def _references(self, behavior):
+        for step in walk(behavior):
+            if type(step) in BUILTINS:
+                references(step.params, self.world, self.manifest.n)
 
     def set(self, q, dq=None):
         self.cmd.q = np.asarray(q, float).copy()
@@ -653,11 +665,13 @@ class Kernel:
         return None if box is None else box.name
 
     def _track_held(self):
-        """Keep a held object's box with the tool; let go of it when the gripper opens past where it closed."""
+        """Keep a held object's box with the tool; let go of it when the gripper opens past where it closed, by more
+        than twice the squeeze (a grip itself commands one squeeze past it)."""
         g = self.manifest.gripper
         if self.held_at is None or g is None:
             return
-        if self.cmd.gripper is not None and (self.cmd.gripper - self.held_at) * np.sign(g.open - g.closed) > 0.1:
+        opened = 0.0 if self.cmd.gripper is None else (self.cmd.gripper - self.held_at) * np.sign(g.open - g.closed)
+        if opened > 2 * g.squeeze:
             box = self.world.drop()
             self.held_at = None
             if box is None:
@@ -710,6 +724,7 @@ class Kernel:
         self.heat.update(now, st.temp, self.enabled)
         with self.lock:
             self._track_held()
+            finding = None
             if self.enabled:
                 trip = self.envelope.watch(st, self.cmd.q, self.cmd.gripper,
                                            self.active is not None and self.active is self._thermal_home)
@@ -717,8 +732,10 @@ class Kernel:
                 if (trip is None or trip.kind == "hot") and b is not None and b.moves and not b.senses_contact:
                     trip = self._collision() or trip
                 if trip:
-                    self._on_trip(trip, now)
+                    finding = (trip.kind, trip.joint)
+                    self._on_trip(trip, now, finding != self._finding)
                 self._heat_warnings(st)
+            self._finding = finding
             if self._stop is not None:
                 reason, self._stop = self._stop, None
                 self._cancel_queue(f"stopped: {reason}")
@@ -757,8 +774,6 @@ class Kernel:
         job.evidence_started_at = self.evidence_now()
         job.tool_started = self.chain.fk(self.state.q)[:3, 3].tolist()
         self.active = job
-        self.rebias()
-        self.envelope.context = job.behavior.describe()
         try:
             if job.admission is not None:
                 job.admission()
@@ -779,7 +794,9 @@ class Kernel:
             self._thermal_home = None
         if self.active is job:
             self.active = None
+            self.cmd.dq, self.cmd.gripper_v = np.zeros(self.manifest.n), 0.0      # no feedforward between jobs
         if thermal and out.ok:
+            self._cancel_queue("the thermal return ends with torque off")
             try:
                 self._release()                 # thermal completion includes confirmed torque-off
             except Exception as e:
@@ -809,29 +826,29 @@ class Kernel:
                           "alarm")
 
     def _cancel_queue(self, why: str):
-        while self.queue:
-            j = self.queue.popleft()
+        cancelled = list(self.queue)
+        self.queue.clear()                      # first: each _end below would cancel the rest again, recursively
+        for j in cancelled:
             self._end(j, Outcome("cancelled", j.behavior.kind, f"not started: {why}"))
 
-    def _on_trip(self, trip: Trip, now: float):
+    def _on_trip(self, trip: Trip, now: float, new: bool):
+        """Act on a watchdog finding: every tick it holds and cancels queued work, but a finding that persists
+        (a box over the idle arm, a steady overload) is reported, and counted as a touch, only when it first shows."""
         self._cancel_queue(f"watchdog: {trip.message}")
         if trip.isolate:                             # gripper only: freeze it where it is, the arm carries on
             self.cmd.gripper, self.cmd.gripper_v = self.state.gripper, 0.0
-            self.emit("gripper_trip", trip.message, "warn")
-            job = self.active
-            step = job.behavior if job is not None else None
-            while isinstance(step, Sequence) and step.current is not None:     # the step a plan is on
-                step = step.current
-            if job is not None and step is not None and step.kind in ("gripper", "grip", "grasp"):
-                seq = job.behavior
-                where = f"step {seq.i + 1}/{len(seq.steps)}: " if isinstance(seq, Sequence) else ""
-                self._end(job, Outcome("surprise", step.kind, where + trip.message, hint="look at the gripper"))
+            if new:
+                self.emit("gripper_trip", trip.message, "warn")
+            step, where = self._step()
+            if self.active is not None and step is not None and step.kind in ("gripper", "grip", "grasp"):
+                self._end(self.active, Outcome("surprise", step.kind, ": ".join([*where, trip.message]),
+                                               hint="look at the gripper"))
             return
         if trip.kind == "hot" and not self.faulted and not self.power_uncertain:
-            self._on_hot(trip, now)
+            self._on_hot(trip, now, new)
             return
         self.hold_here()
-        if trip.kind in ("blocked", "overload", "contact"):
+        if new and trip.kind in ("blocked", "overload", "contact"):
             self.touched("contact", f"watchdog: {trip.message}")
         status = "faulted" if trip.kind == "fault" else "surprise"
         if trip.kind == "fault":
@@ -840,18 +857,15 @@ class Kernel:
             self._end(self.active, Outcome(status, self.active.behavior.kind, trip.message,
                                            dict(trip=trip.kind, joint=None if trip.joint is None else trip.joint + 1),
                                            hint="holding where the arm is; look before the next move"))
-        else:
+        elif new:
             self.emit("trip", trip.message, "alarm" if status == "faulted" else "warn", trip=trip.kind)
 
-    def _on_hot(self, trip: Trip, now: float):
-        if self.active is not None and self.active is self._thermal_home:
-            return                                    # already going home
+    def _on_hot(self, trip: Trip, now: float, new: bool):
         if self.active is not None:
             self._end(self.active, Outcome("stopped", self.active.behavior.kind, trip.message, dict(trip="hot")))
         rest = self.manifest.rest
         if rest is None or rest.holds(self.state.q):
             # at rest, switching torque off moves nothing, and it is how a motor cools fastest
-            self._cancel_queue("motor hot")
             self._release()
             self.emit("hot", f"{trip.message}: torque released at rest to cool", "alarm")
             return
@@ -859,8 +873,7 @@ class Kernel:
             plan = self.home_plan()
         except Refused as e:
             self.hold_here()
-            if now - self._hot_alarm_t > 10.0:
-                self._hot_alarm_t = now
+            if new:
                 self.emit("hot", f"{trip.message} and {e}: holding with torque on. Operator must resolve power now; "
                           "if no clear return is available, support the arm and cut its motor supply.", "alarm")
             return

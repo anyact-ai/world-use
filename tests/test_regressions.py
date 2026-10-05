@@ -8,11 +8,20 @@ from world_use.geometry import axis_angle, interpolate_rotation, rotation_log
 
 
 @pytest.mark.parametrize('spec', [
+    {'do': 'teleport', 'to': [0, 0, 1]}, {'do': []}, {'do': 'hold', 'label': 5},
     {'do': 'hold', 'second': 1}, {'do': 'line', 'up': .01, 'duraton': 2},
     {'do': 'line', 'up': .01, 'speed': 0}, {'do': 'hold', 'seconds': float('nan')},
-    {'do': 'lines', 'legs': []}, {'do': 'checkpoint'},
-    {'do': []}, {'do': 'hold', 'label': 5}, {'do': 'checkpoint', 'ask': 'ready?', 'expect': 1},
-    [{'do': 'hold', 'seconds': .1}, {'do': 'gripper', 'apeture_mm': 60}],
+    {'do': 'line'}, {'do': 'line', 'up': 0}, {'do': 'line', 'up': .01, 'down': .02},
+    {'do': 'line', 'up': .01, 'frame': 'tabel'},
+    [{'do': 'hold', 'seconds': .1}, {'do': 'guarded', 'frame': 'tabel', 'down': .01}],
+    {'do': 'lines', 'legs': []}, {'do': 'lines', 'legs': [[.01, 0, 0], [0, 0, 0]]},
+    {'do': 'move_to'}, {'do': 'move_to', 'point': 'sideways'}, {'do': 'move_to', 'to': [.2, 0, .1], 'jaws': [0, 0, 0]},
+    {'do': 'joints', 'delta_deg': {'9': 3}}, {'do': 'touchdown', 'joints': [9]},
+    {'do': 'checkpoint'}, {'do': 'checkpoint', 'ask': 'ready?', 'expect': 1},
+    {'do': 'gripper'}, [{'do': 'hold', 'seconds': .1}, {'do': 'gripper', 'apeture_mm': 60}],
+    {'do': 'grip', 'effort': .6}, {'do': 'grip', 'squeeze': -.1}, {'do': 'grip', 'squeeze': float('nan')},
+    {'do': 'grip', 'start': float('nan')}, {'do': 'grip', 'expect': 2}, {'do': 'grip', 'expect': [.5, float('nan')]},
+    {'do': 'grip', 'hold_effort': 'oops'},
     {'do': 'grasp', 'expect': [.4, 1.]},
     {'do': 'grasp', 'start': 3., 'search_mm': None},
     {'do': 'grasp', 'start': 3., 'search_mm': [['oops', 0]]},
@@ -20,13 +29,23 @@ from world_use.geometry import axis_angle, interpolate_rotation, rotation_log
     {'do': 'grasp', 'start': 3., 'lift_mm': 'oops'},
     {'do': 'grasp', 'start': 3., 'lift_mm': 51},
     {'do': 'grasp', 'start': 3., 'expect_mm': [10]},
-    {'do': 'grip', 'hold_effort': 'oops'},
     {'do': 'grasp', 'start': 3., 'hold_effort': -1},
 ])
 def test_bad_specs_are_rejected_before_queueing(k, spec):
     with pytest.raises(Refused):
         k.submit(spec)
     assert not k.jobs and not k.queue and not k.faulted
+
+
+def test_every_step_documents_each_parameter_it_accepts():
+    """`wu help STEP` is the docstring: a parameter it leaves out is one a policy cannot know about."""
+    import re
+
+    from world_use.behaviors import REGISTRY
+    from world_use.validation import FIELDS
+    for kind, fields in FIELDS.items():
+        missing = [name for name in fields if not re.search(rf'\b{name}\b', REGISTRY[kind].__doc__ or '')]
+        assert not missing, f'{kind} accepts {missing} but its help does not say so'
 
 
 def test_hot_return_still_stops_for_a_jammed_arm(lifted, monkeypatch):

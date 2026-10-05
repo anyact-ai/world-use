@@ -87,7 +87,9 @@ def test_preparation_keeps_feedback_and_stop_responsive(k):
     assert job.status == "stopped" and not pending.done()
 
 
-def test_prepared_path_is_refused_after_scene_change(k, rehearser):
+@pytest.mark.parametrize("change", ["box", "fact"])
+def test_prepared_path_is_refused_only_after_a_change_it_depends_on(k, rehearser, change):
+    """A fact recorded while a step was prepared refused it too, aborting even a thermal return."""
     from types import SimpleNamespace
 
     k.planner = SimpleNamespace(prepare=lambda spec, robot: rehearser.prepare(spec, robot))
@@ -96,9 +98,14 @@ def test_prepared_path_is_refused_after_scene_change(k, rehearser):
         k.tick()
         k.clock.wait()
     job.behavior._pending.result(timeout=10)
-    k.world.add_box("new obstacle", "keep_out", [1, 1, 1], [.1, .1, .1])
-    k.tick()
-    assert job.status == "refused" and "changed" in job.outcome.message
+    if change == "box":
+        k.world.add_box("new obstacle", "keep_out", [1, 1, 1], [.1, .1, .1])
+    else:
+        k.world.assert_fact("door.angle_deg", 20, "side camera")
+    while not job.finished:
+        k.tick()
+        k.clock.wait()
+    assert job.status == ("refused" if change == "box" else "done"), job.outcome.message
 
 
 def test_execution_paths_are_prepared_outside_the_control_process(daemon, monkeypatch):

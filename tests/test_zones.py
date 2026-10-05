@@ -49,14 +49,14 @@ def test_rotated_box_segment_intersection_handles_parallel_and_padded_links():
     assert box.intersects_segment([-1, -1, 0.06], [1, 1, 0.06], margin=0.02)
 
 
-def test_slow_zone_refuses_fast_paths_and_accepts_longer_duration(lifted):
+def test_slow_zone_refuses_fast_paths_and_names_a_duration_that_passes(lifted):
     k = lifted
     k.world.add_box("careful", "slow", k.tool[:3, 3], [0.2] * 3, speed=0.01)
     before = k.cmd.q.copy()
     out = k.run({"do": "line", "up": 0.03, "duration": 1})
     assert out.status == "refused" and "slow zone" in out.message
     assert np.array_equal(k.cmd.q, before)
-    assert k.run({"do": "line", "up": 0.03, "duration": 8}).ok
+    assert k.run({"do": "line", "up": 0.03, "duration": out.data["min_seconds"]}).ok
 
 
 @pytest.mark.parametrize("speed", [None, 0, -1, float("nan"), float("inf")])

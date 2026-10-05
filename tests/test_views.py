@@ -21,7 +21,7 @@ def test_the_card_describes_the_resolved_workcell_frame():
     apply_workcell({"frame": [dict(name="work", origin=[.01, .02, .03], rpy_deg=[0, 0, 90])]}, k)
     text = card(k, reach=lambda _: "")
     assert "work in base: origin F+0.010 L+0.020 U+0.030 m" in text and "from workcell" in text
-    assert "x=left, level" in text and "y=back, level" in text and "z=straight up" in text
+    assert "yaw +90 deg" in text
 
 
 def test_the_card_says_which_way_the_gripper_points_and_opens():
