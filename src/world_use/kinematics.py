@@ -1,7 +1,7 @@
 """Serial-chain kinematics from a URDF: forward kinematics, Jacobian, IK and gravity torques. numpy only.
 
-The chain runs from the URDF root to one tool link. Movable joints off that path (gripper fingers) are
-treated as fixed at zero; their links still count for gravity.
+The chain runs from the URDF root to one tool link, through rotational joints only. Movable joints off that path
+(gripper fingers) are treated as fixed at zero; their links still count for gravity.
 """
 from __future__ import annotations
 
@@ -79,8 +79,10 @@ class Chain:
             path.append(by_child[link])
             link = by_child[link].parent
         path.reverse()
-        self._length = sum(float(np.linalg.norm(j.origin[:3, 3])) for j in path)
+        self.length = sum(float(np.linalg.norm(j.origin[:3, 3])) for j in path)   # m, root to tool, any pose
         self.active = [j for j in path if j.type in MOVABLE]
+        if any(j.type == "prismatic" for j in self.active):
+            raise ValueError("the runtime supports rotational arm joints only; prismatic joints are unsupported")
         self.joint_names = [j.name for j in self.active]
         self.n = len(self.active)
         self.lower = np.array([j.lower for j in self.active])
@@ -119,10 +121,7 @@ class Chain:
             i = self._index.get(j.name)
             if i is not None:
                 Tq = np.eye(4)
-                if j.type == "prismatic":
-                    Tq[:3, 3] = j.axis * q[i]
-                else:
-                    Tq[:3, :3] = axis_angle(j.axis, q[i])
+                Tq[:3, :3] = axis_angle(j.axis, q[i])
                 Tj = Tj @ Tq
             T[j.child] = T[j.parent] @ Tj
         self._memo = (q.copy(), T)
@@ -139,11 +138,7 @@ class Chain:
 
     def motion_bound(self, a, b) -> float:
         """Upper bound on any stick-model point's travel during linear joint interpolation (metres)."""
-        a, b = np.asarray(a), np.asarray(b)
-        slide = np.array([j.type == "prismatic" for j in self.active])
-        reach = self._length + np.maximum(np.abs(a[slide]), np.abs(b[slide])).sum()
-        delta = np.abs(b - a)
-        return float(reach * delta[~slide].sum() + delta[slide].sum())
+        return float(self.length * np.abs(np.asarray(b) - np.asarray(a)).sum())
 
     def axes(self, q) -> np.ndarray:
         """Each moving joint's axis in the root frame, one row per joint."""
@@ -157,11 +152,8 @@ class Chain:
         J = np.zeros((6, self.n))
         for i, j in enumerate(self.active):
             axis = F[j.child][:3, :3] @ j.axis
-            if j.type == "prismatic":
-                J[:3, i] = axis
-            else:
-                J[:3, i] = np.cross(axis, p - F[j.child][:3, 3])
-                J[3:, i] = axis
+            J[:3, i] = np.cross(axis, p - F[j.child][:3, 3])
+            J[3:, i] = axis
         return J
 
     def ik(self, T_des, q_seed, lower=None, upper=None, weights=None, iters=60, damping=1e-4, tol=1e-7,
@@ -186,7 +178,7 @@ class Chain:
 
     # -- statics --------------------------------------------------------------------------------
     def gravity(self, q) -> np.ndarray:
-        """Torque (or force) each joint must supply to hold q against gravity, from the URDF inertials."""
+        """Torque each joint must supply to hold q against gravity, from the URDF inertials."""
         F = self.link_frames(q)
         weighted = {link: m * (F[link][:3, :3] @ com + F[link][:3, 3])
                     for link, (m, com) in self.links.items() if link in F}
@@ -194,9 +186,6 @@ class Chain:
         for i, j in enumerate(self.active):
             axis = F[j.child][:3, :3] @ j.axis
             mass = self._carried_mass[i]
-            if j.type == "prismatic":
-                g[i] = G * mass * axis[2]
-                continue
             # z of axis x (moment of the carried mass about the joint origin): gravity only pulls along -z
             r = sum((weighted[link] for link in self._carried[j.name]), np.zeros(3)) - mass * F[j.child][:3, 3]
             g[i] = G * (axis[0] * r[1] - axis[1] * r[0])
@@ -214,8 +203,6 @@ class Chain:
         F = self.link_frames(q)
         Y = np.zeros((self.n, 4 * len(links)))
         for i, j in enumerate(self.active):
-            if j.type == "prismatic":
-                continue                            # a prismatic joint only feels the carried mass: not fitted here
             axis = F[j.child][:3, :3] @ j.axis
             carried = self._carried[j.name]
             for c, link in enumerate(links):

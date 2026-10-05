@@ -1,9 +1,12 @@
-"""Bodies: robot adapters. `make(name)` builds one: "sim" (a twin of the reBot), "sim:<robot>", or "<robot>"."""
+"""Bodies: robot adapters. `make(name)` builds one: "sim" (a twin of the reBot, or of the workcell's robot),
+"sim:<built-in>", a built-in driver ("rebot"), or an installed "module:Class"."""
 from __future__ import annotations
 
 import importlib
 
 from ..body import Body, Manifest
+
+DRIVERS = {"rebot": "world_use.bodies.rebot:ReBotBody"}
 
 
 def manifests() -> dict[str, Manifest]:
@@ -12,10 +15,7 @@ def manifests() -> dict[str, Manifest]:
 
 
 def _adapter(name):
-    if name == "rebot":
-        from .rebot import ReBotBody
-        return ReBotBody
-    module, sep, attribute = name.partition(":")
+    module, sep, attribute = DRIVERS.get(name, name).partition(":")
     if not sep:
         raise ValueError(f"unknown body {name!r}; use sim, rebot, or an installed module:Class")
     try:
@@ -29,22 +29,19 @@ def simulated(name: str) -> bool:
 
 
 def make(name: str, world=None, *, manifest: Manifest | None = None, **options):
-    """A body by name. Simulated bodies take q (start joints, rad), gripper and temp_c options."""
+    """A body by name. Simulated bodies take q (start joints, rad), gripper and temp_c options. A built-in driver
+    defaults to its robot's manifest; any other adapter needs the workcell's robot file."""
     kind, _, robot = name.partition(":")
     if kind == "sim":
         from .sim import SimBody
         if manifest is not None and robot:
             raise ValueError("choose --body sim with a robot file, or sim:<built-in>, not both")
+        known = manifests()
+        manifest = manifest or known.get(robot or "rebot")
         if manifest is None:
-            known = manifests()
-            if (robot or "rebot") not in known:
-                raise ValueError(f"no manifest for {robot!r}; known: {sorted(known)}")
-            manifest = known[robot or "rebot"]
+            raise ValueError(f"no manifest for {robot!r}; known: {sorted(known)}")
         return SimBody(manifest, world, **options)
-    if name == "rebot":
-        if manifest is not None:
-            raise ValueError("the rebot driver uses its built-in model; use a custom adapter for a different robot")
-        return _adapter(name)(**options)
+    manifest = manifest or manifests().get(name)
     if manifest is None:
         raise ValueError(f"adapter {name!r} needs a robot TOML file in the workcell")
     body = _adapter(name)(manifest=manifest, **options)

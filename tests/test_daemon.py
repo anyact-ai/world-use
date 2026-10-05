@@ -1,14 +1,24 @@
 """The daemon and its client, end to end on a simulated arm in real time."""
+import shutil
+import socket
+import subprocess
 import threading
 from pathlib import Path
 
 import numpy as np
 import pytest
-from conftest import serve
+from conftest import serving
 from PIL import Image
 
-from world_use import Refused
+from world_use import Client, Refused
+from world_use.cameras import Frame
 from world_use.client import DaemonError
+
+
+def unused_url() -> str:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return f"http://127.0.0.1:{sock.getsockname()[1]}"
 
 
 def test_status_card_and_a_run_with_wait(client):
@@ -32,6 +42,36 @@ def test_up_reuses_only_the_requested_adapter_and_workcell(daemon, capsys):
     d.session = session_identity("rebot", {})           # simulate an already-running hardware daemon
     assert cli.main(up + ["--body", "sim", "--enable"]) == 2
     assert "requested sim:rebot" in capsys.readouterr().err
+
+
+def test_up_refuses_a_robot_the_twin_cannot_model_and_leaves_no_daemon(tmp_path, capsys):
+    from world_use import cli
+
+    example = Path(__file__).resolve().parents[1] / "examples" / "adapters"
+    shutil.copy(example / "planar.urdf", tmp_path)
+    # A gripper the planar URDF has no joint for: the twin has nothing to move.
+    gripper = "\n[gripper]\nclosed = 0.0\nopen = 1.0\napproach = [1.0, 0.0, 0.0]\nopens_along = [0.0, 1.0, 0.0]\n"
+    (tmp_path / "robot.toml").write_text((example / "planar.toml").read_text() + gripper)
+    (tmp_path / "cell.toml").write_text('robot = "robot.toml"\n')
+    url = unused_url()
+    assert cli.main(["--url", url, "up", "--workcell", str(tmp_path / "cell.toml"), "--runs", str(tmp_path)]) == 1
+    assert "cannot model this robot" in capsys.readouterr().err
+    assert not Client(url).alive()
+
+
+def test_up_stops_a_daemon_that_does_not_answer_in_time(tmp_path, monkeypatch, capsys):
+    from world_use import cli
+
+    spawned = []
+    popen = subprocess.Popen
+
+    def spawn(*args, **kwargs):
+        spawned.append(popen(*args, **kwargs))
+        return spawned[-1]
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+    monkeypatch.setattr(cli, "UP_TIMEOUT_S", 0.2)                 # a cold start takes longer than this
+    assert cli.main(["--url", unused_url(), "up", "--runs", str(tmp_path)]) == 1
+    assert spawned[0].poll() is not None and "was stopped" in capsys.readouterr().err
 
 
 def test_up_enable_also_applies_to_a_matching_existing_daemon(client):
@@ -118,9 +158,22 @@ def test_home_routes_reject_checkpoints_and_can_be_cleared_from_the_cli(client):
 
     with pytest.raises(DaemonError, match="not allowed in a home route"):
         client.home_route([{"do": "checkpoint", "ask": "clear?"}])
-    assert "ready" in client.home_route([])["home"]
+    route = client.home_route([])
+    assert route["ok"] and route["home"].startswith("set")
     assert cli.main(["--url", client.url, "home-route", "null"]) == 0
     assert "not available" in client.status()["home"]
+
+
+def test_a_home_route_is_rehearsed_when_set_and_must_be_given(client, capsys):
+    from world_use import cli
+
+    with pytest.raises(DaemonError, match="needs steps"):
+        client._call("POST", "/home_route", {"note": "no steps"})
+    r = client.home_route([{"do": "line", "forward": 0.40}])
+    assert not r["ok"] and r["text"]
+    capsys.readouterr()
+    assert cli.main(["--url", client.url, "home-route", '[{"do": "line", "forward": 0.40}]']) == 4
+    assert r["text"].splitlines()[0] in capsys.readouterr().out
 
 
 def test_check_does_not_move_the_robot(daemon):
@@ -181,7 +234,9 @@ def test_event_poll_reports_a_missed_window_and_advances_only_through_returned_e
     assert status == 200 and result["missed"] == 2
     assert [e["seq"] for e in result["events"]] == [3, 4] and result["last"] == 4
     _, result = Daemon.api(daemon, "GET", "/events", {"since": 4}, {})
-    assert result == dict(events=[], missed=0, last=4)
+    assert result == dict(events=[], missed=0, last=4, more=False)
+    _, result = Daemon.api(daemon, "GET", "/events", {"since": 0, "limit": "1"}, {})
+    assert [e["seq"] for e in result["events"]] == [3] and result["last"] == 3 and result["more"]
 
 
 def test_run_rehearses_and_refuses_the_whole_plan_with_every_problem_before_anything_moves(daemon):
@@ -252,6 +307,7 @@ def test_checked_run_revalidates_before_its_first_tick(daemon):
     d, _ = daemon
     d.stop_loop.set()
     d.control.join(2)
+    assert not d.control.is_alive()
     _, result = d._run({"do": "line", "up": 0.03}, 0, True)
     job = d.k.jobs[result["id"]]
     before = d.k.cmd.q.copy()
@@ -268,7 +324,7 @@ def test_observation_events_do_not_invalidate_checked_admission(daemon, monkeypa
     def observed(*args, **kwargs):
         report = original(*args, **kwargs)
         c.record(note="looked at the scene", context={"observation": "unchanged"})
-        d.k.emit("evidence", "read-only measurement")
+        c.measure(d.measurements.keep(Frame(Image.new("RGB", (8, 8)), "side")).id, point=[4, 4])
         return report
 
     monkeypatch.setattr(d.rehearser, "check", observed)
@@ -279,6 +335,7 @@ def test_a_consumed_stop_still_invalidates_rehearsal(daemon, monkeypatch):
     d, c = daemon
     d.stop_loop.set()
     d.control.join(2)
+    assert not d.control.is_alive()
     original = d.rehearser.check
 
     def stopped(*args, **kwargs):
@@ -317,12 +374,34 @@ def test_a_box_the_policy_adds_goes_into_the_model_not_into_the_simulation(daemo
 
 def test_a_workcell_box_marked_unknown_is_only_in_the_simulation(tmp_path, rehearser):
     cell = {"box": [dict(name="shelf", kind="surface", center=[0.3, 0, 0.1], size=[0.2, 0.2, 0.02], known=False)]}
-    d, _ = serve(tmp_path, cell, rehearser)
-    try:
+    with serving(tmp_path, cell, rehearser) as (d, _):
         assert "shelf" in d.k.body.world.boxes and "shelf" not in d.k.world.boxes
-    finally:
-        d.stop_loop.set()
-        d.http.shutdown()
+
+
+def test_a_world_change_applies_whole_or_not_at_all(client):
+    for change, message in [(dict(box=dict(name="tray", kind="surface", center=[0.3, 0], size=[.1, .1, .1])),
+                             "box.center"),
+                            (dict(frame=[]), "frame"),
+                            (dict(frame=dict(name="tilted", yaw_deg=30)), "yaw_deg")]:
+        with pytest.raises(DaemonError, match=message) as e:
+            client.world(fact=dict(key="seen", value=True), **change)
+        assert e.value.code == 400
+    world = client.world()
+    assert "seen" not in world["facts"] and "tray" not in world["boxes"] and "tilted" not in world["frames"]
+    line = client.world(fact=dict(key="table.z", value=0.205, source="touchdown"))["line"]
+    assert line == "fact table.z = 0.205 (from touchdown)"
+
+
+def test_every_request_gets_an_answer_even_after_an_unexpected_error(daemon):
+    d, c = daemon
+
+    def broken():
+        raise AttributeError("a bug")
+    d.k.reset = broken
+    with pytest.raises(DaemonError) as e:
+        c.reset()
+    assert e.value.code == 500 and "a bug" in str(e.value)
+    assert "idle" in c.status()["line"]
 
 
 def test_help_lists_every_step_with_an_example(client):
@@ -355,6 +434,21 @@ def test_the_daemon_shuts_down_once(daemon):
     with pytest.raises(Refused, match="already shutting down"):
         d.shutdown()
 
+
+
+@pytest.mark.usefixtures("file_camera")
+def test_cli_input_errors_and_rehearsals_have_their_exit_status(client, capsys):
+    from world_use import cli
+    url = ["--url", client.url]
+    assert cli.main(url + ["look", "side", "--plan", '[{"do": "line", "forward": 0.40}]']) == 4
+    assert cli.main(url + ["box", "tray", "surface", "0.3,0", "0.1,0.1,0.1"]) == 2
+    assert cli.main(url + ["box", "tray"]) == 2
+    assert cli.main(url + ["help", "teleport"]) == 2
+    assert cli.main(["--url", unused_url(), "view"]) == 3
+    assert "start it with: wu up" in capsys.readouterr().err
+    assert cli.main(url + ["events", "--limit", "2"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 3 and "wu events --since" in lines[-1]
 
 
 def test_the_cli_exit_status_says_how_the_job_ended(client, capsys):

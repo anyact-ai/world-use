@@ -40,3 +40,15 @@ def test_a_new_obstacle_blocks_the_return():
     assert np.allclose(k.cmd.q, before, atol=.03)
     assert k.enabled                       # a refused return is never described as torque-off
     k.close()
+
+
+def test_wu_demo_prints_a_summary_into_a_fresh_record_folder(tmp_path, monkeypatch, capsys):
+    from world_use import cli
+
+    monkeypatch.setenv("WORLD_USE_RUNS", str(tmp_path))
+    (tmp_path / "block-demo").mkdir()
+    (tmp_path / "block-demo" / "earlier run").write_text("")
+    assert cli.main(["demo", "--no-video"]) == 0
+    out = capsys.readouterr().out
+    assert len(out.splitlines()) <= 3 and str(tmp_path / "block-demo-2") in out
+    assert (tmp_path / "block-demo-2" / "result.json").exists()

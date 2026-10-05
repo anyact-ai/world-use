@@ -38,6 +38,7 @@ def tour(k, camera: str, size, points: int = 8, spreads=(0.12, 0.09, 0.06), chec
     need = k.envelope.turn_height()
     bottom = here[2] if need is None else max(here[2], need + 0.01)
     w, h = size
+    where = f" ({k.manifest.gripper.tool_point})" if k.manifest.gripper else ""
     problems = ""
     for a in spreads:
         steps: list[dict] = []
@@ -46,8 +47,8 @@ def tour(k, camera: str, size, points: int = 8, spreads=(0.12, 0.09, 0.06), chec
             steps.append({"do": "move_to", "to": [round(float(c), 4) for c in corner],
                           "label": f"calibration point {i + 1}"})
             steps.append({"do": "checkpoint", "view": camera, "expect": None,
-                          "ask": f"calibrating {camera!r} ({i + 1}/{points}): where is the tool point (between the "
-                                 f"fingertips) in `wu look {camera} --grid`? answer x,y in pixels of that {w}x{h} "
+                          "ask": f"calibrating {camera!r} ({i + 1}/{points}): where is the tool point{where} when "
+                                 f"you look at {camera} with the grid? answer x,y in pixels of that {w}x{h} "
                                  "picture (0,0 top left), or unseen"})
         steps.append({"do": "move_to", "to": [round(float(c), 4) for c in here], "label": "back to where it started"})
         report = check(steps, k)

@@ -65,21 +65,20 @@ def test_a_known_point_lands_in_a_calibrated_cut_where_its_view_says():
 
 
 def test_file_frames_preserve_identity_age_and_rotation(tmp_path):
+    """A capture app that died must not hand the policy an old picture as if it were now."""
     import os
     import time
-
-    from world_use.cameras import FileCamera
 
     path = tmp_path / "camera.png"
     image = Image.new("RGB", (12, 8))
     image.putpixel((0, 0), (255, 0, 0))
     image.save(path)
     os.utime(path, (time.time() - 2, time.time() - 2))
-    camera = FileCamera("side", path, max_age_s=5, rotate=90)
+    camera = from_config({"name": "side", "path": str(path), "max_age_s": 5, "rotate": 90}, World())
     first, again = camera.capture(None), camera.capture(None)
     assert first.id == again.id and 1.9 < first.age_s < 3
     assert np.array_equal(first.image, camera.picture(None))
-    assert first.image.size == (8, 12)
+    assert first.image.size == (8, 12)                                  # turned a quarter clockwise
     # Atomic replacement with the same modification time is still a different frame.
     replacement = tmp_path / "new.png"
     image.save(replacement)
@@ -90,6 +89,11 @@ def test_file_frames_preserve_identity_age_and_rotation(tmp_path):
     os.utime(path, (time.time() - 10, time.time() - 10))
     with pytest.raises(RuntimeError, match="newest frame"):
         camera.capture(None)
+    path.unlink()
+    with pytest.raises(RuntimeError, match="no frame at"):
+        camera.capture(None)
+    with pytest.raises(ValueError, match="rotate"):
+        from_config({"name": "side", "path": str(path), "rotate": 45}, World())
 
 
 def test_360_cut_preserves_source_frame_identity_and_age(tmp_path):

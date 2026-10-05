@@ -1,10 +1,14 @@
-# Run against a merged, tested version tag. PyPI trusted publisher: anyact-ai/world-use,
-# workflow release.yml, environment pypi. No package is published by the PR workflow.
+# Run from the version tag of a merged commit: every job of the test workflow runs again before publishing.
+# PyPI trusted publisher: anyact-ai/world-use, workflow release.yml, environment pypi. No package is
+# published by the PR workflow.
 name: release
 on:
   workflow_dispatch:
 jobs:
+  test:
+    uses: ./.github/workflows/test.yml
   pypi:
+    needs: test
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -20,18 +24,5 @@ jobs:
           version = tomllib.loads(Path('pyproject.toml').read_text())['project']['version']
           assert os.environ['GITHUB_REF'] == f'refs/tags/v{version}', 'Run the release from its matching version tag'
           PY
-      - run: uv sync --locked
-      - run: uv run ruff check .
-      - run: uv run ty check src
-      - run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1-mesa-dri
-      - run: uv run --extra rerun pytest
       - run: uv build
-      - name: Check the wheel before publishing
-        shell: bash
-        run: |
-          uv venv "$RUNNER_TEMP/wheel-test"
-          for task_wheel in dist/*.whl; do
-            uv pip install --python "$RUNNER_TEMP/wheel-test/bin/python" "${task_wheel}[mcp,rerun]"
-          done
-          "$RUNNER_TEMP/wheel-test/bin/python" scripts/wheel_smoke.py
       - run: uv publish --trusted-publishing always

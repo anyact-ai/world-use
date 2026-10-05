@@ -6,8 +6,6 @@ import time
 from collections import deque
 from collections.abc import Callable
 
-LEVELS = ("info", "warn", "alarm")
-
 
 class EventLog:
     def __init__(self, keep: int | None = 5000, *,
@@ -34,15 +32,13 @@ class EventLog:
             self.cond.notify_all()
             return e
 
-    def since(self, seq: int = 0, kinds=None, min_level: str = "info") -> list[dict]:
-        floor = LEVELS.index(min_level)
+    def since(self, seq: int = 0) -> list[dict]:
         with self.lock:
             out = []
             for e in reversed(self.buf):
                 if e["seq"] <= seq:
                     break
-                if (kinds is None or e["kind"] in kinds) and LEVELS.index(e["level"]) >= floor:
-                    out.append(e)
+                out.append(e)
         return out[::-1]
 
     def wait(self, seq: int, timeout: float) -> list[dict]:

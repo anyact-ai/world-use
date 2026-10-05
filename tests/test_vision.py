@@ -1,14 +1,22 @@
-"""Tracking contracts without downloading weights. Real-model replay is an explicit example check."""
+"""Tracking contracts without downloading weights. The real model runs in CI's vision job."""
+import asyncio
 import os
+import threading
+import time
 from contextlib import nullcontext
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from PIL import Image
 
-from world_use.cameras import FileCamera, Frame
-from world_use.vision import EdgeTAM, _discard_history
+from world_use.cameras import FileCamera, Frame, SimCamera, View
+from world_use.client import DaemonError
+from world_use.errors import Refused
+from world_use.perception import rectangle
+from world_use.tracking import Tracking
+from world_use.vision import EdgeTAM, Observation, _discard_history
 
 
 @pytest.fixture
@@ -123,3 +131,133 @@ def test_invalid_selection_does_not_replace_a_valid_session(tracker, selection):
     with pytest.raises(ValueError):
         tracker.select(frame, **selection)
     assert tracker._session is session
+
+
+class Synthetic(SimCamera):
+    """Serves one synthetic RGB-D picture: a flat orange surface 0.5 m from the camera."""
+
+    def __init__(self):
+        super().__init__("synthetic", View(np.eye(4), 1000, 1000, 50, 50, 100, 100), None)
+
+    def capture(self, k, *, depth=False):
+        return Frame(Image.new("RGB", (100, 100), "orange"), self.name, view=self.view,
+                     calibration=self.calibration_id, depth=np.full((100, 100), .5) if depth else None,
+                     tool=np.eye(4))
+
+
+class Tracker:
+    """Contract fixture, not a learned tracker: follows each selected box until told it is lost."""
+    ready = True
+
+    def __init__(self):
+        self.boxes, self.lost = {}, False
+        self.entered, self.proceed = threading.Event(), threading.Event()
+        self.proceed.set()
+
+    def select(self, target, frame, **prompt):
+        self.boxes[target] = prompt["box"]
+        return self.update(target, frame)
+
+    def update(self, target, frame):
+        self.entered.set()
+        assert self.proceed.wait(5)
+        box = None if self.lost else tuple(self.boxes[target])
+        mask = None if box is None else rectangle(list(box), frame.image.size)
+        return Observation(frame.camera, frame.id, frame.timestamp, box, None, mask, 15)
+
+    def forget(self, target):
+        self.boxes.pop(target, None)
+
+    def close(self):
+        self.boxes.clear()
+
+
+def test_a_seed_older_than_the_tracker_accepts_is_measured_in_a_new_frame(daemon):
+    d, c = daemon
+    d.cameras["synthetic"] = camera = Synthetic()
+    old = d.measurements.keep(replace(camera.capture(None, depth=True), timestamp=time.monotonic() - 20))
+    m = Tracking(c, Tracker()).select(old.id, "block", box=[30, 30, 70, 70])
+    assert m["tracking"] == "tracked" and m["valid"] and m["frame"] != old.id and m["age_s"] < 5
+
+
+def test_failed_or_lost_targets_are_dropped_and_their_measurements_withdrawn(daemon, monkeypatch):
+    d, c = daemon
+    d.cameras["synthetic"] = Synthetic()
+    tracker = Tracker()
+    tracking = Tracking(c, tracker)
+    frame = c.frame("synthetic", depth=True)
+
+    def fail(*args, **kwargs):
+        raise Refused("fixture inference failed", "provider_error")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tracker, "update", fail)
+        with pytest.raises(Refused, match="fixture"):
+            tracking.select(frame.id, "block", box=[30, 30, 70, 70])
+    assert not tracking.targets and not tracker.boxes
+    selected = tracking.select(frame.id, "block", box=[30, 30, 70, 70])
+    tracker.lost = True
+    (lost,) = tracking.observe(["block"])
+    assert lost["tracking"] == "lost" and lost["withdrawn"] == [selected["id"]] and not tracking.targets
+    with pytest.raises(DaemonError, match="withdrawn"):
+        c.run({"do": "hold", "seconds": .01}, requires=[dict(evidence=selected["id"], max_age_s=30)])
+    with pytest.raises(ValueError, match="select it first"):
+        tracking.observe(["block"])
+
+
+def test_mcp_tracking_replies_are_measurements_and_inference_does_not_block_status(daemon):
+    from world_use.mcp_server import build
+
+    d, c = daemon
+    d.cameras["synthetic"] = Synthetic()
+    tracker = Tracker()
+    server = build(c.url, tracker=tracker)
+    frame = c.frame("synthetic", depth=True)
+
+    async def session():
+        tracker.proceed.clear()
+        selecting = asyncio.create_task(server.call_tool("select_target", dict(frame=frame.id, target="block",
+                                                                               box=[30, 30, 70, 70])))
+        await asyncio.to_thread(tracker.entered.wait, 3)
+        status = await asyncio.wait_for(server.call_tool("status", {}), timeout=1)
+        assert status.structured_content["enabled"]
+        await asyncio.wait_for(server.call_tool("stop", {}), timeout=1)
+        tracker.proceed.set()
+        selected = await selecting
+        assert selected.structured_content["valid"] and any(item.type == "image" for item in selected.content)
+        observed = await server.call_tool("observe_targets", dict(targets=["block"]))
+        (again,) = observed.structured_content["measurements"]
+        assert again["target"] == "block" and again["valid"] and again["frame"] != frame.id
+
+    try:
+        asyncio.run(session())
+    finally:
+        tracker.proceed.set()
+
+
+def _hung_provider(conn, options):
+    conn.send((True, dict(provider="deadline fixture")))
+    conn.recv()
+    threading.Event().wait(10)
+
+
+def _unresponsive_reader(conn, options):
+    conn.send((True, dict(provider="blocked input fixture")))
+    threading.Event().wait(10)
+
+
+@pytest.mark.parametrize("provider", [_hung_provider, _unresponsive_reader])
+def test_provider_deadline_terminates_process_and_never_replays_request(monkeypatch, provider):
+    from world_use import vision_worker
+    monkeypatch.setattr(vision_worker, "_serve", provider)
+    worker = vision_worker.TrackerProcess(timeout_s=.05, startup_timeout_s=5)
+    try:
+        started = time.monotonic()
+        with pytest.raises(Refused, match="deadline"):
+            worker.select("target", Frame(Image.new("RGB", (1024, 1024)), "fixture"), box=[0, 0, 8, 8])
+        assert time.monotonic() - started < 3
+        assert not worker.ready and not worker.process.is_alive()
+        with pytest.raises(Refused, match="closed"):
+            worker.update("target", Frame(Image.new("RGB", (8, 8)), "fixture"))
+    finally:
+        worker.close()

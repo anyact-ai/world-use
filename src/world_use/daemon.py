@@ -19,8 +19,8 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 from copy import deepcopy
-from dataclasses import replace
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -30,12 +30,12 @@ import numpy as np
 
 from . import bodies, calibrate, cameras, views
 from .behaviors import REGISTRY, build
-from .config import load_robot, load_workcell
+from .config import _keys, _vector, load_robot, load_workcell
 from .errors import Refused, explain
+from .events import _plain
 from .fit import load as load_fit
 from .kernel import Kernel
-from .perception import EvidenceStore
-from .phases import Phases
+from .perception import Measurements
 from .plan import Report, same_start, snapshot
 from .worker import Rehearser
 from .world import World
@@ -46,22 +46,15 @@ MAX_WAIT_S = 120.0
 
 class Daemon:
     def __init__(self, kernel: Kernel, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
-                 cams: dict[str, cameras.Camera] | None = None, rehearser: Rehearser | None = None,
-                 session: dict | None = None, config: dict | None = None):
+                 cams: dict[str, cameras.Camera] | None = None, rehearser: Rehearser | None = None, *,
+                 session: dict, config: dict | None = None):
+        """session is the startup identity from session_identity(): `wu up` reuses a daemon only when it matches."""
         self.k = kernel
         self.host, self.port = host, port
-        from .bodies.sim import SimBody
-        adapter = next((name for name, m in bodies.manifests().items() if m is kernel.manifest), "custom")
-        self.session = session or dict(
-            adapter=f"sim:{adapter}" if isinstance(kernel.body, SimBody) else adapter,
-            mode="simulation" if getattr(kernel.body, "simulated", False) else "hardware",
-            workcell_digest=hashlib.sha256(b"{}").hexdigest())
+        self.session = session
         self.cameras = dict(cams or {})
         kernel.cameras = self.cameras                    # the card lists them
-        self.evidence = EvidenceStore(kernel)
-        self.phases = Phases(kernel, self.evidence)
-        self._submissions: dict[str, tuple[str, tuple[int, dict]]] = {}
-        self._submission_lock = threading.Lock()
+        self.measurements = Measurements(kernel, self.cameras)
         kernel.record_session(session=self.session, config=config or {})
         self.shots = 0
         self.calibrations: dict[int, dict] = {}         # job id -> camera, picture size and, once solved, the result
@@ -109,19 +102,17 @@ class Daemon:
         if method == "GET" and route == ["status"]:
             with k.lock:
                 status = views.status(k)
-                status.update(session=self.session, session_id=self.evidence.session,
-                              line=f"{self.session['adapter']} | {status['line']}")
+                status.update(session=self.session, line=f"{self.session['adapter']} | {status['line']}")
                 return 200, status
         if method == "GET" and route == ["card"]:
-            from .procedures import EFFECTS
-            return 200, dict(card=views.card(k, reach=self.rehearser.reach_line), schema_version=1,
-                             session_id=self.evidence.session, session=self.session,
+            # The worker probes reach before the lock is taken: the control loop must never wait for it.
+            reach = self.rehearser.reach_line(k) if k.enabled and k.active is None else ""
+            with k.lock:
+                card = views.card(k, reach=lambda _: reach)
+            return 200, dict(card=card, session=self.session,
                              cameras={name: dict(depth=isinstance(cam, cameras.SimCamera),
                                                  calibrated=cam.view is not None)
                                       for name, cam in self.cameras.items()},
-                             effects=EFFECTS, geometry_fits=["known_box", "plane", "axis"],
-                             limits=dict(geometry=Phases.MAX_GEOMETRY, prepared_plans=Phases.MAX_PLANS,
-                                         evidence_support_bytes=EvidenceStore.MAX_SUPPORT_BYTES, request_keys=1024),
                              collision_coverage=dict(checked=["padded_link_segments", "tool_point_surfaces"],
                                  unchecked=["fingers", "payload", "pedestal", "self_collision"]))
         if method == "GET" and route == ["help"]:
@@ -130,87 +121,43 @@ class Daemon:
                                    for kind, cls in REGISTRY.items()})
         if method == "GET" and route == ["events"]:
             since = int(query.get("since", 0))
+            limit = int(query["limit"]) if "limit" in query else None
+            if limit is not None and limit < 1:
+                raise ValueError("limit must be at least 1")
             events = k.events.wait(since, wait) if wait else k.events.since(since)
+            more = limit is not None and len(events) > limit
+            events = events[:limit]
             return 200, dict(events=events, last=events[-1]["seq"] if events else since,
-                             missed=max(0, events[0]["seq"] - since - 1) if events else 0)
+                             missed=max(0, events[0]["seq"] - since - 1) if events else 0, more=more)
         if method == "GET" and route[0] == "jobs" and len(route) == 2:
             return self._job(int(route[1]), wait)
         if method == "GET" and route == ["world"]:
-            return 200, dict(k.world.to_dict(), text=views.world_text(k))
-        if method == "GET" and route == ["inspect"]:
-            from .records import page
             with k.lock:
-                status = views.status(k)
-            history = page(k.run_dir, since=int(query.get("since", 0)), limit=int(query.get("limit", 50)),
-                           job=int(query["job"]) if "job" in query else None, live=k.events.since(0))
-            if status["recording"]["error"]:
-                history["record_complete"] = False
-                history["problems"].append(status["recording"]["error"])
-            return 200, dict(session_id=self.evidence.session, status=status, closed=k.evidence_closed, **history)
-        if method == "GET" and route == ["evidence_image"]:
-            import base64
-            from io import BytesIO
-            from uuid import UUID
-
-            from PIL import Image
-            identity = str(UUID(query["evidence"])).replace("-", "")
-            if k.run_dir is None:
-                raise Refused("this session has no persisted images", "data_unavailable")
-            folder = k.run_dir / "perception" / identity
-            try:
-                metadata = json.loads((folder / "measurement.json").read_text())
-                metadata.pop("selection", None)  # Dense selection support stays in the artifact, not model context.
-                with Image.open(folder / "rgb.png") as image:
-                    data = BytesIO()
-                    image.save(data, format="PNG")
-            except FileNotFoundError:
-                raise Refused("source image has not committed or was lost; inspect recording status",
-                              "data_unavailable") from None
-            return 200, dict(metadata=metadata, png=base64.b64encode(data.getvalue()).decode("ascii"), historical=True)
+                return 200, dict(k.world.to_dict(), text=views.world_text(k))
         if method == "GET" and route == ["frame"]:
+            if "id" in query:
+                return 200, self.measurements.frame(query["id"]).to_dict()
             _, cam = self._camera(query.get("camera"))
             depth = str(query.get("depth", "false")).lower()
             if depth not in ("true", "false", "1", "0"):
                 raise ValueError("depth must be true or false")
             if depth in ("true", "1"):
                 if not isinstance(cam, cameras.SimCamera):
-                    raise Refused("this camera does not provide aligned metric depth", "missing_depth")
+                    raise Refused(f"camera {cam.name!r} has no aligned metric depth", "missing_depth",
+                                  "depth comes from simulated (MuJoCo) cameras")
                 frame = cam.capture(k, depth=True)
             else:
                 frame = cam.capture(k)
-            elapsed = k.clock.now() - k.t0 - (time.monotonic() - frame.timestamp)
-            return 200, self.evidence.remember(replace(frame, elapsed=elapsed)).to_dict()
+            return 200, self.measurements.keep(frame).to_dict()
         if method != "POST":
             return 404, dict(error=f"no route {method} /{path.strip('/')}")
         if route == ["run"]:
             if body.get("checked"):
                 raise Refused("submit the plan explicitly; checked plans are no longer shared between clients", "spec")
-            def submit():
-                if body.get("plan_id") is not None:
-                    if body.get("spec") is not None or body.get("requires") or not body.get("check", True):
-                        raise ValueError("prepared plans cannot override spec, prerequisites or rehearsal")
-                    prepared = self.phases.load(body["plan_id"])
-                    return self._run(prepared["plan"], 0, True, prepared["requires"], prepared=prepared)
-                return self._run(body["spec"], 0, bool(body.get("check", True)), body.get("requires", []))
-            if body.get("plan_id") is not None:
-                key = f"{self.evidence.session}:{body['plan_id']}"
-                if body.get("request_id") not in (None, key):
-                    raise ValueError("a prepared plan has one request_id; check again for another execution")
-                body = dict(body, request_id=key)
-            return self._once("run", body, wait, submit)
+            return self._run(body["spec"], wait, bool(body.get("check", True)), body.get("requires"))
         if route == ["look"]:
             return 200, self.look(body.get("camera"), body.get("spec"), bool(body.get("grid")))
         if route == ["check"]:
-            if body.get("prepare"):
-                prepared = self.phases.prepare(body["spec"], requires=body.get("requires"),
-                                               max_age_s=body.get("max_age_s"), effects=body.get("effects"))
-                report = self.rehearser.check(prepared["plan"], k)
-                out = dict(report.to_dict(), text=str(report))
-                if not report.refused:
-                    out["prepared"] = self.phases.save(prepared, report.to_dict())
-                return 200, out
-            if any(body.get(key) is not None for key in ("requires", "max_age_s", "effects")):
-                raise ValueError("requires, max_age_s and effects need prepare=true")
             report = self.rehearser.check(body["spec"], k)
             return 200, dict(report.to_dict(), text=str(report))
         if route == ["answer"]:
@@ -218,7 +165,7 @@ class Daemon:
             return self._job(int(body["job"]), wait)
         if route == ["stop"]:
             k.stop(body.get("reason", "stop requested"))
-            time.sleep(3 * k.clock.dt if hasattr(k.clock, "dt") else 0.03)
+            self._settle()
             return 200, dict(line=views.state_line(k))
         if route == ["enable"]:
             k.enable()
@@ -230,99 +177,48 @@ class Daemon:
             return 200, dict(line=views.state_line(k))
         if route == ["reset"]:
             k.reset()
+            self._settle()                    # a fault still present latches again on the next tick
             return 200, dict(line=views.state_line(k))
         if route == ["home_route"]:
-            k.set_home_route(body.get("steps", []), body.get("note", ""))
-            return 200, dict(home=views.status(k)["home"])
+            if "steps" not in body:
+                raise ValueError("home_route needs steps: a list of moves, [] to fold straight home from here, "
+                                 "or null to clear the route")
+            k.set_home_route(body["steps"], body.get("note", ""))
+            rehearsal = {} if body["steps"] is None else self._rehearse_home()
+            with k.lock:
+                return 200, dict(home=views.status(k)["home"], **rehearsal)
         if route == ["home"]:
-            return self._once("home", body, wait, lambda: self._job(
-                k.submit({"do": "seq", "steps": k.home_plan(), "label": "home"}).id, 0))
+            return self._job(k.submit({"do": "seq", "steps": k.home_plan(), "label": "home"}).id, wait)
         if route == ["world"]:
             with k.lock:
                 return self._world(body)
         if route == ["calibrate"]:
-            return self._once("calibrate", body, wait, lambda: self.calibrate(
-                body["camera"], int(body.get("points", 8)), body.get("spread"), 0))
-        if route == ["fit_geometry"]:
-            return 200, self.phases.fit(body["evidence"], kind=body.get("kind", "known_box"),
-                                       frame=body.get("frame", "work"), size_m=body.get("size_m"),
-                                       max_residual_m=body.get("max_residual_m", .003))
-        if route == ["verify_effect"]:
-            return 200, self.phases.verify(int(body["job"]), body.get("effect", 0), body["after"])
-        if route == ["invalidate_target"]:
-            if not isinstance(body.get("target"), str) or not 0 < len(body["target"]) <= 128:
-                raise ValueError("target must be a nonempty reference of at most 128 characters")
-            self.evidence.invalidate(body["target"])
-            return 200, dict(target=body["target"], status="lost")
+            return self.calibrate(body["camera"], int(body.get("points", 8)), body.get("spread"), wait)
+        if route == ["measure"]:
+            return 200, self.measurements.measure(body["frame"], point=body.get("point"), box=body.get("box"),
+                                                  mask=body.get("mask"), target=body.get("target"))
+        if route == ["withdraw"]:
+            return 200, dict(withdrawn=self.measurements.withdraw(body["measurements"], str(body.get("reason", ""))))
         if route == ["record"]:
-            if "evidence" in body:
-                receipt = self.evidence.register(body["evidence"])
-                if body.get("context") or body.get("note"):
-                    k.emit("annotation", body.get("note", "measurement context"),
-                           context=body.get("context", {}), evidence=receipt["id"])
-                return 200, receipt
             if body.get("context") or body.get("note"):
                 k.emit("annotation", body.get("note", "agent context"), context=body.get("context", {}))
             return 200, dict(summary=k.save_record(), run=str(k.run_dir) if k.run_dir else None)
         if route == ["shutdown"]:
-            return 200, dict(summary=self.shutdown())
+            return 200, dict(summary=self.shutdown(), run=None if k.run_dir is None else str(k.run_dir))
         return 404, dict(error=f"no route POST /{path.strip('/')}")
 
-    def _once(self, operation, body, wait, submit):
-        """A session-scoped key is reserved through admission. No completed key is evicted/replayed."""
-        key = body.get("request_id")
-        if key is None:
-            code, result = submit()
-        else:
-            prefix = self.evidence.session + ":"
-            if not isinstance(key, str) or not key.startswith(prefix) or not len(prefix) < len(key) <= 160:
-                raise Refused("request_id must start with this daemon's session_id followed by ':'", "request_session",
-                              "inspect the previous run; never replay an uncertain submission in a new session")
-            payload = dict(body)
-            payload.pop("wait", None)
-            encoded = json.dumps([operation, payload], sort_keys=True, allow_nan=False).encode()
-            digest = hashlib.sha256(encoded).hexdigest()
-            with self._submission_lock:
-                previous = self._submissions.get(key)
-                if previous is not None:
-                    if previous[0] != digest:
-                        raise Refused("request_id was already used for a different submission", "request_conflict")
-                    code, result = deepcopy(previous[1])
-                else:
-                    if len(self._submissions) >= 1024:
-                        raise Refused("session submission-key capacity reached", "request_capacity")
-                    # Preserve an uncertain reservation even if an unexpected exception interrupts admission.
-                    uncertain: tuple[int, dict] = (409, dict(refused=dict(
-                        message="submission outcome uncertain; inspect jobs",
-                        rule="request_uncertain", hint="do not replay this action")))
-                    self._submissions[key] = digest, uncertain
-                    try:
-                        code, result = submit()
-                    except Refused as e:
-                        code, result = 409, dict(refused=e.to_dict())
-                    except (ValueError, KeyError, TypeError) as e:
-                        code, result = 400, dict(error=explain(e))
-                    self._submissions[key] = digest, deepcopy((code, result))
-        job_id = result.get("id")
-        if code == 200 and isinstance(job_id, int):
-            _, current = self._job(job_id, wait)
-            return code, dict(result, **current)
-        return code, result
-
-    def _run(self, spec, wait: float, rehearse: bool, requires=None, *, prepared=None) -> tuple[int, dict]:
-        """Rehearse an idle snapshot, then admit only while that snapshot is still current."""
-        behavior = build(spec)       # malformed plans are request errors, before rehearsal or queueing
+    def _run(self, spec, wait: float, rehearse: bool, requires=None) -> tuple[int, dict]:
+        """Rehearse an idle snapshot, then admit only while that snapshot is still current. Required measurements
+        are checked before rehearsal, at admission and before each step, with or without rehearsal."""
+        build(spec)                  # malformed plans are request errors, before rehearsal or queueing
         k = self.k
-        requirements = self.evidence.resolve([] if requires is None else requires)
-        if requirements:
-            k.evidence_capable(behavior)
-            k.check_requirements(requirements)
+        guard = self.measurements.guard(requires or [])
+        if guard is not None:
+            guard()
         report: Report | None = None
         admission = None
         if rehearse:
             with k.lock:
-                if prepared is not None:
-                    self.phases.load(prepared["id"])
                 if not k.enabled or k.faulted or k.power_uncertain:
                     raise Refused("checked runs need torque on, confirmed power and a cleared fault", "not_ready",
                                   "inspect status and resolve the power state before running")
@@ -354,9 +250,7 @@ class Daemon:
                         + self.rehearser.reach_line(k))
                 return 200, dict(id=None, status="refused", incident=text, rehearsal=report.to_dict(),
                                  line=views.state_line(k))
-        job = k.submit(spec, admission=admission, requires=requirements)
-        if prepared is not None:
-            self.phases.submitted(job.id, prepared)
+        job = k.submit(spec, admission=admission, guard=guard)
         code, d = self._job(job.id, wait)
         if report is not None:
             d["rehearsal"] = dict(seconds=report.seconds, moving_s=report.moving_s, ok=report.ok)
@@ -395,7 +289,7 @@ class Daemon:
         img = cameras.overlay(img, cam.view, k, None if report is None else report.tool_path, caption)
         out = self._save(k, name, cam, img, drawn)
         if report is not None:
-            out["check"] = str(report)
+            out.update(check=str(report), ok=report.ok)
         return out
 
     def _save(self, k, name: str, cam, img, drawn: str) -> dict:
@@ -411,6 +305,14 @@ class Daemon:
     def _settle(self):
         """Let the control loop read the body once or twice, so the reply shows the new state."""
         time.sleep(3 * getattr(self.k.clock, "dt", 0.01))
+
+    def _rehearse_home(self) -> dict:
+        """The way home as `wu home` and a thermal return would run it, rehearsed from here."""
+        try:
+            report = self.rehearser.check({"do": "seq", "steps": self.k.home_plan(), "label": "home"}, self.k)
+        except Refused as e:
+            return dict(ok=False, problems=[e.to_dict()], text=f"the way home cannot be planned from here: {e}")
+        return dict(ok=report.ok, problems=report.problems, text=str(report))
 
     def calibrate(self, camera: str, points: int = 8, spread: float | None = None, wait: float = 0.0):
         """Start a calibration tour for a camera (see calibrate.py). The reply to its last answer carries the fit."""
@@ -481,11 +383,6 @@ class Daemon:
         if wait and not job.finished and job.status != "waiting":
             job.attention.wait(wait)
         d = job.to_dict()
-        with self.phases.lock:
-            phase = self.phases.jobs.get(job_id)
-            if phase is not None:
-                d["phase"] = phase["id"]
-                d["effects"] = [deepcopy(effect["spec"]) for effect in phase["effects"]]
         d["line"] = views.state_line(self.k)
         if job.outcome is not None and not job.outcome.ok:
             d["incident"] = views.incident(self.k, job, reach=self.rehearser.reach_line)
@@ -494,33 +391,42 @@ class Daemon:
         return 200, d
 
     def _world(self, body: dict) -> tuple[int, dict]:
-        self.k.changed()
-        w = self.k.world
-        if "fact" in body:
-            f = body["fact"]
-            w.assert_fact(f["key"], f["value"], f.get("source", "policy"), f.get("note", ""))
-        out = {}
-        if "box" in body:
-            b = dict(body["box"])
-            box = w.add_box(b.pop("name"), b.pop("kind"), b.pop("center"), b.pop("size"), b.pop("frame", "work"),
-                            b.pop("yaw_deg", 0.0), source=b.pop("source", "policy"), **b)
-            self.k.emit("world", f"box {views.box_line(self.k, box)}")
-            out["line"] = views.box_line(self.k, box)
-        if "remove" in body:
-            if w.boxes.pop(body["remove"], None) is None:
-                raise KeyError(f"no box {body['remove']!r}; boxes: {sorted(w.boxes)}")
-            self.k.emit("world", f"removed box {body['remove']!r}")
-            out["line"] = f"removed {body['remove']!r}"
+        """Change the world model. A request's changes are made on a copy first: all of them apply, or none."""
+        k, w = self.k, self.k.world
+        _keys(body, ("frame", "fact", "box", "remove"), "world change")
+        if not body:
+            raise ValueError("world change: give a frame, a fact, a box or a box to remove")
+        for key in body.keys() - {"remove"}:
+            if not isinstance(body[key], dict):
+                raise ValueError(f"{key}: expected a JSON object")
+        trial, lines = deepcopy(w), []
         if "frame" in body:
             f = body["frame"]
-            T = np.eye(4)
-            T[:3, 3] = f.get("origin", [0, 0, 0])
-            if "yaw_deg" in f:
-                a = np.radians(f["yaw_deg"])
-                T[:2, :2] = [[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]]
-            w.add_frame(f["name"], T, f.get("source", "policy"))
-        self.k.emit("world_state", "world updated", change=body, world=w.to_dict())
-        return 200, dict(out, boxes=sorted(w.boxes), facts=sorted(w.facts), frames=sorted(w.frames))
+            _keys(f, ("name", "origin", "rpy_deg", "source"), "frame")
+            if not isinstance(f.get("name"), str) or f["name"] in ("", "base"):
+                raise ValueError("frame: needs a name other than base")
+            trial.add_frame(f["name"], frame_pose(f), f.get("source", "policy"))
+            lines.append(views.frame_line(trial.frame(f["name"])))
+        if "fact" in body:
+            f = body["fact"]
+            _keys(f, ("key", "value", "source", "note"), "fact")
+            if not isinstance(f.get("key"), str) or not f["key"] or "value" not in f:
+                raise ValueError("fact: needs a key and a value")
+            fact = trial.assert_fact(f["key"], f["value"], f.get("source", "policy"), f.get("note", ""))
+            lines.append(f"fact {fact.key} = {fact.value} (from {fact.source})")
+        box = None if "box" not in body else add_box(trial, body["box"], "policy")
+        if "remove" in body and trial.boxes.pop(body["remove"], None) is None:
+            raise KeyError(f"no box {body['remove']!r}; boxes: {sorted(w.boxes)}")
+        k.changed()
+        w.frames, w.boxes, w.facts = trial.frames, trial.boxes, trial.facts
+        if box is not None:
+            lines.append(views.box_line(k, box))
+            k.emit("world", f"box {lines[-1]}")
+        if "remove" in body:
+            lines.append(f"removed {body['remove']!r}")
+            k.emit("world", f"removed box {body['remove']!r}")
+        k.emit("world_state", "world updated", change=body, world=w.to_dict())
+        return 200, dict(line="\n".join(lines), boxes=sorted(w.boxes), facts=sorted(w.facts), frames=sorted(w.frames))
 
 
 def _handler(d: Daemon):
@@ -562,6 +468,9 @@ def _handler(d: Daemon):
                 code, obj = 400, dict(error=explain(e))
             except (OSError, RuntimeError) as e:          # a camera that did not answer, for instance
                 code, obj = 502, dict(error=explain(e))
+            except Exception as e:                        # a bug: answer anyway, and keep the traceback in the log
+                traceback.print_exc()
+                code, obj = 500, dict(error=explain(e))
             self._reply(code, obj)
             if code == 200 and u.path.strip("/") == "shutdown":
                 d.done.set()
@@ -575,14 +484,6 @@ def _handler(d: Daemon):
         def log_message(self, format, *args):
             pass
     return Handler
-
-
-def _plain(o):
-    if isinstance(o, np.ndarray):
-        return o.tolist()
-    if isinstance(o, (np.floating, np.integer)):
-        return o.item()
-    return str(o)
 
 
 def session_identity(name: str, cell: dict) -> dict:
@@ -600,40 +501,51 @@ def session_identity(name: str, cell: dict) -> dict:
                 workcell_digest=digest)
 
 
+def frame_pose(frame: dict) -> np.ndarray:
+    """A frame's pose in the base frame, from its origin (m) and rpy_deg as a workcell gives them."""
+    from .geometry import rpy
+    T = np.eye(4)
+    T[:3, 3] = _vector(frame.get("origin", [0, 0, 0]), 3, "frame.origin")
+    T[:3, :3] = rpy(*np.radians(_vector(frame.get("rpy_deg", [0, 0, 0]), 3, "frame.rpy_deg")))
+    return T
+
+
+def add_box(world: World, spec: dict, source: str):
+    """A box from a workcell or a request: name, kind, center and size (three numbers each, metres), optional frame,
+    yaw_deg and source, and the parameters of its kind."""
+    b = dict(spec)
+    for key in ("name", "kind", "center", "size"):
+        if key not in b:
+            raise ValueError(f"box: missing {key}")
+    center, size = _vector(b.pop("center"), 3, "box.center"), _vector(b.pop("size"), 3, "box.size")
+    return world.add_box(b.pop("name"), b.pop("kind"), center, size, b.pop("frame", "work"), b.pop("yaw_deg", 0.0),
+                         source=b.pop("source", source), **b)
+
+
 def apply_workcell(cell: dict, k: Kernel, truth: World | None = None):
     """Boxes, facts, overrides and a fitted robot model from a workcell. With a simulator's truth world, boxes go
     there as well, and a box marked `known = false` goes only there: part of the scene the policy has to discover."""
     if "fit" in cell:
         k.use_fit(load_fit(cell["fit"]))
-    from .geometry import rpy
     for frame in cell.get("frame", []):
-        T = np.eye(4)
-        T[:3, 3] = frame.get("origin", [0, 0, 0])
-        T[:3, :3] = rpy(*np.radians(frame.get("rpy_deg", [0, 0, 0])))
-        k.world.add_frame(frame["name"], T, source="workcell")
+        k.world.add_frame(frame["name"], frame_pose(frame), source="workcell")
     if truth is not None:
         truth.frames.update(k.world.frames)
     for b in cell.get("box", []):
         b = dict(b)
-        known = b.pop("known", True)
-        args = (b.pop("name"), b.pop("kind"), b.pop("center"), b.pop("size"), b.pop("frame", "work"),
-                b.pop("yaw_deg", 0.0))
-        if known:
-            k.world.add_box(*args, source="workcell", **b)
+        if b.pop("known", True):
+            add_box(k.world, b, "workcell")
         if truth is not None and truth is not k.world:
-            truth.add_box(*args, source="workcell", **b)
+            add_box(truth, b, "workcell")
     for f in cell.get("fact", []):
         k.world.assert_fact(f["key"], f["value"], f.get("source", "workcell"), f.get("note", ""))
     env = cell.get("envelope", {})
     if "max_excursion_deg" in env:
         k.envelope.override("max_excursion", np.radians(env["max_excursion_deg"]),
                             env.get("reason", "set in the workcell file by the operator"))
-        why = env.get("reason", "workcell file")
-        k.emit("override", f"max excursion {env['max_excursion_deg']} deg: {why}", "warn")
     if "turn_height_m" in env:
-        why = env.get("turn_reason", "set in the workcell file by the operator")
-        k.envelope.override("turn_height", env["turn_height_m"], why)
-        k.emit("override", f"base and wrist may turn from U{env['turn_height_m']:+.3f} up: {why}", "warn")
+        k.envelope.override("turn_height", env["turn_height_m"],
+                            env.get("turn_reason", "set in the workcell file by the operator"))
 
 
 def make_cameras(cell: dict, k: Kernel, body, truth: World | None) -> dict[str, cameras.Camera]:
@@ -697,6 +609,14 @@ def main(argv=None):
     apply_workcell(cell, k, truth)
     d = Daemon(k, port=a.port, cams=make_cameras(cell, k, body, truth),
                session=session_identity(name, cell), config=cell)
+    try:
+        d.rehearser.check([], k)            # build the twin once: a robot it cannot model must not start
+    except Exception as e:
+        if getattr(e, "rule", None) != "worker_extension":    # registered plugin steps are refused per plan
+            k.close()
+            d.rehearser.close()             # its worker outlives an exiting parent
+            d.http.server_close()
+            raise ValueError(f"the rehearsal twin cannot model this robot: {e}") from e
     d.start()
     if a.enable:
         try:

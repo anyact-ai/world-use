@@ -13,7 +13,7 @@ import numpy as np
 from ..body import JointState, Manifest
 from ..kinematics import Chain
 from ..world import World
-from .mujoco_scene import build, mj, quat
+from .mujoco_scene import KP, KV, build, mj, quat
 
 THERMAL = dict(heat=0.0027, cool_on=0.001, cool_off=0.0068)
 
@@ -54,12 +54,15 @@ class SimBody:
         self._renderer = None
         self._closed = False
 
-    def _aperture(self, value) -> float:
+    def _grip_q(self, native) -> float:
+        """Each gripper joint's position for a native one: a jaw's own, or half the opening per finger."""
+        if len(self._grip) == 1:
+            return float(native)
         g = self.manifest.gripper
-        aperture = None if g is None else g.aperture(value)
+        aperture = None if g is None else g.aperture(native)
         if aperture is None or not np.isfinite(aperture):
-            raise ValueError("MuJoCo grippers need a calibrated aperture")
-        return aperture
+            raise ValueError("simulated fingers need a finite gripper position")
+        return aperture / 2
 
     def _signature(self):
         return tuple((name, box.kind, tuple(box.size), tuple(sorted(box.params.items())))
@@ -71,21 +74,23 @@ class SimBody:
         scene = self._signature()
         if self.model is not None and scene == self._scene:
             return
-        self.model, fingers = build(self.manifest, self.world, self.dt / self.substeps)
+        self.model, grip = build(self.manifest, self.world, self.dt / self.substeps)
         self.data = mj.MjData(self.model)
         joints = [self.model.joint(j.name) for j in self.manifest.joints]
         self._q = np.array([int(j.qposadr[0]) for j in joints])
         self._v = np.array([int(j.dofadr[0]) for j in joints])
-        self._fingers = [self.model.joint(name) for name in fingers]
-        self._finger_bodies = {int(j.bodyid[0]) for j in self._fingers}
+        self._grip = [self.model.joint(name) for name in grip]
+        # The bodies an object must touch to count as held: both fingers, or a jaw and what it closes against.
+        self._jaws = {int(j.bodyid[0]) for j in self._grip}
+        if len(self._grip) == 1:
+            self._jaws.add(int(self.model.body_parentid[self._grip[0].bodyid[0]]))
         self._objects = {name: self.model.body(f"box/{name}").id for name, b in self.world.boxes.items()
                          if b.kind == "object"}
         self.data.qpos[self._q] = self.q
-        if self._fingers:
-            aperture = self._aperture(self.grip)
-            for joint in self._fingers:
-                self.data.qpos[joint.qposadr] = aperture / 2
+        for joint in self._grip:
+            self.data.qpos[joint.qposadr] = self._grip_q(self.grip)
         self._gains = self.model.actuator_gainprm.copy(), self.model.actuator_biasprm.copy()
+        self._hold = self.model.dof_frictionloss.copy()
         self._scene = scene
         if self._fit is not None:
             self._apply_fit()
@@ -133,16 +138,22 @@ class SimBody:
         with self.lock:
             self.enabled = False
             if self.model is not None:
-                self.model.actuator_gainprm[:] = 0
-                self.model.actuator_biasprm[:] = 0
+                self._power(False)
                 self.data.ctrl[:] = 0
                 self.data.qfrc_applied[:] = 0
+
+    def _power(self, on: bool):
+        """Powered, the servos hold every joint. Unpowered, joint friction does: gearbox friction, or brakes."""
+        gains, bias = self._gains
+        self.model.actuator_gainprm[:] = gains if on else 0
+        self.model.actuator_biasprm[:] = bias if on else 0
+        self.model.dof_frictionloss[:] = 0 if on else self._hold
 
     def close(self):
         with self.lock:
             renderer, self._renderer = self._renderer, None
             self.model = self.data = None
-            self._fingers = []
+            self._grip = []
             self._closed = True
         if renderer is not None:
             renderer.close()
@@ -150,19 +161,15 @@ class SimBody:
     def read(self) -> JointState:
         with self.lock:
             self._ensure_scene()
-            m, d = self.model, self.data
-            if self.enabled:
-                m.actuator_gainprm[:], m.actuator_biasprm[:] = self._gains
-            else:
-                m.actuator_gainprm[:] = 0
-                m.actuator_biasprm[:] = 0
+            m, d, n = self.model, self.data, self.manifest.n
+            self._power(self.enabled)
             for _ in range(self.substeps):
                 d.qfrc_applied[:] = 0
                 if self.enabled:
                     # Gravity/velocity feed-forward, with actuator feedback integrated implicitly by MuJoCo.
-                    d.ctrl[:self.manifest.n] = self.q_cmd + (d.qfrc_bias[self._v] + 10 * self.dq_cmd) / 150
-                    if self._fingers:
-                        d.ctrl[self.manifest.n:] = self._aperture(self.grip_cmd) / 2
+                    d.ctrl[:n] = self.q_cmd + (d.qfrc_bias[self._v] + KV * self.dq_cmd) / KP
+                    if self._grip:
+                        d.ctrl[n:] = self._grip_q(self.grip_cmd)
                     if self._fit is not None:
                         d.qfrc_applied[self._v] = -self._fit.friction_torque(d.qvel[self._v])
                 mj.mj_step(m, d)
@@ -174,10 +181,12 @@ class SimBody:
                 tau += self.rng.normal(0, self.noise, len(tau))
             grip_tau = None
             g = self.manifest.gripper
-            if self._fingers and g is not None and g.m_per_unit is not None:
-                aperture = sum(float(d.qpos[j.qposadr[0]]) for j in self._fingers)
-                self.grip = g.position(aperture)
-                grip_tau = float(np.mean(d.actuator_force[self.manifest.n:]) * g.m_per_unit)
+            if len(self._grip) == 1:
+                self.grip = float(d.qpos[self._grip[0].qposadr[0]])
+                grip_tau = float(d.actuator_force[n])
+            elif self._grip and g is not None and g.m_per_unit is not None:
+                self.grip = g.position(sum(float(d.qpos[j.qposadr[0]]) for j in self._grip))
+                grip_tau = float(np.mean(d.actuator_force[n:]) * g.m_per_unit)
             self._update_world()
             self._cool(tau, off=not self.enabled)
             return self._state(tau, grip_tau, d.qvel[self._v].copy())
@@ -192,9 +201,8 @@ class SimBody:
             self._ensure_scene()
             mj.mj_resetData(self.model, self.data)
             self.data.qpos[self._q] = self.q
-            if self._fingers:
-                for joint in self._fingers:
-                    self.data.qpos[joint.qposadr] = self._aperture(gripper) / 2
+            for joint in self._grip:
+                self.data.qpos[joint.qposadr] = self._grip_q(gripper)
             for name, box in self.world.boxes.items():
                 if box.kind == "object":
                     j = self.model.joint(f"free/{name}")
@@ -212,11 +220,10 @@ class SimBody:
     def render(self, view):
         return self._capture(view, depth=False)[0]
 
-    def capture(self, view, *, feedback=False):
-        """RGB-D and tool pose from one physics snapshot, without advancing the scene."""
-        (rgb, depth), tool, timestamp, aperture = self._capture(view, depth=True)
-        result = rgb, depth, tool, timestamp
-        return (*result, aperture) if feedback else result
+    def capture(self, view):
+        """RGB, optical-z depth and the tool pose from one physics snapshot, without advancing the scene."""
+        (rgb, depth), tool, timestamp = self._capture(view, depth=True)
+        return rgb, depth, tool, timestamp
 
     def _capture(self, view, *, depth):
         import time
@@ -229,11 +236,10 @@ class SimBody:
             mj.mj_copyData(data, model, self.data)
             timestamp = time.monotonic()
             tool = self.chain.fk(self.q).copy()
-            aperture = 1000 * self._aperture(self.grip) if self.manifest.gripper is not None else None
             if self._renderer is None:
                 self._renderer = CameraRenderer()
             renderer = self._renderer
-        return renderer.render(model, data, view, depth=depth), tool, timestamp, aperture
+        return renderer.render(model, data, view, depth=depth), tool, timestamp
 
     def _update_world(self):
         d, m = self.data, self.model
@@ -247,11 +253,11 @@ class SimBody:
             touching = set()
             for contact in d.contact:
                 a, b = m.geom_bodyid[contact.geom1], m.geom_bodyid[contact.geom2]
-                if a == index and b in self._finger_bodies:
+                if a == index and b in self._jaws:
                     touching.add(b)
-                if b == index and a in self._finger_bodies:
+                if b == index and a in self._jaws:
                     touching.add(a)
-            if len(touching) == 2:
+            if self._jaws and touching == self._jaws:
                 self.world.held = (name, np.linalg.inv(self.chain.fk(self.q)) @ self.world.boxes[name].pose)
                 break
 

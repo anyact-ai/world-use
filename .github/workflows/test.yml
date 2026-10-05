@@ -3,6 +3,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:          # release.yml runs these jobs before publishing
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -23,7 +24,7 @@ jobs:
         run: .venv/bin/ty check src
       - name: Install headless rendering libraries
         run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1-mesa-dri
-      - name: Validate real EdgeTAM, Python and MCP procedures, recovery and Rerun
+      - name: Run the perception example with real EdgeTAM tracking, then replay and export it
         run: .venv/bin/python scripts/vision_smoke.py --output runs/vision-ci
       - name: Preserve validation evidence
         if: always()
@@ -46,11 +47,15 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        python: ['3.13']
+        include:
+          - os: ubuntu-latest       # the oldest supported Python
+            python: '3.11'
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
-      - run: uv sync --locked --extra rerun --python 3.13
+      - run: uv sync --locked --python ${{ matrix.python }}
       - name: Install headless rendering libraries
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1-mesa-dri
@@ -67,7 +72,7 @@ jobs:
         shell: bash
         run: |
           uv build
-          uv venv --python 3.13 "$RUNNER_TEMP/wheel-test"
+          uv venv --python ${{ matrix.python }} "$RUNNER_TEMP/wheel-test"
           for task_wheel in dist/*.whl; do
             uv pip install --python "$RUNNER_TEMP/wheel-test/bin/python" "${task_wheel}[mcp,rerun]"
           done
@@ -76,6 +81,7 @@ jobs:
             task_camera_args+=(--file-camera)
           fi
           "$RUNNER_TEMP/wheel-test/bin/python" scripts/wheel_smoke.py "${task_camera_args[@]}"
+      # motorbridge 0.5.5 has macOS and Linux wheels up to Python 3.13, none for 3.14.
       - name: Load the published hardware driver without opening CAN
         shell: bash
         run: |

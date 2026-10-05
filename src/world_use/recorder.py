@@ -109,8 +109,8 @@ class Tape:
             while len(self._power) > 1 and self._power_count - len(self._power) < power:
                 self._power.popleft()
 
-    def summary(self, rate_hz: float, *, until: float | None = None) -> dict:
-        """Elapsed durations, not tick counts divided by the nominal rate (kept for API compatibility)."""
+    def summary(self, *, until: float | None = None) -> dict:
+        """Elapsed durations, not tick counts divided by the nominal rate."""
         return self._summary(self.arrays(), until)
 
     @staticmethod
@@ -120,12 +120,6 @@ class Tape:
         summary = _Summary(a["q"].shape[1] if "q" in a else 0, exact=True)
         summary.add(a)
         return summary.result(until)
-
-    def save(self, path: Path, rate_hz: float, *, until: float | None = None):
-        a = self.arrays()
-        if a:
-            save_arrays(path, a)
-        return self._summary(a, until)
 
 
 class _Summary:
@@ -247,6 +241,7 @@ def _atomic(path: Path, write):
         try:
             write(f)
             f.flush()
+            os.fchmod(f.fileno(), 0o644)      # temporary files start private; records read like events.jsonl
             os.fsync(f.fileno())
             os.replace(temp, path)
         finally:
@@ -270,8 +265,6 @@ class Journal:
     """
     MAX_BLOCKS = 5
     MAX_POWER = 5000
-    MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
-    MAX_ARTIFACTS = 64
 
     def __init__(self, tape: Tape, folder: Path, interval: float = 1.0, *, events=None):
         self.tape, self.folder = tape, folder / "tape"
@@ -288,9 +281,6 @@ class Journal:
         self._stop = threading.Event()
         self._closing = False
         self._lock = threading.Lock()
-        self._artifact_lock = threading.Lock()
-        self._artifacts = deque()
-        self._artifact_bytes = self._artifact_lost = 0
         self._thread = threading.Thread(target=self._loop, args=(interval,), name="flight-recorder", daemon=True)
         self._thread.start()
 
@@ -298,55 +288,9 @@ class Journal:
     def losses(self) -> dict:
         row, power = self.tape.bounds
         seq = self.events.first_seq - 1 if self.events else self.seq
-        result = dict(samples=self._lost["samples"] + max(0, row - self.row),
+        return dict(samples=self._lost["samples"] + max(0, row - self.row),
                     events=self._lost["events"] + max(0, seq - self.seq),
                     power_transitions=self._lost["power_transitions"] + max(0, power - self.power))
-        if self._artifact_lost:
-            result["artifacts"] = self._artifact_lost
-        return result
-
-    def artifact(self, identity, size, write, data):
-        """Enqueue owned evidence off the control thread; never wait for storage."""
-        with self._artifact_lock:
-            if self._closing:
-                raise ValueError("recording has closed")
-            while self._artifacts and (self._artifact_bytes + size > self.MAX_ARTIFACT_BYTES
-                                       or len(self._artifacts) >= self.MAX_ARTIFACTS):
-                old, count, _, _ = self._artifacts.popleft()
-                self._artifact_bytes -= count
-                self._lose_artifact(old)
-            if self._artifact_bytes + size > self.MAX_ARTIFACT_BYTES:
-                self._lose_artifact(identity)
-                return False
-            self._artifacts.append((identity, size, write, data))
-            self._artifact_bytes += size
-            return True
-
-    def _lose_artifact(self, identity):
-        self._artifact_lost += 1
-        if self.events:
-            self.events.emit("evidence_lost", "evidence artifact queue overrun", "warn", evidence=identity)
-
-    def _flush_artifacts(self):
-        # A finite batch lets telemetry flush even while captures keep arriving.
-        with self._artifact_lock:
-            count = len(self._artifacts)
-        for _ in range(count):
-            with self._artifact_lock:
-                if not self._artifacts:
-                    break
-                item = self._artifacts.popleft()
-            _identity, size, write, data = item
-            try:
-                write()
-            except OSError:
-                with self._artifact_lock:
-                    self._artifacts.appendleft(item)
-                raise
-            with self._artifact_lock:
-                self._artifact_bytes -= size
-            if self.events:
-                self.events.emit("evidence_saved", "source evidence committed", **data)
 
     @property
     def error(self) -> str | None:
@@ -371,9 +315,7 @@ class Journal:
         with self._lock:
             try:
                 self._flush()
-                with self._artifact_lock:
-                    complete = self._closing and not self._artifacts
-                if complete:
+                if self._closing:
                     save_summary(self.folder.parent / "complete.json",
                                  dict(parts=self.part, events_bytes=self.offset))
             except OSError as e:
@@ -383,7 +325,6 @@ class Journal:
 
     def _flush(self):
         from .events import _plain
-        self._flush_artifacts()
         events = self.events.since(self.seq) if self.events else []
         row, power, a = self.tape.snapshot(self.row, self.power)
         seq = events[0]["seq"] - 1 if events else self.seq
@@ -391,8 +332,7 @@ class Journal:
             lost = dict(samples=self._lost["samples"] + row - self.row,
                         events=self._lost["events"] + seq - self.seq,
                         power_transitions=self._lost["power_transitions"] + power - self.power)
-            save_summary(self.folder.parent / "recording.json", dict(lost, **(
-                {"artifacts": self._artifact_lost} if self._artifact_lost else {})))
+            save_summary(self.folder.parent / "recording.json", lost)
             if row > self.row:
                 self._summary.previous = None
                 if not self._summary.explicit_power:
@@ -401,8 +341,6 @@ class Journal:
                 self._summary.power_last = None
             self._lost = lost
             self.row, self.power, self.seq = row, power, seq
-        elif self._artifact_lost:
-            save_summary(self.folder.parent / "recording.json", dict(self._lost, artifacts=self._artifact_lost))
         # Retry from the last complete batch after a partial write (e.g. a full disk).
         if events:
             path = self.folder.parent / "events.jsonl"
@@ -430,37 +368,35 @@ class Journal:
                 self.flush()
 
     def close(self):
-        with self._artifact_lock:
-            self._closing = True
         self._stop.set()
         self._thread.join()
+        self._closing = True
         self.flush()
 
 
 def load_tape(folder: Path | str) -> dict:
-    """Read a normal save or recover committed chunks after process loss. Never replay commands to a robot."""
+    """A record's committed telemetry, also after process loss. Never replay commands to a robot."""
     folder = Path(folder)
+    chunks = sorted((folder / "tape").glob("[0-9]*.npz"))
+    if not chunks and (folder / "tape.npz").exists():
+        chunks = [folder / "tape.npz"]               # 0.2.0 saved the whole tape at close
+    return read_chunks(chunks)
+
+
+def read_chunks(paths) -> dict:
+    """Telemetry chunks joined in the given order."""
     parts = []
-    for path in sorted((folder / "tape").glob("[0-9]*.npz")):
+    for path in paths:
         with np.load(path) as f:
             parts.append(dict(f))
-    a = {key: np.concatenate([p[key] for p in parts]) for key in parts[0]} if parts else {}
-    if (folder / "tape.npz").exists():
-        with np.load(folder / "tape.npz") as f:
-            saved = dict(f)
-        if not a or len(saved.get("t", [])) >= len(a["t"]):
-            a = saved
-    if (folder / "tape" / "power.npz").exists():
-        with np.load(folder / "tape" / "power.npz") as f:
-            a.update(dict(f))
-    return a
+    return {key: np.concatenate([p[key] for p in parts]) for key in parts[0]} if parts else {}
 
 
 def session_record(k, **context) -> dict:
     from dataclasses import asdict
     from datetime import UTC, datetime
 
-    from . import __version__, bodies
+    from . import __version__
     from .plan import snapshot
 
     source = hashlib.sha256()
@@ -478,8 +414,6 @@ def session_record(k, **context) -> dict:
         initial["model"]["urdf"] = "robot.urdf"
     return dict(format_version=3, created_at=datetime.now(UTC).isoformat(), package_version=__version__,
                 source_sha256=source.hexdigest(),
-                adapter=next((n for n, m in bodies.manifests().items() if m is k.manifest),
-                             f"{type(k.body).__module__}:{type(k.body).__qualname__}"),
                 body=k.manifest.name, mode="simulation" if getattr(k.body, "simulated", False) else "hardware",
                 urdf_sha256=hashlib.sha256(urdf).hexdigest(),
                 initial=initial, **context)

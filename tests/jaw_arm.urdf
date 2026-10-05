@@ -1,0 +1,73 @@
+<?xml version="1.0"?>
+<!-- A five-joint arm with a one-joint revolute jaw, like an SO-101, in primitive geometry. -->
+<robot name="jaw-arm">
+  <link name="base">
+    <inertial><origin xyz="0 0 0.025"/><mass value="0.5"/>
+      <inertia ixx="0.0003" ixy="0" ixz="0" iyy="0.0003" iyz="0" izz="0.0004"/></inertial>
+    <visual><origin xyz="0 0 0.025"/><geometry><box size="0.08 0.08 0.05"/></geometry></visual>
+    <collision><origin xyz="0 0 0.025"/><geometry><box size="0.08 0.08 0.05"/></geometry></collision>
+  </link>
+  <link name="shoulder">
+    <inertial><origin xyz="0 0 0.02"/><mass value="0.1"/>
+      <inertia ixx="0.00003" ixy="0" ixz="0" iyy="0.00003" iyz="0" izz="0.00003"/></inertial>
+    <visual><origin xyz="0 0 0.02"/><geometry><box size="0.04 0.04 0.04"/></geometry></visual>
+  </link>
+  <link name="upper_arm">
+    <inertial><origin xyz="0.06 0 0"/><mass value="0.15"/>
+      <inertia ixx="0.00002" ixy="0" ixz="0" iyy="0.0002" iyz="0" izz="0.0002"/></inertial>
+    <visual><origin xyz="0.06 0 0"/><geometry><box size="0.12 0.03 0.03"/></geometry></visual>
+    <collision><origin xyz="0.06 0 0"/><geometry><box size="0.10 0.03 0.03"/></geometry></collision>
+  </link>
+  <link name="forearm">
+    <inertial><origin xyz="0.06 0 0"/><mass value="0.12"/>
+      <inertia ixx="0.00002" ixy="0" ixz="0" iyy="0.00015" iyz="0" izz="0.00015"/></inertial>
+    <visual><origin xyz="0.06 0 0"/><geometry><box size="0.12 0.025 0.025"/></geometry></visual>
+    <collision><origin xyz="0.06 0 0"/><geometry><box size="0.10 0.025 0.025"/></geometry></collision>
+  </link>
+  <link name="wrist">
+    <inertial><origin xyz="0.015 0 0"/><mass value="0.05"/>
+      <inertia ixx="0.00001" ixy="0" ixz="0" iyy="0.00001" iyz="0" izz="0.00001"/></inertial>
+    <visual><origin xyz="0.015 0 0"/><geometry><box size="0.03 0.025 0.025"/></geometry></visual>
+  </link>
+  <link name="hand">
+    <inertial><origin xyz="0.04 0 0"/><mass value="0.08"/>
+      <inertia ixx="0.00002" ixy="0" ixz="0" iyy="0.00004" iyz="0" izz="0.00004"/></inertial>
+    <visual><origin xyz="0.015 0 0"/><geometry><box size="0.03 0.05 0.025"/></geometry></visual>
+    <visual><origin xyz="0.065 -0.008 0"/><geometry><box size="0.07 0.008 0.02"/></geometry></visual>
+    <collision><origin xyz="0.065 -0.008 0"/><geometry><box size="0.07 0.008 0.02"/></geometry></collision>
+  </link>
+  <link name="jaw">
+    <inertial><origin xyz="0.035 0 0"/><mass value="0.02"/>
+      <inertia ixx="0.000001" ixy="0" ixz="0" iyy="0.00001" iyz="0" izz="0.00001"/></inertial>
+    <visual><origin xyz="0.035 0 0"/><geometry><box size="0.07 0.008 0.02"/></geometry></visual>
+    <collision><origin xyz="0.035 0 0"/><geometry><box size="0.07 0.008 0.02"/></geometry></collision>
+  </link>
+  <link name="tool"/>
+  <joint name="pan" type="revolute">
+    <parent link="base"/><child link="shoulder"/><origin xyz="0 0 0.05"/><axis xyz="0 0 1"/>
+    <limit lower="-2.0" upper="2.0" effort="3" velocity="2"/>
+  </joint>
+  <joint name="lift" type="revolute">
+    <parent link="shoulder"/><child link="upper_arm"/><origin xyz="0 0 0.04"/><axis xyz="0 -1 0"/>
+    <limit lower="-0.5" upper="2.0" effort="3" velocity="2"/>
+  </joint>
+  <joint name="elbow" type="revolute">
+    <parent link="upper_arm"/><child link="forearm"/><origin xyz="0.12 0 0"/><axis xyz="0 -1 0"/>
+    <limit lower="-2.5" upper="2.5" effort="3" velocity="2"/>
+  </joint>
+  <joint name="wrist_flex" type="revolute">
+    <parent link="forearm"/><child link="wrist"/><origin xyz="0.12 0 0"/><axis xyz="0 -1 0"/>
+    <limit lower="-2.0" upper="2.0" effort="3" velocity="2"/>
+  </joint>
+  <joint name="wrist_roll" type="revolute">
+    <parent link="wrist"/><child link="hand"/><origin xyz="0.03 0 0"/><axis xyz="1 0 0"/>
+    <limit lower="-2.8" upper="2.8" effort="3" velocity="2"/>
+  </joint>
+  <joint name="jaw" type="revolute">
+    <parent link="hand"/><child link="jaw"/><origin xyz="0.03 0.008 0"/><axis xyz="0 0 1"/>
+    <limit lower="-0.2" upper="0.8" effort="3" velocity="2"/>
+  </joint>
+  <joint name="tool" type="fixed">
+    <parent link="hand"/><child link="tool"/><origin xyz="0.085 0 0"/>
+  </joint>
+</robot>

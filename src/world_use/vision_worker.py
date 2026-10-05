@@ -1,6 +1,7 @@
 """Optional, bounded model process owned by a procedure or MCP client, never by the kernel."""
 from __future__ import annotations
 
+import math
 import multiprocessing
 import os
 import pickle
@@ -8,7 +9,9 @@ import signal
 import threading
 
 from .errors import Refused
-from .procedures import positive
+
+MAX_TARGETS = 4
+LATE = "the tracker missed its deadline and was stopped; select targets again"
 
 
 def _serve(conn, options):
@@ -42,8 +45,12 @@ def _serve(conn, options):
                         old.close()
                     result = None
                 elif action == "select":
-                    if len(targets) >= 4:
-                        raise ValueError("at most four active targets")
+                    old = targets.pop(identity, None)       # selecting a target again replaces its history
+                    if old is not None:
+                        old.close()
+                    if len(targets) >= MAX_TARGETS:
+                        raise ValueError(f"at most {MAX_TARGETS} targets at a time; select again under one of "
+                                         f"their names: {', '.join(targets)}")
                     tracker = root.fork()
                     result = tracker.select(frame, **prompt)
                     targets[identity] = tracker
@@ -64,11 +71,13 @@ def _serve(conn, options):
 
 
 class TrackerProcess:
-    """Load once before powered work; one in-flight inference and four independent target histories."""
+    """Load once before powered work; one inference at a time and up to four independent target histories."""
 
     def __init__(self, *, device="cpu", model_path=None, max_age_s=15, timeout_s=30, startup_timeout_s=120):
-        self.timeout_s = positive(timeout_s, "timeout_s")
-        startup_timeout_s = positive(startup_timeout_s, "startup_timeout_s")
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < math.inf
+                   for v in (timeout_s, startup_timeout_s)):
+            raise ValueError("timeouts must be positive numbers of seconds")
+        self.timeout_s = float(timeout_s)
         self.lock = threading.Lock()
         self.ready = False
         ctx = multiprocessing.get_context("spawn")
@@ -93,7 +102,7 @@ class TrackerProcess:
 
     def _call(self, action, target, frame=None, **prompt):
         if not self.lock.acquire(blocking=False):
-            raise Refused("another perception request is running", "busy", "wait for its result")
+            raise Refused("the tracker is busy with another request", "busy", "wait for its result, then retry")
         expired = threading.Event()
 
         def deadline():
@@ -106,29 +115,28 @@ class TrackerProcess:
         timer.daemon = True
         try:
             if not self.ready:
-                raise Refused("vision provider is closed; restart it and reselect targets", "provider_unavailable")
-            # The model needs RGB and identity, not a second copy of depth or geometric feedback.
+                raise Refused("the tracker is closed; restart it and select targets again", "provider_unavailable")
+            # The model needs RGB and identity, not a second copy of depth.
             if frame is not None:
                 from .cameras import Frame
-                frame = Frame(frame.image, frame.camera, frame.id, frame.timestamp,
-                              session=frame.session, calibration=frame.calibration)
+                frame = Frame(frame.image, frame.camera, frame.id, frame.timestamp)
             timer.start()
             self.conn.send_bytes(pickle.dumps((action, target, frame, prompt)))
             if not self.conn.poll(self.timeout_s):
                 self.close(force=True)
-                raise Refused("perception deadline exceeded; targets require reselection", "provider_timeout")
+                raise Refused(LATE, "provider_timeout")
             ok, result = self.conn.recv()
             if expired.is_set():
                 self.close(force=True)
-                raise Refused("perception deadline exceeded; targets require reselection", "provider_timeout")
+                raise Refused(LATE, "provider_timeout")
             if not ok:
-                raise Refused(f"perception failed: {result}", "provider_error")
+                raise Refused(f"tracking failed: {result}", "provider_error")
             return result
         except (EOFError, BrokenPipeError, OSError):
             self.close()
             if expired.is_set():
-                raise Refused("perception deadline exceeded; targets require reselection", "provider_timeout") from None
-            raise Refused("vision provider exited; restart it and reselect targets", "provider_unavailable") from None
+                raise Refused(LATE, "provider_timeout") from None
+            raise Refused("the tracker exited; restart it and select targets again", "provider_unavailable") from None
         finally:
             timer.cancel()
             if timer.ident is not None:

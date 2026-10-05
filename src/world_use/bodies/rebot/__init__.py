@@ -98,6 +98,8 @@ MANIFEST = Manifest(
         "Joint torque strays 1-3 Nm from the gravity model over a 10 cm move (friction and hysteresis, not mass), "
         "so a long guarded move can stop on nothing: line to about 2 cm short of the expected contact, then guard "
         "only the rest. Contact is found at a few newtons.",
+        "The motors run on the 48 V supply; USB powers only the CAN adapter. With no clear way home, the operator "
+        "supports the arm and switches off the 48 V supply: unplugging USB leaves the motors powered.",
     ),
 )
 
@@ -115,9 +117,11 @@ WRAP_SUSPECT = 3.3                    # rad: a motor reading beyond this has pro
 
 
 class ReBotBody:
-    manifest = MANIFEST
-
-    def __init__(self, channel: str | None = None, velocity_ff: bool = True, stiffness: float = 1.0):
+    def __init__(self, manifest: Manifest = MANIFEST, channel: str | None = None, velocity_ff: bool = True,
+                 stiffness: float = 1.0):
+        if manifest is not MANIFEST:
+            raise ValueError("the rebot driver uses its built-in model; use a custom adapter for a different robot")
+        self.manifest = manifest
         self.channel = channel or os.environ.get("REBOT_CHANNEL", "can0")
         self.velocity_ff, self.stiffness = velocity_ff, float(np.clip(stiffness, 0.2, 1.0))
         self.chain = Chain(MANIFEST.urdf, MANIFEST.tool_link)

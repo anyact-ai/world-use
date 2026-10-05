@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
@@ -11,8 +13,8 @@ from pathlib import Path
 import numpy as np
 
 from .kinematics import Chain
-from .recorder import load_tape
-from .records import robot_of
+from .recorder import read_chunks
+from .records import overview, robot_of
 from .robot_assets import resolve
 from .world import World
 
@@ -37,8 +39,6 @@ class RecordReader:
         self.folder = folder
         self.parts: set[Path] = set()
         self.offset = 0
-        self.initial = True
-        self.saved_mtime = None
         self.losses = {}
         self.complete = False
 
@@ -47,18 +47,8 @@ class RecordReader:
         marker = self.folder / "complete.json"
         complete = json.loads(marker.read_text()) if marker.exists() else None
         paths = set((self.folder / "tape").glob("[0-9]*.npz"))
-        saved = self.folder / "tape.npz"
-        mtime = saved.stat().st_mtime_ns if saved.exists() else None
-        if self.initial or mtime != self.saved_mtime:
-            samples = load_tape(self.folder)
-        else:
-            parts = []
-            for path in sorted(paths - self.parts):
-                with np.load(path) as data:
-                    parts.append(dict(data))
-            samples = {key: np.concatenate([p[key] for p in parts]) for key in parts[0]} if parts else {}
+        samples = read_chunks(sorted(paths - self.parts))
         self.parts.update(paths)
-        self.initial, self.saved_mtime = False, mtime
         # Journal writes events before publishing the corresponding telemetry chunk.
         events = []
         path = self.folder / "events.jsonl"
@@ -84,16 +74,12 @@ class RecordReader:
         return samples, events
 
 
-def blueprint(base_frame: str, follow: bool, cameras=()):
+def blueprint(base_frame: str, follow: bool, eye: tuple, cameras=()):
     import rerun as rr
     import rerun.blueprint as rrb
 
-    images = [rrb.Tabs(*[rrb.Spatial2DView(name=f"{label} · {name}",
-                                         origin=f"/{root}/{rr.escape_entity_path_part(name)}")
-                        for root, label in (("observations", "RGB"), ("depth", "Depth"),
-                                            ("evidence_images", "Selected support"))],
-                       rrb.TextDocumentView(name="Evidence", origin=f"/evidence/{rr.escape_entity_path_part(name)}"),
-                       name=f"Camera · {name}") for name in cameras]
+    images = [rrb.Spatial2DView(name=f"Camera · {name}",
+                                origin=f"/observations/{rr.escape_entity_path_part(name)}") for name in cameras]
     if not images:
         images = [rrb.TextDocumentView(name="Camera observations", origin="/camera-help")]
     return rrb.Blueprint(
@@ -102,8 +88,8 @@ def blueprint(base_frame: str, follow: bool, cameras=()):
                 rrb.Spatial3DView(name="Robot · observed surfaces · estimated world",
                                   contents=["/robot/**", "/scene/**"],
                                   spatial_information=rrb.SpatialInformation(base_frame),
-                                  eye_controls=rrb.EyeControls3D(position=[.65, -.65, .55],
-                                                               look_target=[.2, 0, .25], eye_up=[0, 0, 1]),
+                                  eye_controls=rrb.EyeControls3D(position=eye[0], look_target=eye[1],
+                                                               eye_up=[0, 0, 1]),
                                   background=[24, 29, 36], line_grid=True),
                 rrb.Tabs(*images, rrb.TextDocumentView(name="About this run", origin="/about")),
                 column_shares=[3, 2]),
@@ -146,13 +132,15 @@ class RecordingView:
             self.tree = UrdfTree.from_file_path(urdf, entity_path_prefix="robot", frame_prefix="robot/")
             self.tree.log_urdf_to_recording(self.rec)
         self.base_frame = f"robot/{self.tree.root_link().name}"
+        self.eye = tuple(v.tolist() for v in overview(self.chain))
         self.joints = {j.name: j for j in self.tree.joints() if j.joint_type != "fixed"}
         arm = {j.name for j in self.manifest.joints}
-        self.fingers = [j for name, j in self.joints.items() if name not in arm]
+        others = [j for name, j in self.joints.items() if name not in arm]
         g = self.manifest.gripper
-        if self.fingers and (g is None or g.m_per_unit is None or len(self.fingers) != 2
-                             or any(j.joint_type != "prismatic" for j in self.fingers)):
-            raise ValueError("viewer grippers require two prismatic fingers and an aperture calibration")
+        # The recorded aperture moves two prismatic fingers; any other gripper joint stays where the URDF puts it.
+        animated = (g is not None and g.m_per_unit is not None and len(others) == 2
+                    and all(j.joint_type == "prismatic" for j in others))
+        self.fingers = others if animated else []
         self.last_t = -np.inf
         self.last_scene = -np.inf
         self.pending: deque[dict] = deque()
@@ -174,6 +162,12 @@ class RecordingView:
             "This viewer is read-only. Closing it does not stop a job or change motor power.",
             media_type="text/markdown"), static=True)
         self.rec.set_time(TIMELINE, duration=0.0)
+        if not animated and others:
+            for joint in others:
+                self.rec.log(self._path("transforms", joint.name), joint.compute_transform(0.0, clamp=False))
+            self.rec.log("events", rr.TextLog(
+                f"Gripper joints {', '.join(j.name for j in others)} are drawn static: the viewer moves two "
+                "prismatic fingers with a calibrated aperture.", level="WARN"))
         initial = self.meta["initial"]
         for spec, value in zip(self.manifest.joints, initial["q"], strict=True):
             self.rec.log(self._path("transforms", spec.name),
@@ -205,35 +199,29 @@ class RecordingView:
                 rec.log(self._path("observations", data["camera"]), rr.EncodedImage(path=path))
             else:
                 rec.log("events", rr.TextLog(f"Missing saved observation: {data['path']}", level="WARN"))
-        if event["kind"] == "evidence_saved":
-            self._evidence(data)
+        if event["kind"] == "measurement":
+            self._measurement(data["measurement"], event["t"])
 
-    def _evidence(self, data):
+    def _measurement(self, m, t):
+        """The measured picture at its capture time; its surface points from when they were measured."""
         rr, rec = self.rr, self.rec
-        folder = (self.folder / data["path"]).resolve()
-        if not folder.is_relative_to(self.folder):
-            raise ValueError("recorded evidence path escapes its run folder")
-        if not all((folder / name).is_file() for name in ("rgb.png", "overlay.png", "surfaces.npz")):
-            rec.log("events", rr.TextLog(f"Missing source evidence: {data['path']}", level="WARN"))
+        image = (self.folder / m["image"]).resolve()
+        if not image.is_relative_to(self.folder):
+            raise ValueError("recorded measurement path escapes its run folder")
+        points = image.with_suffix(".npz")
+        if not image.is_file() or not points.is_file():
+            rec.log("events", rr.TextLog(f"Missing measurement files: {m['image']}", level="WARN"))
             return
-        m = data["measurement"]
-        camera = m["camera"]
-        capture_t = m["capture_t"] if m.get("capture_t") is not None else m["available_t"]
-        rec.set_time(TIMELINE, duration=capture_t)
-        rec.log(self._path("observations", camera), rr.EncodedImage(path=folder / "rgb.png"))
-        with np.load(folder / "surfaces.npz") as arrays:
-            if "depth" in arrays:
-                rec.log(self._path("depth", camera), rr.DepthImage(arrays["depth"], meter=1))
-            # Derived geometry appears when it became available, never retrospectively as a live belief.
-            rec.set_time(TIMELINE, duration=m["available_t"])
-            path = self._path("scene/observed", m["target"] or m["id"])
-            rec.log(path, rr.Clear(recursive=True))
-            if m["valid"]:
+        rec.set_time(TIMELINE, duration=m["capture_t"])
+        rec.log(self._path("observations", m["camera"]), rr.EncodedImage(path=image))
+        rec.set_time(TIMELINE, duration=t)
+        path = self._path("scene/observed", m["target"] or m["id"])
+        rec.log(path, rr.Clear(recursive=True))
+        if m["valid"]:
+            with np.load(points) as arrays:
                 rec.log(path, rr.CoordinateFrame(self.base_frame),
                         rr.Points3D(arrays["points"], colors=[30, 220, 100], radii=.002,
-                                    labels=[f"observed: {m['target'] or 'surface'} at {capture_t:.2f}s"]))
-        rec.log(self._path("evidence_images", camera), rr.EncodedImage(path=folder / "overlay.png"))
-        rec.log(self._path("evidence", camera), rr.TextDocument(json.dumps(m, indent=2)))
+                                    labels=[f"measured: {m['target'] or 'surface'} at {m['capture_t']:.2f}s"]))
 
     def _world(self, tool):
         rr, rec = self.rr, self.rec
@@ -269,11 +257,11 @@ class RecordingView:
     def append(self, samples: dict, events: list[dict]):
         rr, rec = self.rr, self.rec
         cameras = {e["data"]["camera"] for e in events if e["kind"] == "look" and e.get("data", {}).get("camera")}
-        cameras.update(e["data"]["measurement"]["camera"] for e in events if e["kind"] == "evidence_saved")
+        cameras.update(e["data"]["measurement"]["camera"] for e in events if e["kind"] == "measurement")
         if cameras - self.camera_names:
             self.camera_names.update(cameras)
             if self.update_layout:
-                rec.send_blueprint(blueprint(self.base_frame, self.follow, sorted(self.camera_names)))
+                rec.send_blueprint(blueprint(self.base_frame, self.follow, self.eye, sorted(self.camera_names)))
         self.pending.extend(events)
         times = np.asarray(samples.get("t", []))
         mask = times > self.last_t
@@ -344,10 +332,12 @@ def view(folder: Path | str, *, output: Path | None = None, follow: bool = False
             output.parent.mkdir(parents=True, exist_ok=True)
             rec.save(output)
         else:
-            rec.spawn(memory_limit="1GiB", hide_welcome_screen=True)
+            # A tool install keeps rerun-sdk's viewer app beside this Python, off the PATH; elsewhere, use the PATH.
+            app = shutil.which("rerun", path=str(Path(sys.executable).parent))
+            rec.spawn(memory_limit="1GiB", hide_welcome_screen=True, executable_path=app)
         viewer = RecordingView(folder, rec, follow=follow, update_layout=output is None)
         if output is None:
-            rec.send_blueprint(blueprint(viewer.base_frame, follow))
+            rec.send_blueprint(blueprint(viewer.base_frame, follow, viewer.eye))
         reader = RecordReader(folder)
         while True:
             samples, events = reader.poll()
@@ -362,7 +352,7 @@ def view(folder: Path | str, *, output: Path | None = None, follow: bool = False
     finally:
         if output is not None and viewer is not None:
             # Save one complete layout after all camera names are known, including on Ctrl+C.
-            rec.send_blueprint(blueprint(viewer.base_frame, False, sorted(viewer.camera_names)))
+            rec.send_blueprint(blueprint(viewer.base_frame, False, viewer.eye, sorted(viewer.camera_names)))
         rec.flush()
         rec.disconnect()
     return output

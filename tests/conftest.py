@@ -1,13 +1,27 @@
+from contextlib import contextmanager
+
 import numpy as np
 import pytest
 from PIL import Image
 
-from world_use import Kernel, RealClock, VirtualClock, World, bodies, cameras
-from world_use.client import Client
-from world_use.daemon import Daemon, apply_workcell
+from world_use import Client, Kernel, RealClock, VirtualClock, World, bodies, cameras
+from world_use.daemon import Daemon, apply_workcell, make_body, make_cameras, session_identity
 
 # Measured on the physical reBot (2026-09-16): its folded rest pose.
 Q_REST = np.array([0.3782, 0.0015, -0.0005, -0.0011, 0.0625, 0.0051])
+
+
+class FastClock(VirtualClock):
+    """Simulated time, paced at `speed` times real time: a daemon's loop still sleeps between ticks, so requests
+    interleave with its ticks as they do at real time, and a tour of the arm takes seconds."""
+
+    def __init__(self, rate_hz: float, speed: float):
+        super().__init__(rate_hz)
+        self.pace = RealClock(rate_hz * speed)
+
+    def wait(self):
+        super().wait()
+        self.pace.wait()
 
 
 def make_kernel(world=None, sim_world=None, q=Q_REST, gripper=1.0, **sim_options):
@@ -45,29 +59,36 @@ def rehearser():
     r.close()
 
 
-def serve(tmp_path, cell=None, rehearser=None):
-    """A daemon on a simulated reBot as `wu up` makes it: the simulator's truth and the kernel's model apart."""
-    world, truth = World(), World()
-    body = bodies.make("sim", truth, q=Q_REST, gripper=1.0)
-    k = Kernel(body, world, RealClock(100.0), run_dir=tmp_path / "run")
+@contextmanager
+def serving(tmp_path, cell=None, rehearser=None, clock=None):
+    """A daemon as `wu up` makes it from a workcell, with torque on. Unless the workcell names another body, a
+    simulated reBot at its measured rest: the simulator's truth and the kernel's model apart.
+    Leaving stops its threads and closes its kernel and server, whatever state the arm is in."""
+    cell = cell or {}
+    name = cell.get("body", "sim")
+    truth = World() if name == "sim" else None
+    body = make_body(name, cell) if truth is None else bodies.make("sim", truth, q=Q_REST, gripper=1.0)
+    k = Kernel(body, World(), clock, run_dir=tmp_path / "run")
     k.connect()
-    truth.frames.update(world.frames)
-    apply_workcell(cell or {}, k, truth)
+    apply_workcell(cell, k, truth)
     k.enable()
-    d = Daemon(k, port=0, cams=cameras.sim_cameras(body, truth), rehearser=rehearser)      # port 0: any free port
+    d = Daemon(k, port=0, cams=make_cameras(cell, k, body, truth), rehearser=rehearser,   # port 0: any free port
+               session=session_identity(name, cell), config=cell)
     d.start()
-    return d, Client(f"http://127.0.0.1:{d.http.server_address[1]}")
+    try:
+        yield d, Client(f"http://127.0.0.1:{d.http.server_address[1]}")
+    finally:
+        d.stop_loop.set()
+        d.http.shutdown()
+        d.control.join(timeout=5)
+        d.http.server_close()
+        k.close()
 
 
 @pytest.fixture
 def daemon(tmp_path, rehearser):
-    d, c = serve(tmp_path, rehearser=rehearser)
-    yield d, c
-    d.stop_loop.set()
-    d.http.shutdown()
-    d.control.join(timeout=5)
-    d.http.server_close()
-    d.k.close()
+    with serving(tmp_path, rehearser=rehearser) as served:
+        yield served
 
 
 @pytest.fixture

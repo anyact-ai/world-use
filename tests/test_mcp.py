@@ -1,6 +1,7 @@
 """The MCP server: the CLI's verbs as tools, answering in the same short text (and pictures)."""
 import asyncio
 
+import numpy as np
 import pytest
 
 pytest.importorskip("mcp")
@@ -11,7 +12,7 @@ from world_use.mcp_server import build
 
 
 @pytest.mark.usefixtures("file_camera")
-def test_mcp_capture_measurement_and_evidence_refusal(daemon):
+def test_mcp_frames_measurements_and_crops_come_with_their_pictures(daemon):
     import json
 
     _, c = daemon
@@ -19,14 +20,19 @@ def test_mcp_capture_measurement_and_evidence_refusal(daemon):
 
     async def session():
         captured = await server.call_tool("camera_frame", {"camera": "side"})
-        metadata = json.loads(captured.content[0].text)
+        frame = json.loads(captured.content[0].text)["frame"]
         assert any(item.type == "image" for item in captured.content)
-        measured = await server.call_tool("measure_pixels", {"frame": metadata["frame"], "point": [200, 200]})
-        receipt = json.loads(measured.content[0].text)
-        assert not receipt["valid"] and receipt["reason"] == "missing_depth"
-        with pytest.raises(ToolError, match="no valid geometry"):
+        measured = await server.call_tool("measure_pixels", {"frame": frame, "point": [200, 200]})
+        measurement = json.loads(measured.content[0].text)
+        assert not measurement["valid"] and measurement["reason"] == "missing_depth"
+        assert any(item.type == "image" for item in measured.content)
+        with pytest.raises(ToolError, match="found no surface"):
             await server.call_tool("run", {"plan": {"do": "gripper", "aperture_mm": 65}, "rehearse": False,
-                                          "requires": [{"evidence": receipt["id"], "max_age_s": 10}]})
+                                          "requires": [{"evidence": measurement["id"], "max_age_s": 10}]})
+        crop = (await server.call_tool("inspect_image", {"frame": frame, "crop": [10, 20, 50, 80],
+                                                          "max_side": 600})).structured_content
+        assert crop["size"] == [400, 600]
+        assert crop["native_from_image"] @ np.array([200, 300, 1]) == pytest.approx([30, 50, 1])
     asyncio.run(session())
 
 
@@ -43,14 +49,17 @@ def test_mcp_tools_drive_the_daemon(daemon):
         assert "power_uncertain" in r.content[0].text
         assert "world-use://policy" in {str(r.uri) for r in await server.list_resources()}
         r = await server.call_tool("status", {})
-        assert "idle" in r.content[0].text
-        assert "power_uncertain" in r.content[0].text
+        assert "idle" in r.content[0].text and "\n" not in r.content[0].text
+        assert r.structured_content["power_uncertain"] is False
         r = await server.call_tool("run", {"plan": [{"do": "line", "up": 0.03, "duration": 1.0}], "wait_s": 0})
-        assert "job 1" in r.content[0].text
+        assert "job 1 is still" in r.content[0].text and "job(job=1)" in r.content[0].text
+        assert "wu " not in r.content[0].text                  # an MCP agent has tools, not a shell
         r = await server.call_tool("job", {"job": 1, "wait_s": 10})
-        assert '"status": "done"' in r.content[0].text
+        assert "job 1 done" in r.content[0].text
         r = await server.call_tool("job", {"job": 1, "wait_s": 0})
-        assert '"outcome"' in r.content[0].text
+        assert r.structured_content["outcome"]["status"] == "done"
+        with pytest.raises(ToolError, match="no step 'nope'"):
+            await server.call_tool("help", {"step": "nope"})
         r = await server.call_tool("reset", {})
         assert not r.is_error
         r = await server.call_tool("run", {"plan": {"do": "hold", "seconds": 0.1}, "wait_s": 10})

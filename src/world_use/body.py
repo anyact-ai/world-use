@@ -30,17 +30,27 @@ class JointSpec:
 
 @dataclass(frozen=True)
 class GripperSpec:
+    """Positions are native units: what the driver reads and commands, and for a gripper with one joint, that
+    joint's URDF coordinate. Speed, tracking tolerance and squeeze left unset scale with the travel
+    |open - closed|; tau_max is an absolute effort in the driver's units."""
     closed: float                     # native units at fully closed
     open: float                       # native units at fully open
+    approach: tuple[float, float, float]      # tool-frame direction the fingers point
+    opens_along: tuple[float, float, float]   # tool-frame axis the jaws open along
     unit: str = "rad"
     m_per_unit: float | None = None   # opening in metres per native unit, if calibrated
-    v_max: float = 4.5
-    track_tol: float = 0.6
+    v_max: float = math.nan           # unset: the whole travel in a second
+    track_tol: float = math.nan       # unset: 13.5% of the travel
     tau_max: float = 4.0
-    squeeze: float = 0.1              # a grip closes this much past contact; kp times it must stay under tau_max
-    approach: tuple[float, float, float] = (0.0, 0.0, 1.0)     # tool-frame direction the fingers point
-    opens_along: tuple[float, float, float] = (0.0, 1.0, 0.0)  # tool-frame axis the jaws open along
-    tool_point: str = "between the fingertips"                  # where the tool link sits, in words
+    squeeze: float = math.nan         # unset: 1.1% of the travel. A grip closes this far past contact (kp times it
+                                      # must stay under tau_max)
+    tool_point: str = "between the fingertips"   # where the tool link sits, in words
+
+    def __post_init__(self):
+        travel = abs(self.open - self.closed)
+        for key, share in (("v_max", 1.0), ("track_tol", 0.135), ("squeeze", 0.011)):
+            if math.isnan(getattr(self, key)):
+                object.__setattr__(self, key, float(f"{share * travel:.3g}"))
 
     def aperture(self, position: float | None) -> float | None:
         """Opening between the fingers in metres, if the mapping is known."""
@@ -91,6 +101,8 @@ class Manifest:
     link_radius_m: float = 0.03       # keep-out padding around the coarse joint-to-joint link model
     max_excursion: float | None = None    # rad any joint may travel from the session's start pose
     turn_clearance: tuple[tuple[int, ...], float] | None = None   # (joints, m): only turn these above start height + m
+    ik_weights: tuple[float, ...] | None = None   # (x, y, z, rx, ry, rz) the IK holds, base frame; 0 frees an axis.
+                                                  # None: all six, or free yaw (rz) on arms with fewer than 6 joints
     notes: tuple[str, ...] = ()       # quirks worth telling the policy about (the embodiment card)
     hardware_notes: tuple[str, ...] = ()  # quirks of the physical robot that a simulation does not reproduce
     frames: Callable | None = None    # (chain, q at session start) -> {name: 4x4}, e.g. a "work" frame

@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 from PIL import ImageDraw, ImageFont
 
-from . import bodies, cameras
+from . import cameras
 from .config import manifest_from_data
 from .kinematics import Chain
 from .recorder import Tape, load_tape
@@ -25,49 +25,6 @@ def events(folder: Path) -> list[dict]:
             if i != len(lines) - 1:          # only a final interrupted write can be ignored
                 raise
     return out
-
-
-def page(folder: Path | None, *, since=0, limit=50, job=None, live=()) -> dict:
-    """Read committed history and its live tail with bounded output and an event-sequence cursor."""
-    if isinstance(since, bool) or not isinstance(since, int) or since < 0:
-        raise ValueError("since must be a nonnegative event sequence")
-    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
-        raise ValueError("limit must be in 1..100")
-    incomplete = []
-
-    def stream():
-        last = 0
-        path = None if folder is None else folder / "events.jsonl"
-        if path is not None and path.exists():
-            with path.open() as source:
-                for line in source:
-                    try:
-                        item = json.loads(line)
-                    except json.JSONDecodeError:
-                        incomplete.append("unreadable event record")
-                        continue
-                    if item["seq"] > last:
-                        last = item["seq"]
-                        yield item
-        for item in live:
-            if item["seq"] > last:
-                last = item["seq"]
-                yield item
-
-    items, cursor, missed, more = [], since, 0, False
-    for event in stream():
-        if event["seq"] <= cursor:
-            continue
-        matches = job is None or event.get("data", {}).get("job") == job
-        if matches and len(items) == limit:
-            more = True
-            break
-        missed += max(0, event["seq"] - cursor - 1)
-        cursor = event["seq"]
-        if matches:
-            items.append(event)
-    return dict(events=items, next_cursor=cursor, more=more, missed=missed,
-                record_complete=not incomplete and missed == 0, problems=incomplete, historical=True)
 
 
 def inspect(folder: Path | str) -> dict:
@@ -91,7 +48,7 @@ def inspect(folder: Path | str) -> dict:
                 closed=any(e["kind"] == "closed" for e in log),
                 summary=summary, jobs=jobs,
                 incidents=[e for e in log if e["level"] in ("warn", "alarm")],
-                observations=[e for e in log if e["kind"] in ("look", "annotation", "answer")])
+                observations=[e for e in log if e["kind"] in ("look", "measurement", "annotation", "answer")])
 
 
 def describe(record: dict) -> str:
@@ -112,15 +69,19 @@ def describe(record: dict) -> str:
 
 
 def robot_of(folder: Path | str):
-    """Use the recorded model; retain support for older records of built-in robots."""
+    """The robot description saved with a record."""
     folder = Path(folder)
-    meta = json.loads((folder / "session.json").read_text())
-    if model := meta.get("initial", {}).get("model"):
-        return manifest_from_data(model, folder)
-    manifest = bodies.manifests().get(meta.get("adapter"))
-    if manifest is None:
-        raise ValueError("this older record has no robot description; replay requires a known built-in robot")
-    return manifest
+    if not (folder / "session.json").is_file():
+        raise ValueError(f"{folder} has no session.json, so no robot description: it predates world-use 0.3")
+    return manifest_from_data(json.loads((folder / "session.json").read_text())["initial"]["model"], folder)
+
+
+def overview(chain: Chain) -> tuple[np.ndarray, np.ndarray]:
+    """An eye and the point it looks at, (forward, left, up) from the arm's base: in front of the arm, to its right
+    and above, scaled to the length of its links."""
+    size = chain.length
+    target = size * np.array([.3, 0, .2])
+    return target + size * np.array([.4, -.8, .5]), target
 
 
 def replay(folder: Path | str, output: Path | str, fps: int = 12, speed: float = 1.0) -> Path:
@@ -128,15 +89,15 @@ def replay(folder: Path | str, output: Path | str, fps: int = 12, speed: float =
     folder, output = Path(folder), Path(output)
     if not 1 <= fps <= 60 or not 0 < speed <= 100:
         raise ValueError("fps must be 1..60 and speed must be greater than 0 and at most 100")
-    meta = json.loads((folder / "session.json").read_text())
     manifest = robot_of(folder)
+    meta = json.loads((folder / "session.json").read_text())
     a = load_tape(folder)
     if not len(a.get("t", [])):
         raise ValueError("this record has no committed telemetry")
     world = World.from_dict(meta["initial"]["world"])
     chain = Chain(manifest.urdf, manifest.tool_link)
-    view = cameras.View.look_at(world.to_base("work", [.7, -.8, .65]),
-                                world.to_base("work", [.30, 0, .18]), size=(800, 500))
+    eye, target = overview(chain)
+    view = cameras.View.look_at(world.to_base("work", eye), world.to_base("work", target), size=(800, 500))
     changes = [e for e in events(folder) if "world" in e.get("data", {})]
     from .bodies.sim import SimBody
     scene = SimBody(manifest, world)

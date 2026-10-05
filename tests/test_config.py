@@ -4,12 +4,14 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from conftest import serving
 
-from world_use import Kernel, World, fit, records
+from world_use import World, fit, records
+from world_use.bodies import manifests
 from world_use.bodies.sim import SimBody
-from world_use.client import Client
-from world_use.config import load_robot, load_workcell
-from world_use.daemon import Daemon, apply_workcell, make_body, session_identity
+from world_use.config import load_robot, load_workcell, manifest_data, manifest_from_data
+from world_use.daemon import make_body, session_identity
+from world_use.robot_assets import archive, resolve
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "adapters"
 
@@ -21,37 +23,20 @@ def external_robot_record(tmp_path, monkeypatch, rehearser):
     monkeypatch.syspath_prepend(str(setup))
     cell = load_workcell(setup / "workcell.toml")
     cell["frame"][0]["origin"] = [.01, .02, .03]
-    body = make_body(cell["body"], cell)
-    k = Kernel(body, World(), run_dir=tmp_path / "run")
-    k.connect()
-    apply_workcell(cell, k)
-    identity = session_identity(cell["body"], cell)
-    d = Daemon(k, port=0, rehearser=rehearser, session=identity, config=cell)
-    d.start()
-    c = Client(f"http://127.0.0.1:{d.http.server_port}")
-    try:
+    with serving(tmp_path, cell, rehearser) as (d, c):
         assert len(c.status()["joints_deg"]) == 2
-        assert np.allclose(k.world.frame("work").T[:3, 3], [.01, .02, .03])
+        assert np.allclose(d.k.world.frame("work").T[:3, 3], [.01, .02, .03])
         phase = {"do": "joints", "delta_deg": {"1": 10, "2": -5}}
-        c.enable()
         assert c.check(phase)["ok"]
         assert c.run(phase, wait=10)["status"] == "done"
         c.release()
-        c.shutdown()
-    finally:
-        d.stop_loop.set()
-        d.control.join(timeout=2)
-        d.http.shutdown()
-        d.http.server_close()
-        if k.journal._thread.is_alive():
-            k.close()
 
     sim = make_body("sim", cell, World())
     assert sim.manifest.n == 2 and np.allclose(sim.q, np.radians([0, 28.65]))
     # A changed model at the same path is a different startup configuration.
     model_path = setup / "planar.toml"
     model_path.write_text(model_path.read_text().replace("v_max = 0.8", "v_max = 0.4"))
-    assert session_identity(cell["body"], cell) != identity
+    assert session_identity(cell["body"], cell) != d.session
     shutil.rmtree(setup)
     archived = tmp_path / "archived"
     shutil.move(tmp_path / "run", archived)
@@ -81,6 +66,9 @@ def test_workcell_paths_and_typos_are_not_silently_ignored(tmp_path, monkeypatch
     path.write_text('[[camrea]]\nname = "side"\n')
     with pytest.raises(ValueError, match="unknown fields: camrea"):
         load_workcell(path)
+    path.write_text('[[box]]\nname = "cup"\nkind = "object"\ncenter = [0.3, 0, 0.05]\nsize = [0.05, 0.05, 0.1]\n'
+                    'mass_kg = 0.2\nfriction = 0.5\n')
+    assert load_workcell(path)["box"][0]["mass_kg"] == .2
     cell = load_workcell(EXAMPLE / "workcell.toml")
     cell["simulation"]["lag_seconds"] = .1
     with pytest.raises(ValueError, match="lag_seconds"):
@@ -92,6 +80,7 @@ def test_workcell_paths_and_typos_are_not_silently_ignored(tmp_path, monkeypatch
     ('name = "shoulder"', 'name = "wrong_joint"', "URDF chain order"),
     ("lower = -2.5", "lower = -3.0", "exceed the URDF limits"),
     ("v_max = 0.8", "v_max = nan", "finite number"),
+    ('sensing = ["position"]', 'sensing = ["position"]\nik_weights = [1, 1, 1]', "ik_weights"),
 ])
 def test_invalid_robot_descriptions_fail_before_a_driver_is_loaded(tmp_path, old, new, message):
     shutil.copy(EXAMPLE / "planar.urdf", tmp_path)
@@ -101,17 +90,15 @@ def test_invalid_robot_descriptions_fail_before_a_driver_is_loaded(tmp_path, old
         make_body("no_such_driver:Body", {"robot": str(path)})
 
 
-def test_prismatic_joints_are_offline_kinematics_only(tmp_path):
+def test_prismatic_arm_joints_are_rejected(tmp_path):
     urdf = tmp_path / "linear.urdf"
     urdf.write_text((EXAMPLE / "planar.urdf").read_text().replace('type="revolute"', 'type="prismatic"', 1))
     path = tmp_path / "robot.toml"
     path.write_text((EXAMPLE / "planar.toml").read_text().replace('urdf = "planar.urdf"', 'urdf = "linear.urdf"'))
-    body = SimBody(replace(load_robot(EXAMPLE / "planar.toml"), urdf=urdf))
-    assert body.chain.fk([.1, 0])[2, 3] == pytest.approx(.3)
     with pytest.raises(ValueError, match="rotational arm joints only; prismatic joints are unsupported"):
         load_robot(path)
     with pytest.raises(ValueError, match="rotational arm joints only; prismatic joints are unsupported"):
-        Kernel(body)
+        SimBody(replace(load_robot(EXAMPLE / "planar.toml"), urdf=urdf))
 
 
 def test_supported_rest_uses_joint_names_and_preserves_release_rules(tmp_path):
@@ -121,3 +108,46 @@ def test_supported_rest_uses_joint_names_and_preserves_release_rules(tmp_path):
     path.write_text(text + '\n[rest]\nq = [0.0, 0.5]\njoints = ["elbow"]\ntol = 0.1\n')
     model = load_robot(path)
     assert model.rest.holds([1, .5]) and not model.rest.holds([0, .7])
+
+
+def test_gripper_limits_scale_with_its_travel_and_the_worker_gets_the_ik_weights():
+    data = manifest_data(load_robot(Path(__file__).with_name("jaw_arm.toml")))
+    data["gripper"] = dict(closed=0.0, open=0.08, unit="m", m_per_unit=1.0, approach=[0, 0, 1], opens_along=[0, 1, 0])
+    data["ik_weights"] = [1, 1, 1, 1, 1, 0]
+    model = manifest_from_data(data)
+    g = model.gripper
+    assert (g.v_max, g.track_tol, g.squeeze) == pytest.approx((.08, .0108, .00088))
+    assert manifest_from_data(manifest_data(model)) == model            # the description a worker builds a twin from
+    del data["gripper"]["opens_along"]
+    with pytest.raises(ValueError, match="opens_along"):
+        manifest_from_data(data)
+
+
+def test_package_mesh_uris_resolve_inside_their_package(tmp_path):
+    package = tmp_path / "arm_description"
+    (package / "urdf").mkdir(parents=True)
+    (package / "meshes").mkdir()
+    (package / "meshes" / "link.stl").write_text("solid link\nendsolid link\n")
+    urdf = package / "urdf" / "arm.urdf"
+    urdf.write_text("<robot/>")
+    assert resolve(urdf, "package://arm_description/meshes/link.stl") == package / "meshes" / "link.stl"
+    with pytest.raises(ValueError, match="package://other/meshes/link"):
+        resolve(urdf, "package://other/meshes/link.stl")
+
+
+def test_records_copy_only_meshes_that_world_use_does_not_ship(tmp_path):
+    source = tmp_path / "arm"
+    (source / "meshes").mkdir(parents=True)
+    (source / "meshes" / "link.stl").write_text("solid link\nendsolid link\n")
+    (source / "arm.urdf").write_text('<robot><link name="a"><visual><geometry><mesh filename="meshes/link.stl"/>'
+                                     "</geometry></visual></link></robot>")
+    rebot = manifests()["rebot"].urdf
+    for urdf, name in ((source / "arm.urdf", "custom"), (rebot, "built-in")):
+        folder = tmp_path / name
+        folder.mkdir()
+        archive(urdf, folder)
+        shutil.copyfile(urdf, folder / "robot.urdf")
+    shutil.rmtree(source)
+    assert resolve(tmp_path / "custom" / "robot.urdf", "meshes/link.stl").read_text().startswith("solid link")
+    assert not [path for path in (tmp_path / "built-in").rglob("*") if path.suffix.lower() == ".stl"]
+    assert resolve(tmp_path / "built-in" / "robot.urdf", "../meshes/shared/base_link.STL").is_file()

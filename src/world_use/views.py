@@ -24,7 +24,7 @@ def _gripper(k, pos, effort=None) -> str:
         return ""
     a = g.aperture(pos)
     s = f"grip {pos:.2f}{g.unit}" + ("" if a is None else f" ({1000 * a:.0f}mm)")
-    return s + ("" if effort is None else f" {effort:+.1f}")
+    return s + ("" if effort is None else f" {effort:+.2f}")
 
 
 def state_line(k) -> str:
@@ -92,7 +92,7 @@ def status(k) -> dict:
     if k.queue:
         d["queued"] = [j.id for j in k.queue]
     try:
-        d["home"] = f"ready: {len(k.home_plan())} moves"
+        d["home"] = f"set: {len(k.home_plan())} moves"
     except Refused as e:
         d["home"] = f"not available: {e}"
     if k.envelope.overrides:
@@ -120,7 +120,8 @@ def incident(k, job, reach=None) -> str:
     if out.status == "refused" and k.enabled and k.active is None:
         lines.append((reach or reach_line)(k))
     recent = [e for e in k.events.since(max(0, k.events.seq - 8))
-              if e["level"] != "info" or e["kind"] in ("contact", "grip")]
+              if (e["level"] != "info" or e["kind"] in ("contact", "grip"))
+              and not (e["kind"] == "finished" and e.get("data", {}).get("job") == job.id)]     # the headline
     for e in recent[-4:]:
         lines.append(f"  [{e['seq']}] {e['kind']}: {e['message']}")
     return "\n".join(lines)
@@ -158,14 +159,17 @@ def _why(k, refusal: Refused) -> str:
 
 
 def tool_line(k) -> str | None:
-    """Which way the gripper points and opens, in the work frame: what a policy needs to plan an approach."""
+    """Which way the gripper points and opens, in the work frame: what a policy needs to plan an approach. With
+    torque off it describes the measured pose (the command is then where the torque last went off)."""
     g = k.manifest.gripper
     if g is None:
         return None
-    R = k.world.frame("work").T[:3, :3].T @ k.chain.fk(k.cmd.q)[:3, :3]
+    R = k.world.frame("work").T[:3, :3].T @ k.chain.fk(k.cmd.q if k.enabled else k.state.q)[:3, :3]
+    keep = ("line and lines keep its tilt, while its heading turns as the arm moves sideways"
+            if k.ik_weights is not None and k.ik_weights[5] == 0 else "line and lines keep this angle")
     return (f"tool: the gripper points {heading(R @ np.asarray(g.approach))}; its jaws open "
             f"{along(R @ np.asarray(g.opens_along))}; the tool point (the position the state line reports) is "
-            f"{g.tool_point}. line and lines keep this angle; move_to with \"point\" turns it, and so do joints moves.")
+            f"{g.tool_point}. {keep}; move_to with \"point\" turns it, and so do joints moves.")
 
 
 def box_line(k, b, frame: str = "work") -> str:
@@ -201,23 +205,29 @@ def world_text(k) -> str:
 
 
 def frame_line(frame) -> str:
-    """Describe a resolved frame compactly, using its actual transform and source."""
+    """Describe a resolved frame compactly, using its actual transform and source: the yaw of its x axis from the
+    base's (positive towards L), and where its z points when that is not straight up."""
     origin = frame.T[:3, 3]
-    axes = "; ".join(f"{name}={heading(axis)}"
-                     for name, axis in zip(("x", "y", "z"), frame.axes, strict=True))
-    return (f"{frame.name} in base: origin F{origin[0]:+.3f} L{origin[1]:+.3f} U{origin[2]:+.3f} m; "
-            f"{axes} (from {frame.source})")
+    x, _, z = frame.axes
+    yaw = int(np.round(np.degrees(np.arctan2(x[1], x[0]))))
+    tilt = "" if z[2] > np.cos(np.radians(0.5)) else f", z {heading(z)}"
+    return (f"{frame.name} in base: origin F{origin[0]:+.3f} L{origin[1]:+.3f} U{origin[2]:+.3f} m, "
+            f"yaw {yaw:+d} deg{tilt} (from {frame.source})")
 
 
 def card(k, reach=None) -> str:
     """The embodiment card: what this robot is and what it can do, for the top of a policy's context."""
-    m, c = k.manifest, k.chain
+    from .bodies.sim import SimBody
+    m = k.manifest
     sim = bool(getattr(k.body, "simulated", False))
     lines = [f"# {m.name}" + (" (simulated)" if sim else ""),
              f"{m.n} joints, control at {m.rate_hz:.0f} Hz; senses: {', '.join(sorted(m.sensing))}."]
-    if sim:
-        lines.append("This is a simulation: MuJoCo models gravity and frictional contacts with approximate actuators. "
-                     "Lines marked 'hardware:' describe the real robot.")
+    if isinstance(k.body, SimBody):
+        lines.append("This is a simulation: MuJoCo models gravity and frictional contacts with approximate actuators.")
+    if sim and m.hardware_notes:
+        lines.append("Lines marked 'hardware:' describe the real robot.")
+    if "torque" not in m.sensing:
+        lines.append("no joint torque sensing: touchdown, guarded and contact monitoring are unavailable.")
     lines.append("joints (deg): " + "; ".join(f"j{i + 1} {j.name} {np.degrees(j.lower):.0f}..{np.degrees(j.upper):.0f}"
                                           for i, j in enumerate(m.joints)))
     if m.gripper:
@@ -227,27 +237,23 @@ def card(k, reach=None) -> str:
         lines.append(f"gripper: {g.closed}..{g.open} {g.unit} (closed..open){span}.{mm} grip squeezes "
                      f"{g.squeeze} {g.unit} past contact.")
         lines.append(tool_line(k) or "")
-    reach_m = np.linalg.norm(c.fk(np.zeros(c.n))[:3, 3] - c.points(np.zeros(c.n))[1])
-    shoulder = c.points(k.cmd.q)[1]
-    s = k.world.from_base("work", shoulder) + 0.0
-    now = np.linalg.norm(c.fk(k.cmd.q)[:3, 3] - shoulder)
-    lines.append(f"reach about {reach_m:.2f} m from the shoulder at F{s[0]:+.3f} L{s[1]:+.3f} U{s[2]:+.3f} "
-                 f"(the tool is {now:.2f} m from it now); one Cartesian move at most {100 * m.max_segment_m:.0f} cm.")
-    lines.append(f"default peak joint speed {m.speed} rad/s; motors warn at {m.temp_warn_c:.0f} C, "
-                 f"stop at {m.temp_limit_c:.0f} C.")
+    lines.append(f"one Cartesian move at most {100 * m.max_segment_m:.0f} cm; default peak joint speed "
+                 f"{m.speed} rad/s.")
+    if "temperature" in m.sensing:
+        lines.append(f"motors warn at {m.temp_warn_c:.0f} C, stop at {m.temp_limit_c:.0f} C.")
     if m.rest:
         lines.append("torque can only be released at the rest pose (the arm has no brakes).")
-    if m.max_excursion is not None or k.envelope.max_excursion is not None:
+    if k.envelope.max_excursion is not None:
         lines.append(f"each joint may travel at most {np.degrees(k.envelope.max_excursion):.0f} deg "
                      "from the session start.")
     need = k.envelope.turn_height()
     if need is not None:
         joints, above = m.turn_clearance
         names = ", ".join(f"j{j + 1}" for j in joints)
-        sideways = "; every left or right move turns j1, so lift first, then move sideways" if 0 in joints else ""
         over = k.envelope.overrides.get("turn_height")
         why = f"operator override: {over['reason']}" if over else f"{100 * above:.0f} cm above where it started"
-        lines.append(f"turning {names} needs the tool at U{need:+.3f} or higher ({why}){sideways}.")
+        lines.append(f"turning {names} needs the tool at U{need:+.3f} or higher ({why}); lift before any move that "
+                     "turns them.")
     others = [f for f in k.world.frames if f not in ("base", "work")]
     lines.append("frames: " + frame_line(k.world.frame("work"))
                  + (f"; also {', '.join(others)}" if others else "")
@@ -255,7 +261,7 @@ def card(k, reach=None) -> str:
     lines += [box_line(k, b) for b in k.world.boxes.values()]
     cams = k.cameras
     if cams:
-        lines.append(f"cameras: {', '.join(cams)}. `wu look NAME` saves an image and prints its path.")
+        lines.append(f"cameras: {', '.join(cams)}. look at one for a picture with what the kernel knows drawn on it.")
     if k.enabled and k.active is None:
         lines.append((reach or reach_line)(k))
     if k.fit is not None:
@@ -263,3 +269,73 @@ def card(k, reach=None) -> str:
     lines += [f"note: {n}" for n in m.notes]
     lines += [f"hardware: {n}" for n in m.hardware_notes]
     return "\n".join(lines)
+
+
+# -- replies as the CLI and MCP print them; each interface adds its own way to act on them ---------------
+
+def job_text(d: dict, *, answer: str, wait: str) -> str:
+    """A job reply as a policy reads it: the outcome, or the question it waits on, then the state line. answer
+    and wait are the interface's commands for answering a checkpoint and for waiting longer; {id} is the job."""
+    lines = [f"warning: {d['warning']}"] if d.get("warning") else []
+    if d.get("calibration"):
+        lines.append(d["calibration"]["text"])
+    if d.get("incident"):
+        return "\n".join(lines + [d["incident"]])
+    out, hint = d.get("outcome"), []
+    if out:
+        lines.append(f"job {d['id']} {out['status']}: {out['message']}")
+    elif d["status"] == "waiting":
+        q = d["question"]
+        where = f" (look at: {q['view']}" + (f" {q['roi']}" if q.get("roi") else "") + ")" if q.get("view") else ""
+        lines.append(f"job {d['id']} is waiting at a checkpoint: {q['ask']}{where}")
+        hint = ["answer with: " + answer.format(id=d["id"])]
+    else:
+        lines.append(f"job {d['id']} is still {d['status']}: {d['what']}")
+        hint = ["keep waiting with: " + wait.format(id=d["id"])]
+    return "\n".join(lines + [d["line"]] + hint)
+
+
+def home_text(r: dict) -> str:
+    """A home-route reply: the route and, once one is set, whether its rehearsal from here passes."""
+    line = f"home: {r['home']}"
+    if "ok" not in r:
+        return line
+    return line + ("; rehearsed from here, it passes" if r["ok"] else "\n" + r["text"])
+
+
+def event_line(e: dict) -> str:
+    return f"[{e['seq']}] {e['t']:>7.1f}s {e['level']:5s} {e['kind']}: {e['message']}"
+
+
+def record_line(s: dict) -> str:
+    """A flight record's summary: powered and moving time, peak motor temperatures, a failed recording."""
+    share = s.get("moving_share")
+    return (f"powered {s.get('powered_s', 0)} s, moving {s.get('moving_s', 0)} s"
+            + (f" ({100 * share:.0f}%)" if share is not None else "") + f"; max temps {s.get('max_temp_c')}"
+            + (f"; recording failed: {s['recording_error']}" if s.get("recording_error") else ""))
+
+
+def steps_text(steps: dict, step: str | None = None) -> str:
+    """The steps a plan can use, each with an example; with a step's name, its parameters."""
+    import json
+    if step:
+        h = steps.get(step)
+        if h is None:
+            raise ValueError(f"no step {step!r}; steps: {', '.join(steps)}")
+        return "\n".join([f"{step}: {h['summary']}", h["params"], 'every step also takes "label"',
+                          f"e.g. {json.dumps(h['example'])}" if h.get("example") else ""]).strip()
+    lines = ["steps (a plan is a JSON list of them; help for one step lists its parameters):"]
+    for kind, h in steps.items():
+        lines.append(f"  {kind:10s} {h['summary']}")
+        if h.get("example"):
+            lines.append(f"  {'':10s} {json.dumps(h['example'])}")
+    return "\n".join(lines)
+
+
+def parse_value(text: str):
+    """A value typed as text: JSON when it parses (0.205, true, [1, 2]), otherwise the text itself."""
+    import json
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text

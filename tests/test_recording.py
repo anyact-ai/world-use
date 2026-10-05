@@ -1,82 +1,11 @@
 import json
+import stat
 
 import numpy as np
 import pytest
 
 from world_use import Kernel, VirtualClock, World, bodies
-from world_use.recorder import Journal, Tape, load_tape
-
-
-def test_evidence_queue_is_bounded_and_close_waits_for_commit(tmp_path):
-    from world_use.events import EventLog
-
-    events = EventLog()
-    journal = Journal(Tape(1), tmp_path, interval=3600, events=events)
-    journal.MAX_ARTIFACT_BYTES = 8
-    written = []
-    journal.artifact("old", 6, lambda: written.append("old"), {})
-    journal.artifact("new", 6, lambda: written.append("new"), {})
-    assert journal.losses["artifacts"] == 1 and not written
-    journal.close()
-    assert written == ["new"] and (tmp_path / "complete.json").exists()
-    recorded = [json.loads(s) for s in (tmp_path / "events.jsonl").read_text().splitlines()]
-    assert [e["kind"] for e in recorded] == ["evidence_lost", "evidence_saved"]
-    assert json.loads((tmp_path / "recording.json").read_text())["artifacts"] == 1
-    with pytest.raises(ValueError, match="closed"):
-        journal.artifact("late", 1, lambda: None, {})
-
-
-def test_failed_artifact_write_can_recover_without_a_false_completion(tmp_path):
-    from world_use.events import EventLog
-
-    events = EventLog()
-    journal = Journal(Tape(1), tmp_path, interval=3600, events=events)
-    broken = [True]
-
-    def write():
-        if broken[0]:
-            raise OSError("disk full")
-        (tmp_path / "artifact").write_text("committed")
-
-    journal.artifact("evidence", 1, write, {})
-    with pytest.raises(OSError, match="disk full"):
-        journal.close()
-    assert not (tmp_path / "complete.json").exists()
-    assert not any(e["kind"] == "evidence_saved" for e in events.since(0))
-    broken[0] = False
-    journal.flush()
-    assert (tmp_path / "complete.json").exists() and (tmp_path / "artifact").exists()
-
-
-def test_close_during_a_flush_does_not_publish_completion_ahead_of_new_evidence(tmp_path):
-    import threading
-
-    journal = Journal(Tape(1), tmp_path, interval=3600)
-    first, second = threading.Event(), threading.Event()
-    resume_first, resume_second = threading.Event(), threading.Event()
-
-    def write(entered, resume):
-        entered.set()
-        assert resume.wait(5)
-
-    journal.artifact("first", 1, lambda: write(first, resume_first), {})
-    flushing = threading.Thread(target=journal.flush)
-    closing = threading.Thread(target=journal.close)
-    flushing.start()
-    try:
-        assert first.wait(5)
-        journal.artifact("second", 1, lambda: write(second, resume_second), {})
-        closing.start()
-        journal._thread.join(5)  # close has marked acquisition closed and stopped periodic flushing
-        resume_first.set()
-        assert second.wait(5)
-        assert not (tmp_path / "complete.json").exists()
-    finally:
-        resume_first.set()
-        resume_second.set()
-        flushing.join(5)
-        closing.join(5)
-    assert (tmp_path / "complete.json").exists()
+from world_use.recorder import Journal, Tape, load_tape, save_arrays, save_summary
 
 
 def test_recording_failure_does_not_interrupt_motion_or_release(tmp_path, monkeypatch):
@@ -115,7 +44,7 @@ def test_elapsed_durations_include_slow_control_ticks():
     tape = Tape(1)
     for t, moving in [(0, True), (0.01, True), (0.51, False), (1.01, False)]:
         tape.add(t, True, moving, 1, [0], [0], None, None, None, None, None)
-    s = tape.summary(100)
+    s = tape.summary()
     assert s["powered_s"] == 1.0 and s["moving_s"] == 0.5
     assert s["moving_share"] == pytest.approx(0.505, abs=0.001)
     assert s["tick_ms"]["max"] == 500
@@ -202,13 +131,15 @@ import sys, time
 from pathlib import Path
 from world_use import Kernel, World, VirtualClock, bodies
 from world_use.recorder import load_tape
+from world_use.records import events
 folder = Path(sys.argv[1])
 w = World()
 k = Kernel(bodies.make("sim", w), w, VirtualClock(100), run_dir=folder)
 k.connect()
 k.enable()
 k.run({"do": "hold", "seconds": 0.2})
-while len(load_tape(folder).get("t", [])) < 20:
+# The background journal commits the job's outcome to events.jsonl and its telemetry to chunks.
+while len(load_tape(folder).get("t", [])) < 20 or not any(e["kind"] == "finished" for e in events(folder)):
     time.sleep(.01)
 print("persisted", flush=True)
 time.sleep(30)
@@ -242,22 +173,24 @@ def test_interrupted_record_can_be_replayed(interrupted_record, tmp_path):
     assert replay(interrupted_record, tmp_path / "replay.gif").stat().st_size > 1000
 
 
-def test_recovery_prefers_new_chunks_over_an_older_manual_save(tmp_path):
-    from world_use.recorder import Journal, load_tape
+def test_a_0_2_0_record_stays_readable(tmp_path):
+    """0.2.0 saved tape.npz and summary.json at close, without session.json."""
+    from world_use import fit
+    from world_use.bodies.rebot import MANIFEST
+    from world_use.records import inspect
 
-    tape = Tape(1)
-    journal = Journal(tape, tmp_path, interval=60)
-    try:
-        tape.add(0, True, False, 1, [0], [0], None, None, None, None, None)
-        tape.save(tmp_path / "tape.npz", 100)
-        journal.flush()
-        tape.add(.01, True, False, 1, [1], [1], None, None, None, None, None)
-        journal.flush()
-        a = load_tape(tmp_path)
-        assert a["q"].ravel().tolist() == [0, 1]
-        assert not list(tmp_path.rglob(".writing-*"))
-    finally:
-        journal.close()
+    tape = Tape(6)
+    for i in range(3):
+        tape.add(i * .01, True, False, 1, np.zeros(6), np.zeros(6), np.zeros(6), np.full(6, 30.0), 1, 1, 0)
+    save_arrays(tmp_path / "tape.npz", {key: v for key, v in tape.arrays().items() if not key.startswith("power")})
+    (tmp_path / "summary.json").write_text(json.dumps(dict(body=MANIFEST.name, ticks=3)))
+    assert inspect(tmp_path)["summary"]["ticks"] == 3
+    assert fit.robot_of([tmp_path]) is MANIFEST
+
+
+def test_record_files_are_readable_like_the_event_log(tmp_path):
+    save_summary(tmp_path / "summary.json", {})
+    assert stat.S_IMODE((tmp_path / "summary.json").stat().st_mode) == 0o644
 
 
 def test_journal_retires_memory_but_preserves_history_and_lifetime_summary(tmp_path, monkeypatch):
@@ -279,10 +212,10 @@ def test_journal_retires_memory_but_preserves_history_and_lifetime_summary(tmp_p
                 journal.flush()
                 assert len(tape.arrays()["t"]) <= Tape.CHUNK
                 assert len(tape.arrays()["power_t"]) <= 1
-            assert journal.summary(until=i * .01) == reference.summary(100, until=i * .01)
+            assert journal.summary(until=i * .01) == reference.summary(until=i * .01)
         journal.flush()
         assert journal.error is None
-        assert journal.summary(until=1.0) == reference.summary(100, until=1.0)
+        assert journal.summary(until=1.0) == reference.summary(until=1.0)
         saved = load_tape(tmp_path)
         for key, expected in reference.arrays().items():
             np.testing.assert_array_equal(saved[key], expected)

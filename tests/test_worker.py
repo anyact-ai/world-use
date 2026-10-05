@@ -29,8 +29,14 @@ def test_the_daemon_rehearses_in_the_worker(daemon, monkeypatch):
 
 
 def test_the_same_report_as_in_process(rehearser, lifted):
-    assert rehearser.check(PLAN, lifted).to_dict() == plan.check(PLAN, lifted).to_dict()
-    assert rehearser.reach_line(lifted) == views.reach_line(lifted)
+    """The worker gets a pickled snapshot: the world it carries must rehearse as the kernel's own does."""
+    k = lifted
+    p = k.chain.fk(k.state.q)[:3, 3]
+    k.world.add_box("table", "surface", center=[p[0], p[1], p[2] - 0.05], size=[0.3, 0.3, 0.02], frame="base")
+    spec = [{"do": "checkpoint", "ask": "clear?"}, {"do": "joints", "delta_deg": {"2": -60}},
+            {"do": "joints", "delta_deg": {"2": 60}}, {"do": "touchdown", "max": 0.08}]
+    assert rehearser.check(spec, k).to_dict() == plan.check(spec, k).to_dict()
+    assert rehearser.reach_line(k) == views.reach_line(k)
 
 
 def test_custom_models_rehearse_without_registration(rehearser):
@@ -66,6 +72,16 @@ def test_a_rehearsal_that_runs_too_long_is_refused_and_the_worker_replaced():
         r.close()
 
 
+def test_a_timed_out_rehearsal_is_not_submitted(daemon, monkeypatch):
+    d, c = daemon
+    spec = {"do": "hold", "seconds": 20}
+    report = plan.check(spec, d.k, timeout_s=0.1)
+    assert report.outcome.status == "stopped"
+    monkeypatch.setattr(d.rehearser, "check", lambda *a, **kw: report)
+    result = c.run(spec)
+    assert result["status"] == "refused" and not d.k.jobs
+
+
 def test_preparation_keeps_feedback_and_stop_responsive(k):
     from concurrent.futures import Future
     from types import SimpleNamespace
@@ -87,7 +103,9 @@ def test_preparation_keeps_feedback_and_stop_responsive(k):
     assert job.status == "stopped" and not pending.done()
 
 
-def test_prepared_path_is_refused_after_scene_change(k, rehearser):
+@pytest.mark.parametrize("change", ["box", "fact"])
+def test_prepared_path_is_refused_only_after_a_change_it_depends_on(k, rehearser, change):
+    """A fact recorded while a step was prepared refused it too, aborting even a thermal return."""
     from types import SimpleNamespace
 
     k.planner = SimpleNamespace(prepare=lambda spec, robot: rehearser.prepare(spec, robot))
@@ -96,9 +114,14 @@ def test_prepared_path_is_refused_after_scene_change(k, rehearser):
         k.tick()
         k.clock.wait()
     job.behavior._pending.result(timeout=10)
-    k.world.add_box("new obstacle", "keep_out", [1, 1, 1], [.1, .1, .1])
-    k.tick()
-    assert job.status == "refused" and "changed" in job.outcome.message
+    if change == "box":
+        k.world.add_box("new obstacle", "keep_out", [1, 1, 1], [.1, .1, .1])
+    else:
+        k.world.assert_fact("door.angle_deg", 20, "side camera")
+    while not job.finished:
+        k.tick()
+        k.clock.wait()
+    assert job.status == ("refused" if change == "box" else "done"), job.outcome.message
 
 
 def test_execution_paths_are_prepared_outside_the_control_process(daemon, monkeypatch):

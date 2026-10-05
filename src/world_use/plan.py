@@ -121,12 +121,10 @@ class Snapshot:
     q_cmd: list[float]                # commanded: where the kernel plans from (reach probes start there)
     grip_cmd: float | None
     q_start: list[float]
-    max_excursion: float | None
     overrides: dict
     home_route: list | None           # the steps, while the robot's route is still valid
     held_at: float | None
     grip_start: float | None
-    ik_weights: list[float] | None
     fit: dict | None = None           # the fitted robot model the kernel judges torque by (fit.py), if any
 
 
@@ -139,23 +137,25 @@ def snapshot(k: Kernel) -> Snapshot:
             world=deepcopy(k.world.to_dict()), q=np.asarray(st.q, float).tolist(), gripper=st.gripper,
             temp=None if st.temp is None else np.asarray(st.temp, float).tolist(),
             q_cmd=np.asarray(k.cmd.q, float).tolist(), grip_cmd=k.cmd.gripper,
-            q_start=np.asarray(k.q_start, float).tolist(), max_excursion=env.max_excursion,
-            overrides=dict(env.overrides),
+            q_start=np.asarray(k.q_start, float).tolist(), overrides=dict(env.overrides),
             home_route=deepcopy(route[0]) if route is not None and k.last_touch < route[1] else None,
             held_at=k.held_at, grip_start=k.grip_start,
-            ik_weights=None if k.ik_weights is None else list(k.ik_weights),
             fit=None if k.fit is None else k.fit.to_dict())
 
 
 def same_start(s: Snapshot, k: Kernel) -> bool:
-    """A prepared path is tied to its command, limits and scene. Allow encoder noise and held-object settling."""
+    """Whether a path prepared (or a plan checked) from s still starts from k's command, model, limits and scene
+    geometry, with the arm within encoder noise of where it was. Facts, the home route, the gripper and temperatures
+    may differ and a held object may settle: a path does not depend on them, and a checked plan's admission catches
+    their changes through the control revision."""
     current = snapshot(k)
     world = current.world
-    if world.get("held") == s.world.get("held") and world.get("held"):
-        name = world["held"]["name"]
-        if name in world["boxes"] and name in s.world["boxes"]:
-            world["boxes"][name]["pose"] = s.world["boxes"][name]["pose"]
-    return (replace(current, q=s.q, gripper=s.gripper, temp=s.temp) == s
+    world["facts"] = s.world["facts"]
+    held = world.get("held")
+    if held and held == s.world.get("held") and held["name"] in world["boxes"] and held["name"] in s.world["boxes"]:
+        world["boxes"][held["name"]]["pose"] = s.world["boxes"][held["name"]]["pose"]
+    return (replace(current, q=s.q, gripper=s.gripper, temp=s.temp, grip_cmd=s.grip_cmd, home_route=s.home_route,
+                    held_at=s.held_at, grip_start=s.grip_start) == s
             and np.allclose(current.q, s.q, atol=0.01, rtol=0))
 
 
@@ -166,14 +166,14 @@ def twin_from(s: Snapshot, manifest: Manifest | None = None) -> Kernel:
         manifest = manifest_from_data(s.model)
     world = World.from_dict(s.world)
     body = SimBody(manifest, World.from_dict(s.world), q=s.q, gripper=s.gripper, temp_c=s.temp)
-    t = Kernel(body, world, VirtualClock(manifest.rate_hz), ik_weights=s.ik_weights, auto_answer=True)
+    t = Kernel(body, world, VirtualClock(manifest.rate_hz), auto_answer=True)
     t.connect()                       # the world already holds the session's frames, so they are kept
     if s.fit is not None:             # the twin weighs its links, and feels friction, as the robot's own fit says
         from .fit import Model
         t.use_fit(Model.from_dict(s.fit))
     t.q_start = np.asarray(s.q_start, float)
     t.envelope.q_start = t.q_start
-    t.envelope.max_excursion, t.envelope.overrides = s.max_excursion, dict(s.overrides)
+    t.envelope.overrides = dict(s.overrides)
     if s.home_route is not None:      # valid from here on, until something in the twin is touched
         t.home_route = (list(s.home_route), t.events.seq + 1)
     t.held_at, t.grip_start = s.held_at, s.grip_start
@@ -220,7 +220,7 @@ def _rehearse(spec, t: Kernel, timeout_s: float) -> Report:
     steps = [e["message"] for e in events if e["kind"] == "step_done"]
     if not steps and out.ok:
         steps = [out.message]
-    summary = t.tape.summary(t.manifest.rate_hz)
+    summary = t.tape.summary()
     tool = t.world.from_base("work", t.chain.fk(t.state.q)[:3, 3])
     turned = None
     g = t.manifest.gripper

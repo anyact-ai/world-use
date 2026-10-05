@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from conftest import make_kernel
+from conftest import FastClock, make_kernel, serving
 
 from world_use import Outcome, Refused, cameras
 from world_use.calibrate import GRAY, solve, tour
@@ -74,19 +74,19 @@ def test_a_tour_on_the_simulator_calibrates_a_camera_that_sees_it():
 
 
 @pytest.mark.rendering
-def test_the_daemon_calibrates_a_camera_and_installs_it(client, daemon):
-    d, c = daemon
-    lens = d.cameras["side"].lens
-    assert c.run({"do": "line", "forward": 0.04, "up": 0.10}, wait=20)["status"] == "done"
-    r = c.calibrate("side", points=6, spread=0.05, wait=30)
-    while r["status"] == "waiting":
-        assert "nothing else drawn, because this camera is being calibrated" in c.look("side")["drawn"]
-        (u,), _ = lens.project([d.k.chain.fk(d.k.state.q)[:3, 3]])
-        r = c.answer(r["id"], f"{u[0]:.1f},{u[1]:.1f}", wait=30)
-    text = r["calibration"]["text"]
-    assert r["status"] == "done" and r["calibration"]["installed"], text
-    assert 'frame = "base"' in text and d.cameras["side"].view is not lens
-    assert "magenta" in c.look("side")["drawn"] and "camera.side" in c.world()["facts"]
+def test_the_daemon_calibrates_a_camera_and_installs_it(tmp_path, rehearser):
+    with serving(tmp_path, rehearser=rehearser, clock=FastClock(100.0, speed=10)) as (d, c):
+        lens = d.cameras["side"].lens
+        assert c.run({"do": "line", "forward": 0.04, "up": 0.10}, wait=20)["status"] == "done"
+        r = c.calibrate("side", points=6, spread=0.05, wait=30)
+        while r["status"] == "waiting":
+            assert "nothing else drawn, because this camera is being calibrated" in c.look("side")["drawn"]
+            (u,), _ = lens.project([d.k.chain.fk(d.k.state.q)[:3, 3]])
+            r = c.answer(r["id"], f"{u[0]:.1f},{u[1]:.1f}", wait=30)
+        text = r["calibration"]["text"]
+        assert r["status"] == "done" and r["calibration"]["installed"], text
+        assert 'frame = "base"' in text and d.cameras["side"].view is not lens
+        assert "magenta" in c.look("side")["drawn"] and "camera.side" in c.world()["facts"]
 
 
 def test_the_daemon_fits_a_large_360_cut_from_resized_answers(daemon):

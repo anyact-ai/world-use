@@ -1,6 +1,7 @@
-"""world-use: run frontier models as robot policies.
+"""world-use: let AI agents operate robot arms.
 
-The model decides; the kernel keeps the robot safe, fast and legible while it does:
+The model decides what to do; the kernel checks each plan against the robot's limits, runs it at control rate,
+watches for contact and heat, and reports what happened. Embedded, without a daemon:
 
     from world_use import Kernel, Plan, VirtualClock, World, bodies, check
 
@@ -9,12 +10,15 @@ The model decides; the kernel keeps the robot safe, fast and legible while it do
     k.connect(); k.enable()
     print(check(Plan().line(up=0.05).spec(), k))   # rehearse on a twin first
     k.run({"do": "line", "up": 0.05})
+
+With a daemon (`wu up`), `Client()` drives the robot it owns: `Client().run(Plan().line(up=0.05).spec())`.
 """
 from __future__ import annotations
 
 from . import bodies, fit
 from .behaviors import Behavior, Outcome, build, register
 from .body import Body, GripperSpec, JointSpec, JointState, Manifest, Rest
+from .client import Client
 from .errors import Refused
 from .kernel import Kernel, RealClock, VirtualClock
 from .plan import Plan, Report, check, twin
@@ -22,9 +26,9 @@ from .views import card, incident, state_line, status
 from .world import World
 
 __version__ = "0.3.0"
-__all__ = ["Behavior", "Body", "GripperSpec", "JointSpec", "JointState", "Kernel", "Manifest", "Outcome", "Plan",
-           "RealClock", "Refused", "Report", "Rest", "VirtualClock", "World", "bodies", "build", "card", "check",
-           "fit", "incident", "register", "state_line", "status", "twin"]
+__all__ = ["Behavior", "Body", "Client", "GripperSpec", "JointSpec", "JointState", "Kernel", "Manifest", "Outcome",
+           "Plan", "RealClock", "Refused", "Report", "Rest", "VirtualClock", "World", "bodies", "build", "card",
+           "check", "fit", "incident", "register", "state_line", "status", "twin"]
 
 
 def policy_text() -> str:

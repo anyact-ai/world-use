@@ -1,0 +1,37 @@
+name = "Jaw arm"
+urdf = "jaw_arm.urdf"
+tool_link = "tool"
+self_supporting = true # Simulated brakes.
+sensing = ["position"]
+
+[[joints]]
+name = "pan"
+lower = -2.0
+upper = 2.0
+
+[[joints]]
+name = "lift"
+lower = -0.5
+upper = 2.0
+
+[[joints]]
+name = "elbow"
+lower = -2.5
+upper = 2.5
+
+[[joints]]
+name = "wrist_flex"
+lower = -2.0
+upper = 2.0
+
+[[joints]]
+name = "wrist_roll"
+lower = -2.8
+upper = 2.8
+
+[gripper]
+closed = -0.2
+open = 0.8
+m_per_unit = 0.032
+approach = [1.0, 0.0, 0.0]
+opens_along = [0.0, 1.0, 0.0]

@@ -30,11 +30,12 @@ TOURS = {
 }
 
 
-def record(folder, name) -> str:
+def record(folder, name, real: fit.Model | None = None) -> str:
     """A flight record from the 'real' robot, driven by a kernel that only knows the URDF."""
     world = World()
     body = bodies.make("sim", world, q=Q_REST, gripper=1.0)
-    body.use_fit(truth())
+    if real is not None:
+        body.use_fit(real)
     k = Kernel(body, world, VirtualClock(100.0), run_dir=folder / name)
     k.connect()
     k.enable()
@@ -48,7 +49,7 @@ def record(folder, name) -> str:
 @pytest.fixture(scope="module")
 def records(tmp_path_factory):
     folder = tmp_path_factory.mktemp("runs")
-    return [record(folder, name) for name in TOURS]
+    return [record(folder, name, truth()) for name in TOURS]
 
 
 def test_the_fit_finds_the_heavier_forearm_and_says_how_well_it_predicts(records):
@@ -66,6 +67,12 @@ def test_the_fit_finds_the_heavier_forearm_and_says_how_well_it_predicts(records
     assert abs(model.friction[2][0] - 0.5) < 0.2          # the elbow's Coulomb friction
     assert all(v >= 0 for _, v in model.friction)          # no viscous friction below zero
     assert "joint3" in model.describe(urdf) and "link3" in model.describe(urdf)
+
+
+def test_friction_never_comes_out_negative(tmp_path):
+    """MuJoCo's joints have no friction: fitted freely, every joint got a negative Coulomb term."""
+    model = fit.fit([record(tmp_path, name) for name in ("a", "b")], MANIFEST)
+    assert all(c >= 0 and v >= 0 for c, v in model.friction), model.friction
 
 
 def test_a_record_of_another_robot_or_never_powered_is_not_used(records, tmp_path):

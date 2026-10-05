@@ -76,9 +76,9 @@ class Model:
         else:
             lines.append("  (one record: nothing held out, so no check of how well it predicts)")
         names = self.joints or [f"joint {i + 1}" for i in range(len(self.friction))]
-        lines.append("  friction: " + ", ".join(f"{n} {c:.2f} Nm + {v:.2f} Nm s/rad"
-                                               for n, (c, v) in zip(names, self.friction, strict=True)
-                                               if abs(c) > 0.02 or abs(v) > 0.02))
+        lines.append("  friction: " + (", ".join(f"{n} {c:.2f} Nm + {v:.2f} Nm s/rad"
+                                                for n, (c, v) in zip(names, self.friction, strict=True)
+                                                if abs(c) > 0.02 or abs(v) > 0.02) or "none above 0.02"))
         if chain is not None:
             moved = []
             for name, (m, com) in self.links.items():
@@ -236,19 +236,20 @@ def _prior(chain: Chain, links: list[str]) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _solve(A, y, prior, scale, free: int) -> np.ndarray:
-    """Least squares with the prior, and no viscous friction below zero: at the slow speeds a record holds, a joint's
-    friction can fall as it speeds up (Stribeck), and a falling line from there is nonsense at full speed. Columns
-    from `free` on are each joint's Coulomb and viscous friction."""
+    """Least squares with the prior, and no friction below zero: friction opposes motion. A negative Coulomb term
+    would push each joint the way it turns; and at the slow speeds a record holds, a joint's friction can fall as it
+    speeds up (Stribeck), so a falling viscous line from there is nonsense at full speed. Columns from `free` on are
+    each joint's Coulomb and viscous friction."""
     W = np.diag(1.0 / scale)
     b = W @ prior
-    viscous = np.arange(free + 1, len(prior), 2)
+    friction = np.arange(free, len(prior))
     fixed = np.zeros(len(prior), bool)
     while True:
         keep = ~fixed
         theta = np.zeros(len(prior))
         theta[keep] = np.linalg.lstsq(np.vstack([A[:, keep], W[np.ix_(keep, keep)]]), np.concatenate([y, b[keep]]),
                                       rcond=None)[0]
-        negative = [i for i in viscous if theta[i] < 0 and not fixed[i]]
+        negative = [i for i in friction if theta[i] < 0 and not fixed[i]]
         if not negative:
             return theta
         fixed[negative] = True

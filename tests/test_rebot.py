@@ -1,5 +1,6 @@
 """The reBot adapter against a fake motorbridge driver: what it sends, and what it never sends."""
 import sys
+import time
 import types
 
 import numpy as np
@@ -86,6 +87,7 @@ def fake(monkeypatch):
     for name, mod in (("motorbridge", mb), ("motorbridge.core", core), ("motorbridge.errors", errors),
                       ("motorbridge.models", models)):
         monkeypatch.setitem(sys.modules, name, mod)
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)    # the gain ramps pace real motors, not this bus
 
     def make(start):
         holder["bus"] = FakeBus(start)

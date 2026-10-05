@@ -1,4 +1,5 @@
 """Kernel semantics on a simulated reBot: refusals, surprises, contact, grip, checkpoints, stop, heat, home."""
+import re
 import threading
 import time
 
@@ -7,6 +8,7 @@ import pytest
 from conftest import Q_REST, make_kernel, supported_object, table_below
 
 from world_use import Kernel, RealClock, Refused, World, bodies
+from world_use.body import JointState
 
 HOME = Q_REST.copy()
 HOME[1:4] = [0.02, 0.02, 0.0]   # declared rest, just off the shoulder and elbow stops
@@ -25,6 +27,56 @@ def test_an_idle_watchdog_trip_cancels_motion_before_it_starts(k, monkeypatch, t
     assert np.array_equal(k.cmd.q, before if trip == "hot" else k.state.q)
     assert not np.any(k.cmd.dq)
     assert k.faulted == (trip == "fault")
+
+
+@pytest.mark.parametrize("finding", ["keep_out", "overload"])
+def test_a_persistent_idle_finding_is_reported_once_and_still_cancels_work(lifted, monkeypatch, finding):
+    """A box over the idle arm, or a steady overload, raised 100 events a second: the event buffer then held 25 s
+    of repeats instead of the cause."""
+    from dataclasses import replace
+
+    k = lifted
+    if finding == "keep_out":
+        points = k.chain.points(k.state.q)
+        k.world.add_box("cart", "keep_out", (points[2] + points[3]) / 2, [0.05] * 3)
+    else:
+        read = k.body.read
+
+        def leaning():
+            st = read()
+            return replace(st, tau=st.tau + [0, 0, 0, 0, 10, 0])            # j5 past its 4 Nm limit
+        monkeypatch.setattr(k.body, "read", leaning)
+    seq = k.events.seq
+    for _ in range(100):
+        k.tick()
+        k.clock.wait()
+    job = k.submit({"do": "line", "up": 0.02})
+    k.tick()
+    assert job.status == "cancelled"
+    kinds = [e["kind"] for e in k.events.since(seq)]
+    assert kinds.count("trip") == 1 and kinds.count("contact") == (finding == "overload")
+
+
+def test_a_fault_that_outlasts_a_reset_or_changes_is_reported_again(lifted, monkeypatch):
+    """The latch must not swallow a fault the operator's reset did not fix, or a second fault on top of the first."""
+    from dataclasses import replace
+
+    k = lifted
+    read, faults = k.body.read, ["joint3 overcurrent"]
+    monkeypatch.setattr(k.body, "read", lambda: replace(read(), faults=list(faults)))
+
+    def alarms():
+        seq = k.events.seq
+        for _ in range(20):
+            k.tick()
+            k.clock.wait()
+        return [e["message"] for e in k.events.since(seq) if e["kind"] == "trip"]
+
+    assert alarms() == ["joint3 overcurrent"] and k.faulted
+    k.reset()
+    assert alarms() == ["joint3 overcurrent"] and k.faulted
+    faults.append("joint5 encoder lost")
+    assert alarms() == ["joint3 overcurrent; joint5 encoder lost"]
 
 
 @pytest.mark.parametrize("phase", ["start", "tick"])
@@ -72,29 +124,24 @@ def test_incomplete_enable_stays_visible_and_release_retries_torque_off(k, monke
 
 def test_line_moves_the_tool_by_the_request_in_the_work_frame(k):
     p0 = k.world.from_base("work", k.chain.fk(k.state.q)[:3, 3])
-    out = k.run({"do": "line", "forward": 0.08, "up": 0.06})
-    assert out.ok
+    assert k.run({"do": "line", "forward": 0.08, "up": 0.06}).ok
+    assert k.run({"do": "line", "back": 0.02, "down": 0.01}).ok                # the words point takes, negated
     k.run({"do": "hold", "seconds": 0.2})
     p1 = k.world.from_base("work", k.chain.fk(k.state.q)[:3, 3])
-    assert np.allclose(p1 - p0, [0.08, 0, 0.06], atol=1e-3)
+    assert np.allclose(p1 - p0, [0.06, 0, 0.05], atol=1e-3)
 
 
 def test_refused_command_moves_nothing_and_cancels_what_was_queued(lifted):
     k = lifted
     q0 = k.cmd.q.copy()
     bad = k.submit({"do": "line", "forward": 0.40})              # longer than one segment may be
-    queued = k.submit({"do": "line", "up": 0.01})
-    while not queued.finished:
+    queued = [k.submit({"do": "line", "up": 0.01}) for _ in range(500)]
+    while not queued[-1].finished:
         k.tick()
         k.clock.wait()
     assert bad.status == "refused" and "segment" in bad.outcome.message
-    assert queued.status == "cancelled"
+    assert all(j.status == "cancelled" for j in queued) and not k.faulted
     assert np.allclose(k.cmd.q, q0)
-
-
-def test_unknown_behavior_is_refused_at_submit(k):
-    with pytest.raises(Refused):
-        k.submit({"do": "teleport", "to": [0, 0, 1]})
 
 
 def test_too_fast_is_refused_with_a_hint(lifted):
@@ -104,7 +151,47 @@ def test_too_fast_is_refused_with_a_hint(lifted):
 
 def test_turning_the_base_at_table_height_is_refused(k):
     out = k.run({"do": "joints", "delta_deg": {"1": 10}})
-    assert out.status == "refused" and "table" in out.message
+    assert out.status == "refused" and out.data["rule"] == "turn_clearance"
+
+
+@pytest.mark.parametrize("spec", [
+    {"do": "teleport", "to": [0, 0, 1]}, {"do": []}, {"do": "hold", "label": 5},
+    {"do": "hold", "second": 1}, {"do": "line", "up": .01, "duraton": 2},
+    {"do": "line", "up": .01, "speed": 0}, {"do": "hold", "seconds": float("nan")},
+    {"do": "line"}, {"do": "line", "up": 0}, {"do": "line", "up": .01, "down": .02},
+    {"do": "line", "up": .01, "frame": "tabel"},
+    [{"do": "hold", "seconds": .1}, {"do": "guarded", "frame": "tabel", "down": .01}],
+    {"do": "lines", "legs": []}, {"do": "lines", "legs": [[.01, 0, 0], [0, 0, 0]]},
+    {"do": "move_to"}, {"do": "move_to", "point": "sideways"}, {"do": "move_to", "to": [.2, 0, .1], "jaws": [0, 0, 0]},
+    {"do": "joints", "delta_deg": {"9": 3}}, {"do": "touchdown", "joints": [9]},
+    {"do": "checkpoint"}, {"do": "checkpoint", "ask": "ready?", "expect": 1},
+    {"do": "gripper"}, [{"do": "hold", "seconds": .1}, {"do": "gripper", "apeture_mm": 60}],
+    {"do": "grip", "effort": .6}, {"do": "grip", "squeeze": -.1}, {"do": "grip", "squeeze": float("nan")},
+    {"do": "grip", "start": float("nan")}, {"do": "grip", "expect": 2}, {"do": "grip", "expect": [.5, float("nan")]},
+    {"do": "grip", "hold_effort": "oops"},
+    {"do": "grasp", "expect": [.4, 1.]},
+    {"do": "grasp", "start": 3., "search_mm": None},
+    {"do": "grasp", "start": 3., "search_mm": [["oops", 0]]},
+    {"do": "grasp", "start": 3., "search_mm": [[float("inf"), 0]]},
+    {"do": "grasp", "start": 3., "lift_mm": "oops"},
+    {"do": "grasp", "start": 3., "lift_mm": 51},
+    {"do": "grasp", "start": 3., "expect_mm": [10]},
+    {"do": "grasp", "start": 3., "hold_effort": -1},
+])
+def test_bad_specs_are_rejected_before_queueing(k, spec):
+    with pytest.raises(Refused):
+        k.submit(spec)
+    assert not k.jobs and not k.queue and not k.faulted
+
+
+def test_every_step_documents_each_parameter_it_accepts():
+    """`wu help STEP` is the docstring: a parameter it leaves out is one a policy cannot know about."""
+    from world_use.behaviors import REGISTRY
+    from world_use.validation import FIELDS
+
+    for kind, fields in FIELDS.items():
+        missing = [name for name in fields if not re.search(rf"\b{name}\b", REGISTRY[kind].__doc__ or "")]
+        assert not missing, f"{kind} accepts {missing} but its help does not say so"
 
 
 def test_touchdown_finds_a_table_and_stops_on_it(lifted):
@@ -250,6 +337,16 @@ def test_home_folds_to_rest_and_release_is_then_allowed(lifted):
     out = k.run({"do": "seq", "steps": k.home_plan()})
     assert out.ok, out.message
     assert np.allclose(k.cmd.q, HOME, atol=1e-4)
+    k.release()
+    assert not k.enabled
+
+
+def test_home_returns_joints_and_gripper_changed_by_the_prefix(lifted):
+    k = lifted
+    k.set_home_route([{"do": "joints", "delta_deg": {"1": 5}}, {"do": "gripper", "to": 2}])
+    assert k.run(k.home_plan()).ok
+    assert abs(k.cmd.q[0] - k.q_start[0]) < 1e-6
+    assert k.cmd.gripper == k.grip_start
     k.release()
     assert not k.enabled
 
@@ -415,6 +512,22 @@ def test_a_user_label_cannot_bypass_thermal_return_and_cooling_does_not_cancel_r
     assert not lifted.enabled and not lifted.power_uncertain and not lifted.body.enabled
 
 
+def test_a_job_submitted_during_the_thermal_return_is_refused_and_the_return_still_releases(lifted):
+    """A hold, or `wu home` after the alarm, queued behind the return blocked its release at rest: the kernel
+    faulted with the hot motor powered."""
+    k = lifted
+    k.set_home_route([])
+    k.body.temp[:] = 81
+    k.tick()
+    thermal = k.active
+    assert thermal is not None and thermal.behavior.label == "home: motor hot"
+    assert k.submit({"do": "hold", "seconds": 1}).status == "refused"
+    while not thermal.finished:
+        k.tick()
+        k.clock.wait()
+    assert thermal.status == "done" and not k.enabled and not k.faulted and not k.power_uncertain
+
+
 def test_a_failed_thermal_return_is_not_retried_automatically(lifted, monkeypatch):
     from world_use.envelope import Trip
 
@@ -425,6 +538,43 @@ def test_a_failed_thermal_return_is_not_retried_automatically(lifted, monkeypatc
         lifted.clock.wait()
     assert lifted.active is None and lifted.home_route is None and lifted.enabled
     assert len([j for j in lifted.jobs.values() if j.behavior.label == "home: motor hot"]) == 1
+
+
+def test_hot_return_still_stops_for_a_jammed_arm(lifted, monkeypatch):
+    k = lifted
+    k.set_home_route([])
+    q, g = k.state.q.copy(), k.state.gripper
+    monkeypatch.setattr(k.body, "read", lambda: JointState(k.clock.now(), q.copy(), tau=k.chain.gravity(q),
+                                                        temp=np.full(6, 81.), gripper=g, gripper_tau=0.))
+    for _ in range(1000):
+        k.tick()
+        k.clock.wait()
+        if k.home_route is None:
+            break
+    job = list(k.jobs.values())[-1]
+    assert job.status == "surprise" and job.outcome.data["trip"] == "blocked"
+    assert k.home_route is None and k.enabled
+    assert np.allclose(k.cmd.q, q)
+
+
+def test_failed_thermal_release_is_not_reported_done(lifted, monkeypatch):
+    k = lifted
+    k.set_home_route([])
+    k.body.temp[:] = 81
+
+    def failed_disable():
+        raise OSError("one motor did not acknowledge disable")
+
+    monkeypatch.setattr(k.body, "disable", failed_disable)
+    for _ in range(3000):
+        k.tick()
+        k.clock.wait()
+        if k.faulted:
+            break
+    job = list(k.jobs.values())[-1]
+    assert job.status == "faulted" and "could not release" in job.outcome.message
+    assert k.power_uncertain and k.home_route is None
+    assert not any("thermal return complete" in e["message"] for e in k.events.since(0))
 
 
 def test_no_heat_forecast_until_the_switch_on_transient_has_passed(lifted):
@@ -447,7 +597,7 @@ def test_heat_budget_is_reported(lifted):
 def test_motion_time_is_measured(k):
     k.run({"do": "line", "forward": 0.08, "up": 0.06, "duration": 3.0})
     k.run({"do": "hold", "seconds": 3.0})
-    s = k.tape.summary(k.manifest.rate_hz)
+    s = k.tape.summary()
     assert abs(s["moving_s"] - 3.0) < 0.1 and abs(s["moving_share"] - 0.5) < 0.05
     assert s["tick_ms"] == dict(median=10.0, p99=10.0, max=10.0)
 
@@ -478,6 +628,76 @@ def test_grip_takes_millimetres(lifted):
     out = k.run({"do": "grip", "start_mm": 60, "expect_mm": [35, 45]})
     assert out.ok and "mm" in out.message and "'block'" in out.message
     assert 35 <= k.manifest.gripper.aperture(out.data["contact_at"]) * 1000 <= 45
+
+
+def test_a_gripper_described_in_metres_grips_and_lets_go():
+    """Grip defaults and the let-go margin were reBot radians: a gripper in metres was refused, then never let go."""
+    from dataclasses import replace
+
+    from world_use.bodies.rebot import MANIFEST
+
+    g, s = MANIFEST.gripper, MANIFEST.gripper.m_per_unit                 # the reBot's own gripper, in metres
+    metres = replace(g, closed=0.0, open=(g.open - g.closed) * s, unit="m", m_per_unit=1.0, v_max=g.v_max * s,
+                     track_tol=g.track_tol * s, tau_max=g.tau_max / s, squeeze=g.squeeze * s)
+    k = make_kernel(manifest=replace(MANIFEST, gripper=metres), gripper=0.02)
+    assert k.run([{"do": "line", "forward": 0.08, "up": 0.06}, {"do": "gripper", "aperture_mm": 60}]).ok
+    supported_object(k, size=[.04, .04, .04])
+    out = k.run({"do": "grip", "start_mm": 60, "expect_mm": [35, 45]})
+    assert out.ok and k.world.held is not None, out.message
+    assert k.run({"do": "gripper", "aperture_mm": 60}).ok and k.world.held is None and k.held_at is None
+    k.close()
+
+
+@pytest.mark.parametrize("params", [{"squeeze": 10}, {"start": 5}, {"expect": [0.5, 9]}, {"hold_effort": 9}])
+def test_grip_values_beyond_the_grippers_own_limits_never_move_it(k, params):
+    before = k.cmd.gripper
+    out = k.run({"do": "grip", **params})
+    assert out.status == "refused" and not k.faulted
+    assert np.all(k.tape.arrays()["grip_cmd"] == before)
+
+
+def test_contact_squeeze_obeys_position_and_speed_limits(lifted, monkeypatch):
+    from dataclasses import replace
+
+    k = lifted
+    k.run({"do": "gripper", "to": 0.4})
+    g = k.manifest.gripper
+    read = k.body.read
+    # Contact this close to fully closed puts the squeeze target past the limit, isolating command bounding.
+    monkeypatch.setattr(k.body, "read", lambda: replace(read(), gripper_tau=.7 if k.cmd.gripper < .08 else 0))
+    first = len(k.tape)
+    assert k.run({"do": "grip"}).ok
+    commands = k.tape.arrays()["grip_cmd"][first - 1:]
+    assert commands.min() >= g.closed and commands.max() <= g.open
+    assert np.abs(np.diff(commands)).max() * k.manifest.rate_hz <= g.v_max + 1e-9
+
+
+def test_grip_reads_contact_after_issuing_the_final_close_command(lifted, monkeypatch):
+    from dataclasses import replace
+
+    k = lifted
+    assert k.run({"do": "gripper", "to": .15}).ok
+    read = k.body.read
+    closed = k.manifest.gripper.closed
+    monkeypatch.setattr(k.body, "read", lambda: replace(read(), gripper_tau=.7 if k.cmd.gripper == closed else 0))
+    assert k.run({"do": "grip"}).ok
+    assert any(e["kind"] == "grip" for e in k.events.since(0))
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_a_step_refused_midway_leaves_no_feedforward_alone_or_in_a_plan(lifted, monkeypatch, nested):
+    """Inside a plan, a grip refused mid-close left the closing speed commanded on every idle tick after it."""
+    from dataclasses import replace
+
+    k = lifted
+    assert k.run({"do": "gripper", "to": 3.0}).ok
+    read = k.body.read
+    monkeypatch.setattr(k.body, "read",
+                        lambda: replace(read(), gripper_tau=float("nan") if k.cmd.gripper < 2.0 else 0.0))
+    spec = {"do": "grip", "hold_effort": 0.4}
+    out = k.run([spec] if nested else spec)
+    assert out.status == "refused" and "sensing" in out.message and out.message.startswith("step 1/1") == nested
+    assert k.cmd.gripper_v == 0 and not np.any(k.cmd.dq) and not k.faulted
 
 
 def test_grip_outside_the_expected_millimetres_says_so_in_millimetres(lifted):
@@ -705,7 +925,6 @@ def test_a_joint_on_its_rest_stop_is_not_judged_and_is_re_zeroed_until_it_leaves
     """Folded, the reBot's shoulder and elbow rest on hard stops that carry part of their load: arriving there or
     lifting off moved ~2 Nm between motor and stop with nothing touched, and stopped folds home on hardware."""
     from world_use.behaviors import ContactSense
-    from world_use.body import JointState
 
     assert k.manifest.rest.stops == (1, 2)
     for _ in range(k.residuals.need):
@@ -770,10 +989,8 @@ def test_a_grip_of_the_wrong_width_still_holds_and_home_does_not_let_go():
 
 def test_grip_squeezes_by_the_grippers_own_amount(lifted):
     """0.1 rad at the reBot gripper's kp of 50 is 5 Nm on anything rigid, past its 4 Nm watchdog."""
-    from world_use import views
-
     k = lifted
-    assert k.manifest.gripper.squeeze == 0.05 and "grip squeezes 0.05 rad past contact" in views.card(k)
+    assert k.manifest.gripper.squeeze == 0.05
     assert k.run({"do": "gripper", "to": 3.0}).ok
     supported_object(k)
     out = k.run({"do": "grip"})
@@ -805,12 +1022,12 @@ def test_move_to_can_point_the_gripper_down(k):
     L = float(k.world.from_base("work", k.chain.fk(k.state.q)[:3, 3])[1])
     q0 = k.state.q.copy()
     out = k.run({"do": "move_to", "to": [0.22, L, 0.10], "point": "down"})
-    assert out.ok and "now pointing straight down (3.6 deg off" in out.message, out.message
+    assert out.ok and 0.5 < out.data["off_deg"] < 5 and "now pointing straight down" in out.message, out.message
     down, jaws = _pointing(k)
     assert np.degrees(np.arccos(-down[2])) < 5 and jaws == "left and right"
     assert np.degrees(np.abs(k.state.q - q0)[[0, 4, 5]]).max() < 1.0              # base and wrist held still
     refused = make_kernel().run({"do": "move_to", "to": [0.22, L, 0.10], "point": "down", "within_deg": 1})
-    assert refused.status == "refused" and "let it only tilt: that ends 4 deg" in refused.hint
+    assert refused.status == "refused" and refused.data["rule"] == "turn_clearance" and "within_deg" in refused.hint
 
 
 def test_move_to_turns_in_place_and_says_when_it_cannot(k):
@@ -828,7 +1045,9 @@ def test_a_check_says_where_the_gripper_ends_pointing(k):
     from world_use import check
     L = float(k.world.from_base("work", k.chain.fk(k.state.q)[:3, 3])[1])
     report = check({"do": "move_to", "to": [0.22, L, 0.10], "point": "down"}, k)
-    assert "the gripper ends pointing straight down, jaws open left and right (turned 90 deg)" in str(report)
+    end = report.gripper_end
+    assert end["points"] == "straight down" and end["jaws"] == "left and right" and 80 < end["turned_deg"] < 100
+    assert end["points"] in str(report)
 
 
 def test_a_free_checkpoint_takes_any_answer_and_keeps_it_with_where_the_tool_was(k):

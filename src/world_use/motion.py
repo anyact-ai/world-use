@@ -103,7 +103,7 @@ def _solve(chain: Chain, q, targets, lower, upper, timing: Timing, weights=None,
                               f"{whole:.0f} deg (IK residual {worst * 1000:.1f} mm)", "reach",
                               "move the tool first: nose-down, for one, is reachable low and near the base",
                               residual_mm=round(worst * 1000, 1))
-            raise Refused(f"only the first {100 * ok:.1f} of this {100 * total:.1f} cm move is reachable while the "
+            raise Refused(f"only the first {100 * ok:.1f} cm of this {100 * total:.1f} cm move is reachable while the "
                           f"gripper turns to point {turning} (it gets {got:.0f} of {whole:.0f} deg)", "reach",
                           "turn where it can, then move, or the other way round", reachable_m=round(ok, 4),
                           length_m=round(total, 4))
