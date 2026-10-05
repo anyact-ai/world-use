@@ -53,12 +53,39 @@ robot.run(plan, requires=[{"evidence": block["id"], "max_age_s": 30}], wait=60)
 `Client.measure` also takes a boolean `mask` the size of the picture, for example from a tracker.
 `world_use.perception.measure(frame, point=...)` computes the same points locally, without registering them.
 
+### Features on a measured plane
+
+At a hole or silhouette, the selected pixel can contain background depth rather than the edge's depth.
+If the feature lies on a visible flat surface, select a box wholly inside that surface and pass it as `plane`:
+
+```python
+edge = robot.measure(frame, point=[420, 210],
+                     plane={"box": [360, 180, 390, 205], "max_error_m": .001})
+```
+
+The same option works with MCP `measure_pixels`. It fits a plane to the box's depth samples, then intersects
+the point's camera ray with that plane. It supports tilted planes and cameras; no surface height is supplied.
+The caller establishes that the feature belongs to the selected plane. This is an inferred point on that
+plane, not a depth observation at the point; selecting the wrong flat surface can still give a valid result.
+
+The box needs depth samples spread across an area. The fit is refused if any sample's perpendicular error
+exceeds `max_error_m`, or the ray is nearly parallel to the plane or intersects behind the camera. A clean,
+broad patch gives a better estimate than a tiny or occluded patch. Plane fit error is not an accuracy bound
+for projected points, especially far outside the supporting patch. No outlier rejection or feature matching
+is performed. A poor patch should be reselected, not accommodated by relaxing its tolerance.
+
+Replies have `method: "plane_projection"` and a `plane` diagnostic with the supporting box, fitted center,
+normal and maximum fit error (geometry in the base frame). Sample/depth diagnostics describe the supporting
+patch. The overlay marks that patch in blue; the saved `.npz` also keeps its `support_points`. `surface_center`,
+`from_tool` and `in_tool` describe the inferred point. Its freshness and calibration are those of the original
+frame, so projection neither refreshes evidence nor changes the existing `requires` contract.
+
 ## What a measurement contains
 
 | field | meaning |
 |---|---|
 | `id` | what `requires` refers to |
-| `valid`, `reason` | `reason` says why a measurement found no surface: `missing_depth`, `missing_calibration`, `invalid_depth`, `insufficient_support` or `mixed_depth_surfaces` |
+| `valid`, `reason` | `reason` says why a measurement failed: `missing_depth`, `missing_calibration`, `invalid_depth`, `insufficient_support`, `mixed_depth_surfaces`, or for plane projection: `degenerate_plane_support`, `nonplanar_support`, `grazing_plane_ray`, `plane_behind_camera` |
 | `surface_center` | the median of the measured surface points, in work-frame metres: the frame plans use |
 | `visible_bounds` | the 2nd and 98th percentiles of those points along each work axis |
 | `from_tool` | `surface_center` minus the tool point when the picture was taken, in the work frame |

@@ -211,15 +211,18 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
     def measure_pixels(frame: str, point: list[float] | None = None, box: list[int] | None = None,
-                       target: str | None = None):
+                       target: str | None = None, plane: dict | None = None):
         """Measure the visible surface under a point [x, y] or a box [left, top, right, bottom] (right and bottom
         exclusive) of a camera_frame, in its native pixels; the frame needs depth. Returns an id, valid and
         reason, and in work-frame metres: surface_center (of what the camera sees, not of a hidden object),
         visible_bounds and from_tool (surface_center minus the tool point). in_tool expresses that surface in
         the captured tool's axes, in metres: compare the same visible feature before/after a lift or rotation.
-        The measured pixels are drawn on the picture. Pass the id to run(requires=...) for freshness checks."""
+        For an edge whose depth sees background, optionally pass plane={"box": [l,t,r,b], "max_error_m": .001}
+        with a point: fit that visible depth patch and project the point onto its plane. You must establish
+        that the feature lies on the patch's plane. The picture marks the point and supporting patch.
+        Pass the id to run(requires=...) for freshness checks."""
         def measure():
-            data = c.measure(frame, point=point, box=box, target=target)
+            data = c.measure(frame, point=point, box=box, target=target, plane=plane)
             return measured([data], data)
         return call(measure)
 

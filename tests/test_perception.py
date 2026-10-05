@@ -14,7 +14,7 @@ from world_use import Refused
 from world_use.behaviors import Behavior, Joints
 from world_use.cameras import Camera, Frame, SimCamera, View, pack, unpack
 from world_use.client import DaemonError
-from world_use.perception import Measurements, measure
+from world_use.perception import Measurements, measure, rectangle
 from world_use.plan import snapshot
 
 
@@ -82,6 +82,57 @@ def test_regions_reject_missing_mixed_or_insufficient_depth():
     assert measure(replace(frame, depth=None, tool=np.eye(4)), point=[30, 20]).summary(np.eye(4))["in_tool"] is None
 
 
+def test_projection_uses_measured_plane_instead_of_background_depth():
+    # A tilted surface and a translated, rotated camera; no world-Z assumption.
+    camera = np.eye(4)
+    camera[:3, :3] = [[0, 0, 1], [1, 0, 0], [0, 1, 0]]
+    camera[:3, 3] = [.3, -.2, .1]
+    view = View(camera, 50, 50, 30, 20, 60, 40)
+    y, x = np.indices((40, 60))
+    depth = .5 / (1 + .2 * (x + .5 - 30) / 50 - .1 * (y + .5 - 20) / 50)
+    expected = view.unproject([[42.5, 22.5]], [depth[22, 42]])
+    depth[22, 42] = .8                         # The edge pixel sees a background surface.
+    frame = source(view=view, depth=depth)
+    plane = dict(box=[8, 8, 27, 32], max_error_m=.0001)
+    raw = measure(frame, point=[42, 22])
+    projected = measure(frame, point=[42, 22], plane=plane)
+    assert np.linalg.norm(raw.points - expected) > .2
+    assert projected.valid
+    np.testing.assert_allclose(projected.points, expected, atol=1e-7)
+    assert projected.frame is frame and projected.diagnostics["method"] == "plane_projection"
+    assert projected.support_points is not None and not projected.support_points.flags.writeable
+    # The selected feature's own depth is not needed, but the support patch is.
+    depth[22, 42] = np.nan
+    np.testing.assert_allclose(measure(replace(frame, depth=depth), point=[42, 22], plane=plane).points,
+                               expected, atol=1e-7)
+
+
+def test_plane_projection_rejects_bad_support_and_unstable_rays():
+    plane = dict(box=[3, 3, 27, 35], max_error_m=.0001)
+    frame = source()
+    assert measure(replace(frame, depth=None), point=[35, 20], plane=plane).reason == "missing_depth"
+    depth = frame.depth.copy()
+    depth[10:25, 10:20] += .02                 # Two nearby surfaces used to pass the 5 cm gap check.
+    assert measure(replace(frame, depth=depth), point=[35, 20], plane=plane).reason == "nonplanar_support"
+    tiny = dict(plane, box=[0, 0, 3, 3])
+    assert measure(frame, point=[35, 20], plane=tiny).reason == "insufficient_support"
+    depth[:] = np.nan
+    depth[4:34, 15] = .5                      # A line cannot establish a plane.
+    assert measure(replace(frame, depth=depth), point=[35, 20], plane=plane).reason == "invalid_depth"
+    narrow = dict(plane, box=[14, 2, 17, 37])
+    assert measure(replace(frame, depth=depth), point=[35, 20], plane=narrow).reason == "degenerate_plane_support"
+    view = replace(frame.view, cx=30.5)
+    _, x = np.indices(frame.depth.shape)
+    depth = np.full_like(frame.depth, np.nan)
+    depth[:, 3:27] = -.1 / ((x[:, 3:27] + .5 - view.cx) / view.fx)  # Plane at camera X=-.1.
+    vertical = replace(frame, view=view, depth=depth)
+    side = dict(plane, box=[3, 3, 12, 35])
+    assert measure(vertical, point=[30, 20], plane=side).reason == "grazing_plane_ray"
+    assert measure(vertical, point=[45, 20], plane=side).reason == "plane_behind_camera"
+    with pytest.raises(ValueError, match="requires a point"):
+        measure(frame, mask=rectangle([5, 5, 25, 25], frame.image.size), plane=plane)
+
+
 def test_tool_coordinates_distinguish_rotation_from_landmark_slip():
     tool = np.eye(4)
     tool[:3, 3] = [-.015, .035, .55]
@@ -141,6 +192,14 @@ def test_the_daemon_measures_its_own_frame_in_the_work_frame_and_records_it(daem
         np.testing.assert_allclose(arrays["points"], [[.005, .005, .5]])
     with pytest.raises(DaemonError, match="no longer held"):
         c.measure("an old frame", point=[30, 20])
+    projected = c.measure(frame.id, point=[30, 20], plane=dict(box=[5, 5, 25, 30], max_error_m=.001))
+    assert projected["surface_center"] == m["surface_center"]
+    with np.load(Path(projected["image"]).with_suffix(".npz")) as arrays:
+        assert len(arrays["support_points"]) > 16
+    guard = d.measurements.guard([dict(evidence=projected["id"], max_age_s=5)])
+    d.measurements.now = lambda: frame.timestamp + 6
+    with pytest.raises(Refused, match="old"):
+        guard()
 
 
 def test_stale_or_recalibrated_measurements_refuse_admission_and_later_starts(k, required):

@@ -103,7 +103,10 @@ parameters. A list runs in order and ends at the first step that does not end "d
   holding still; drift calls for a different grasp. Refresh retention after extended planning and before
   transport. Set evidence age to how long the scene can stay trustworthy, not how long planning might take.
 - For precision alignment, use a clear close view roughly normal to the target surface. Depth belongs to
-  the visible surface: background seen through an edge is not that edge's position. Change the view when
+  the visible surface: background seen through an edge is not that edge's position. If the edge lies on a
+  visible flat surface, `measure_pixels(..., point=[x,y], plane={"box":[l,t,r,b], "max_error_m":.001})`
+  projects onto a plane fitted to that surface patch. Choose a broad clear patch on the same plane;
+  its fit error does not bound the projected point's accuracy. Change the view when
   correspondence is ambiguous; a small fit residual does not bound absolute placement error.
 - After release, withdraw clear and check the expected position and depth in a fresh frame. Before regrasping
   a released object, remeasure it from the approach view: it may have settled since the previous judgement.

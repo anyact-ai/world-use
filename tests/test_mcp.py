@@ -22,7 +22,8 @@ def test_mcp_frames_measurements_and_crops_come_with_their_pictures(daemon):
         captured = await server.call_tool("camera_frame", {"camera": "side"})
         frame = json.loads(captured.content[0].text)["frame"]
         assert any(item.type == "image" for item in captured.content)
-        measured = await server.call_tool("measure_pixels", {"frame": frame, "point": [200, 200]})
+        measured = await server.call_tool("measure_pixels", {"frame": frame, "point": [200, 200],
+            "plane": {"box": [100, 100, 150, 150], "max_error_m": .001}})
         measurement = json.loads(measured.content[0].text)
         assert not measurement["valid"] and measurement["reason"] == "missing_depth"
         assert any(item.type == "image" for item in measured.content)

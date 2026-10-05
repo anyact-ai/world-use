@@ -196,7 +196,8 @@ class Daemon:
             return self.calibrate(body["camera"], int(body.get("points", 8)), body.get("spread"), wait)
         if route == ["measure"]:
             return 200, self.measurements.measure(body["frame"], point=body.get("point"), box=body.get("box"),
-                                                  mask=body.get("mask"), target=body.get("target"))
+                                                  mask=body.get("mask"), target=body.get("target"),
+                                                  plane=body.get("plane"))
         if route == ["withdraw"]:
             return 200, dict(withdrawn=self.measurements.withdraw(body["measurements"], str(body.get("reason", ""))))
         if route == ["record"]:
