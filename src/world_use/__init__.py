@@ -1,4 +1,4 @@
-"""world-use: run frontier models as robot policies.
+"""world-use: let AI agents operate robot arms.
 
 The model decides what to do; the kernel checks each plan against the robot's limits, runs it at control rate,
 watches for contact and heat, and reports what happened. Embedded, without a daemon:

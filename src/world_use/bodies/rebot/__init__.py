@@ -98,6 +98,8 @@ MANIFEST = Manifest(
         "Joint torque strays 1-3 Nm from the gravity model over a 10 cm move (friction and hysteresis, not mass), "
         "so a long guarded move can stop on nothing: line to about 2 cm short of the expected contact, then guard "
         "only the rest. Contact is found at a few newtons.",
+        "The motors run on the 48 V supply; USB powers only the CAN adapter. With no clear way home, the operator "
+        "supports the arm and switches off the 48 V supply: unplugging USB leaves the motors powered.",
     ),
 )
 

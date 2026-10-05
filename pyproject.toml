@@ -1,7 +1,7 @@
 [project]
 name = "world-use"
 version = "0.3.0"
-description = "Robot control for AI agents: checked plans, a persistent runtime, and compact execution feedback."
+description = "Let AI agents operate robot arms: each plan is rehearsed on a simulated twin, refused with the number that would pass if it breaks a limit, run at 100 Hz and recorded."
 readme = "README.md"
 # The code is Apache-2.0; the bundled Seeed reBot URDF and meshes are CERN-OHL-W-2.0 (see their NOTICE.md).
 license = "Apache-2.0 AND CERN-OHL-W-2.0"
