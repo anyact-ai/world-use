@@ -99,6 +99,12 @@ parameters. A list runs in order and ends at the first step that does not end "d
   measurement is older than 30 s or its camera was calibrated again. Check a phase by measuring the same visible
   features again: compare `in_tool` for retention, and `surface_center` for placement. Occlusion or selecting
   another surface makes that comparison inconclusive; one point cannot establish a complete grasp.
+- A successful lift does not establish a stable hold. Compare the same features in fresh captures while
+  holding still; drift calls for a different grasp. Refresh retention after extended planning and before
+  transport. Set evidence age to how long the scene can stay trustworthy, not how long planning might take.
+- For precision alignment, use a clear close view roughly normal to the target surface. Depth belongs to
+  the visible surface: background seen through an edge is not that edge's position. Change the view when
+  correspondence is ambiguous; a small fit residual does not bound absolute placement error.
 - After release, withdraw clear and check the expected position and depth in a fresh frame. Before regrasping
   a released object, remeasure it from the approach view: it may have settled since the previous judgement.
   If it now meets the intended outcome, leave it; choose recovery only from a fresh measured discrepancy.
