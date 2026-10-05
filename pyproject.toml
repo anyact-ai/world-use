@@ -3,7 +3,13 @@ name = "world-use"
 version = "0.3.0"
 description = "Robot control for AI agents: checked plans, a persistent runtime, and compact execution feedback."
 readme = "README.md"
-license = "Apache-2.0"
+# The code is Apache-2.0; the bundled Seeed reBot URDF and meshes are CERN-OHL-W-2.0 (see their NOTICE.md).
+license = "Apache-2.0 AND CERN-OHL-W-2.0"
+license-files = [
+    "LICENSE",
+    "src/world_use/bodies/rebot/LICENSE-CERN-OHL-W-2.0.txt",
+    "src/world_use/bodies/rebot/NOTICE.md",
+]
 requires-python = ">=3.11"
 authors = [{ name = "Dmytro Hrybov" }]
 keywords = ["robotics", "llm", "agents", "policy", "robot-arm", "mcp"]
@@ -38,10 +44,10 @@ wu = "world_use.cli:main"
 Repository = "https://github.com/anyact-ai/world-use"
 
 [dependency-groups]
-dev = ["pytest>=9", "ruff>=0.16", "ty>=0.0.84", "mcp>=2.2", "rerun-sdk>=0.38.1,<0.39"]
+dev = ["pytest>=9", "ruff>=0.16", "ty>=0.0.84", "world-use[mcp,rerun]"]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]    # PEP 639 license expression and license-files
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

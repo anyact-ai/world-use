@@ -6,3 +6,5 @@ dist/
 build/
 runs/
 .DS_Store
+MUJOCO_LOG.TXT
+.claude/worktrees/

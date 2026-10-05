@@ -2363,11 +2363,10 @@ vision = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "mcp" },
     { name = "pytest" },
-    { name = "rerun-sdk" },
     { name = "ruff" },
     { name = "ty" },
+    { name = "world-use", extra = ["mcp", "rerun"] },
 ]
 
 [package.metadata]
@@ -2387,11 +2386,10 @@ provides-extras = ["rebot", "mcp", "vision", "rerun"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "mcp", specifier = ">=2.2" },
     { name = "pytest", specifier = ">=9" },
-    { name = "rerun-sdk", specifier = ">=0.38.1,<0.39" },
     { name = "ruff", specifier = ">=0.16" },
     { name = "ty", specifier = ">=0.0.84" },
+    { name = "world-use", extras = ["mcp", "rerun"] },
 ]
 
 [[package]]
