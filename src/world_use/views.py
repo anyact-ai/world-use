@@ -263,3 +263,73 @@ def card(k, reach=None) -> str:
     lines += [f"note: {n}" for n in m.notes]
     lines += [f"hardware: {n}" for n in m.hardware_notes]
     return "\n".join(lines)
+
+
+# -- replies as the CLI and MCP print them; each interface adds its own way to act on them ---------------
+
+def job_text(d: dict, *, answer: str, wait: str) -> str:
+    """A job reply as a policy reads it: the outcome, or the question it waits on, then the state line. answer
+    and wait are the interface's commands for answering a checkpoint and for waiting longer; {id} is the job."""
+    lines = [f"warning: {d['warning']}"] if d.get("warning") else []
+    if d.get("calibration"):
+        lines.append(d["calibration"]["text"])
+    if d.get("incident"):
+        return "\n".join(lines + [d["incident"]])
+    out, hint = d.get("outcome"), []
+    if out:
+        lines.append(f"job {d['id']} {out['status']}: {out['message']}")
+    elif d["status"] == "waiting":
+        q = d["question"]
+        where = f" (look at: {q['view']}" + (f" {q['roi']}" if q.get("roi") else "") + ")" if q.get("view") else ""
+        lines.append(f"job {d['id']} is waiting at a checkpoint: {q['ask']}{where}")
+        hint = ["answer with: " + answer.format(id=d["id"])]
+    else:
+        lines.append(f"job {d['id']} is still {d['status']}: {d['what']}")
+        hint = ["keep waiting with: " + wait.format(id=d["id"])]
+    return "\n".join(lines + [d["line"]] + hint)
+
+
+def home_text(r: dict) -> str:
+    """A home-route reply: the route and, once one is set, whether its rehearsal from here passes."""
+    line = f"home: {r['home']}"
+    if "ok" not in r:
+        return line
+    return line + ("; rehearsed from here, it passes" if r["ok"] else "\n" + r["text"])
+
+
+def event_line(e: dict) -> str:
+    return f"[{e['seq']}] {e['t']:>7.1f}s {e['level']:5s} {e['kind']}: {e['message']}"
+
+
+def record_line(s: dict) -> str:
+    """A flight record's summary: powered and moving time, peak motor temperatures, a failed recording."""
+    share = s.get("moving_share")
+    return (f"powered {s.get('powered_s', 0)} s, moving {s.get('moving_s', 0)} s"
+            + (f" ({100 * share:.0f}%)" if share is not None else "") + f"; max temps {s.get('max_temp_c')}"
+            + (f"; recording failed: {s['recording_error']}" if s.get("recording_error") else ""))
+
+
+def steps_text(steps: dict, step: str | None = None) -> str:
+    """The steps a plan can use, each with an example; with a step's name, its parameters."""
+    import json
+    if step:
+        h = steps.get(step)
+        if h is None:
+            raise ValueError(f"no step {step!r}; steps: {', '.join(steps)}")
+        return "\n".join([f"{step}: {h['summary']}", h["params"], 'every step also takes "label"',
+                          f"e.g. {json.dumps(h['example'])}" if h.get("example") else ""]).strip()
+    lines = ["steps (a plan is a JSON list of them; help for one step lists its parameters):"]
+    for kind, h in steps.items():
+        lines.append(f"  {kind:10s} {h['summary']}")
+        if h.get("example"):
+            lines.append(f"  {'':10s} {json.dumps(h['example'])}")
+    return "\n".join(lines)
+
+
+def parse_value(text: str):
+    """A value typed as text: JSON when it parses (0.205, true, [1, 2]), otherwise the text itself."""
+    import json
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text

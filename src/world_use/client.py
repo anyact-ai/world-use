@@ -39,7 +39,7 @@ class Client:
         try:
             self.status()
             return True
-        except (urllib.error.URLError, ConnectionError, OSError):
+        except OSError:
             return False
 
     def status(self) -> dict:
@@ -96,8 +96,9 @@ class Client:
     def stop(self, reason: str = "stop requested") -> dict:
         return self._call("POST", "/stop", dict(reason=reason))
 
-    def events(self, since: int = 0, wait: float = 0.0) -> dict:
-        return self._call("GET", f"/events?since={since}&wait={wait}")
+    def events(self, since: int = 0, wait: float = 0.0, limit: int | None = None) -> dict:
+        """Events after number since, oldest first; with a limit, at most that many and whether there are more."""
+        return self._call("GET", f"/events?since={since}&wait={wait}" + ("" if limit is None else f"&limit={limit}"))
 
     def enable(self) -> dict:
         return self._call("POST", "/enable", {})

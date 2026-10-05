@@ -16,7 +16,7 @@ import numpy as np
 from .. import Kernel, RealClock, World, bodies, cameras
 from ..client import Client, DaemonError
 from ..config import load_workcell
-from ..daemon import Daemon, apply_workcell
+from ..daemon import Daemon, apply_workcell, session_identity
 from ..perception import measure
 from ..procedures import lift_effect, placement_effect
 from ..procedures import upright_box as fit_upright_box
@@ -210,7 +210,8 @@ def run(output: Path, *, scenario="shifted", condition="verify", model="color", 
         apply_workcell(cell, k, truth)
         lens = cameras.View.look_at(world.to_base("work", [.34, 0, .90]),
                                     world.to_base("work", [.34, 0, .15]), size=(512, 512), fov_deg=40)
-        d = Daemon(k, port=0, cams={"overhead": cameras.SimCamera("overhead", lens, body)})
+        d = Daemon(k, port=0, cams={"overhead": cameras.SimCamera("overhead", lens, body)},
+                   session=session_identity("sim", cell))
         d.start()
         c = Client(f"http://127.0.0.1:{d.http.server_address[1]}")
         evaluated = {}

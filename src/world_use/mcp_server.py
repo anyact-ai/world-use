@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 from io import BytesIO
 from typing import Literal
 
-from .cli import help_text, job_text
+from . import views
 from .client import DEFAULT_URL, Client, DaemonError
 from .errors import Refused
 from .observations import Perception, crop_image
@@ -24,6 +24,7 @@ from .observations import Perception, crop_image
 INSTRUCTIONS = ("Read the policy tool or world-use://policy resource before operating the robot, then card and status. "
                 "Plans use metres in the work frame. Every powered hold heats the motors. "
                 "Use job to wait for a submitted run and inspect its final outcome.")
+HINTS = dict(answer="answer(job={id}, answer=...)", wait="job(job={id})")
 
 
 def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None, perception=None):
@@ -57,6 +58,9 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
             content.append(Image(data=buffer.getvalue(), format="png").to_image_content())
         return CallToolResult(content=content, structured_content=data)
 
+    def job_reply(data):
+        return result(data, views.job_text(data, **HINTS))
+
     def call(fn: Callable[[], object]):
         """Preserve the daemon's error as an MCP tool error, with actionable text."""
         try:
@@ -84,8 +88,8 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
     def job(job: int, wait_s: float = 60.0):
-        """Wait for a run to finish or ask a question; returns its structured outcome, even after completion."""
-        return call(lambda: result(c.job(job, wait=wait_s)))
+        """Wait for a run to finish or ask a question; returns its outcome, even after completion."""
+        return call(lambda: job_reply(c.job(job, wait=wait_s)))
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
     def reset() -> str:
@@ -93,9 +97,12 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         return call(lambda: c.reset()["line"])
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
-    def shutdown() -> dict | str:
+    def shutdown():
         """Release at rest, save the record, and stop the daemon. Refused while raised or busy."""
-        return call(c.shutdown)
+        def stop_daemon():
+            data = c.shutdown()
+            return result(data, "daemon stopped; " + views.record_line(data["summary"]))
+        return call(stop_daemon)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True))
     def card():
@@ -111,8 +118,11 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True))
     def status():
-        """Structured session, power, job and feedback state, plus a concise human-readable line."""
-        return call(lambda: result(c.status()))
+        """The one-line status; session, power, job and feedback state come as structured content."""
+        def describe():
+            data = c.status()
+            return result(data, data["line"])
+        return call(describe)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
     def run(plan: list[dict] | dict | None = None, wait_s: float = 60.0, rehearse: bool = True,
@@ -127,7 +137,7 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         """
         def execute():
             data = c.run(plan, wait=wait_s, check=rehearse, requires=requires, plan_id=plan_id, request_id=request_id)
-            return result(data, job_text(data))
+            return job_reply(data)
         return call(execute)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
@@ -144,10 +154,7 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
     def answer(job: int, answer: str, wait_s: float = 60.0):
         """Answer the question a checkpoint is waiting on; the expected answer (usually "yes") carries on."""
-        def resume():
-            data = c.answer(job, answer, wait=wait_s)
-            return result(data, job_text(data))
-        return call(resume)
+        return call(lambda: job_reply(c.answer(job, answer, wait=wait_s)))
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
     def look(camera: str | None = None, plan: list[dict] | dict | None = None, grid: bool = False):
@@ -271,23 +278,17 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
     def fact(key: str, value: str, source: str) -> str:
-        """Record something you measured or saw, with where it came from; it goes stale after a surprise."""
-        def record():
-            try:
-                v = json.loads(value)
-            except json.JSONDecodeError:
-                v = value
-            c.world(fact=dict(key=key, value=v, source=source))
-            return f"recorded {key} = {v}"
-        return call(record)
+        """Record something you measured or saw, with where it came from; it goes stale after a surprise.
+        value is JSON (0.205, true, [1, 2]) or text."""
+        return call(lambda: c.world(fact=dict(key=key, value=views.parse_value(value), source=source))["line"])
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True))
     def help(step: str | None = None):
         """The steps a plan can use, with an example each; with a step name, its parameters."""
         def describe():
             steps = c.help()
-            selected = steps if step is None else {step: steps[step]}
-            return result(dict(steps=selected), help_text(c, step))
+            text = views.steps_text(steps, step)
+            return result(dict(steps=steps if not step else {step: steps[step]}), text)
         return call(describe)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
@@ -299,16 +300,14 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
     def home_route(steps: list[dict] | None, note: str = "") -> str:
         """Set the way home from here, checked against what you can see: [] folds straight home; otherwise the
         moves that get clear first. Only motion and gripper steps; no checkpoints or holds. null clears a route
-        when the scene changes. It goes stale when anything is touched."""
-        return call(lambda: f"home: {c.home_route(steps, note)['home']}")
+        when the scene changes. It goes stale when anything is touched. The reply says whether the way home,
+        rehearsed from here, would pass."""
+        return call(lambda: views.home_text(c.home_route(steps, note)))
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
     def home(wait_s: float = 60.0, request_id: str | None = None):
         """Go home along the home route, then fold to the rest pose."""
-        def return_home():
-            data = c.home(wait=wait_s, request_id=request_id)
-            return result(data, job_text(data))
-        return call(return_home)
+        return call(lambda: job_reply(c.home(wait=wait_s, request_id=request_id)))
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
     def enable() -> str:
@@ -326,30 +325,24 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         def recent():
             if not 1 <= limit <= 100:
                 raise ValueError("limit must be in 1..100")
-            r = c.events(since)
-            events = r["events"][:limit]
-            r = dict(events=events, last=events[-1]["seq"] if events else since,
-                     missed=r["missed"], more=len(r["events"]) > limit)
-            text = "\n".join(f"[{e['seq']}] {e['t']:>7.1f}s {e['level']:5s} {e['kind']}: {e['message']}"
-                              for e in events) or "(none)"
-            return result(r, text)
+            r = c.events(since, limit=limit)
+            text = "\n".join(map(views.event_line, r["events"])) or "(none)"
+            return result(r, text + (f"\nmore after [{r['last']}]: events(since={r['last']})" if r["more"] else ""))
         return call(recent)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
-    def calibrate(camera: str, points: int = 8, wait_s: float = 60.0, request_id: str | None = None) -> str:
+    def calibrate(camera: str, points: int = 8, wait_s: float = 60.0, request_id: str | None = None):
         """Find where a camera is from the arm: the tool visits the corners of a box, and at each a question asks
         where the tool point is in `look(camera, grid=True)`; answer x,y pixels (or unseen) with `answer`. The
         reply to the last answer has the fit, installed if it is good, and the workcell lines to keep it."""
-        return call(lambda: job_text(c.calibrate(camera, points, None, wait_s, request_id=request_id)))
+        return call(lambda: job_reply(c.calibrate(camera, points, None, wait_s, request_id=request_id)))
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
     def record(note: str = "", context: dict | None = None) -> str:
         """Write the flight record so far (tape, summary, world) without stopping anything; returns where."""
         def saved():
             r = c.record(note=note, context=context)
-            s = r["summary"]
-            return (f"{r['run']}: powered {s.get('powered_s', 0)} s, moving {s.get('moving_s', 0)} s, "
-                    f"max temps {s.get('max_temp_c')}")
+            return f"{r['run'] or '(no run folder)'}: {views.record_line(r['summary'])}"
         return call(saved)
 
     return server
