@@ -261,7 +261,7 @@ class HttpCamera(Camera):
 
 
 class CommandCamera(Camera):
-    """A command that prints one image to stdout, e.g. `imagesnap -q -` or an ffmpeg one-frame grab."""
+    """A command that prints one image to stdout, such as an ffmpeg one-frame grab."""
 
     def __init__(self, name: str, command: str, view: View | None = None, timeout: float = 15.0, rotate: int = 0):
         super().__init__(name, view, rotate)

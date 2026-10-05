@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
@@ -330,7 +332,9 @@ def view(folder: Path | str, *, output: Path | None = None, follow: bool = False
             output.parent.mkdir(parents=True, exist_ok=True)
             rec.save(output)
         else:
-            rec.spawn(memory_limit="1GiB", hide_welcome_screen=True)
+            # A tool install keeps rerun-sdk's viewer app beside this Python, off the PATH; elsewhere, use the PATH.
+            app = shutil.which("rerun", path=str(Path(sys.executable).parent))
+            rec.spawn(memory_limit="1GiB", hide_welcome_screen=True, executable_path=app)
         viewer = RecordingView(folder, rec, follow=follow, update_layout=output is None)
         if output is None:
             rec.send_blueprint(blueprint(viewer.base_frame, follow, viewer.eye))

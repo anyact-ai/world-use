@@ -33,18 +33,18 @@ check FAILED: 1 limit would be broken, so the kernel would refuse this plan and 
 from here a 3 cm line can go up, forward; not down or back (out of reach with the gripper at this angle); left or right (turning needs the tool at U+0.267).
 $ wu run '[{"do":"line","up":0.05},{"do":"line","left":0.08}]'
 job 1 done: 2 steps done
-t+9s | idle, holding | tool F+0.302 L+0.092 U+0.270 | grip 0.05rad (0mm) -0.0 | tau -0.0 +0.7 +6.9 +1.8 +0.0 -0.0 | hottest j3 26C
+t+9s | idle, holding | tool F+0.302 L+0.092 U+0.270 | grip 0.05rad (0mm) -0.00 | tau -0.0 +0.7 +6.9 +1.8 +0.0 -0.0 | hottest j3 26C
 ```
 
 ## Install
 
 ```sh
-uv tool install --with-executables-from rerun-sdk "world-use[mcp,rerun] @ git+https://github.com/anyact-ai/world-use"
+uv tool install "world-use[mcp,rerun] @ git+https://github.com/anyact-ai/world-use"
 ```
 
 This needs [uv](https://docs.astral.sh/uv/), which finds or installs Python 3.11 or newer. The extras are `mcp`
-(the MCP server), `rerun` (the 3D viewer; `--with-executables-from` puts its app on your PATH), `vision` (EdgeTAM
-tracking, with PyTorch) and `rebot` (the physical reBot's driver, on Python 3.11 to 3.13).
+(the MCP server), `rerun` (the 3D viewer), `vision` (EdgeTAM tracking, with PyTorch) and `rebot` (the physical
+reBot's driver, on Python 3.11 to 3.13).
 
 ## Try it
 

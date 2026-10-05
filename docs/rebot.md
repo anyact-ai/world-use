@@ -10,7 +10,7 @@ Use Python 3.11 to 3.13 for the reBot extra. Its CAN driver, motorbridge 0.5.5, 
 for those versions only, and on macOS only for Apple Silicon.
 
 ```sh
-uv tool install --python 3.13 --with-executables-from rerun-sdk "world-use[rebot,mcp,rerun] @ git+https://github.com/anyact-ai/world-use"
+uv tool install --python 3.13 "world-use[rebot,mcp,rerun] @ git+https://github.com/anyact-ai/world-use"
 wu policy
 ```
 
