@@ -27,7 +27,8 @@ class Tracking:
         if (point is None) == (box is None):
             raise ValueError("select with exactly one point or box")
         source = self.client.frame(id=frame)
-        self.targets.pop(target, None)            # selecting a name again replaces it; its measurements stand
+        if target in self.targets:
+            self._lose(target, "reselected")
         try:
             observation = self.tracker.select(target, source, **(dict(point=point) if box is None else dict(box=box)))
             if observation.status == "stale":
@@ -36,6 +37,9 @@ class Tracking:
         except BaseException:
             with suppress(Exception):
                 self.tracker.forget(target)
+            if not getattr(self.tracker, "ready", True):
+                for name in list(self.targets):
+                    self._lose(name, "the tracker stopped during selection")
             raise
         self.targets[target] = dict(camera=source.camera, depth=source.depth is not None, measured=deque(maxlen=256))
         return self._measure(target, source, observation)
@@ -70,7 +74,12 @@ class Tracking:
             return dict(self._lose(name, f"the tracker reports {observation.status}; select it again"),
                         frame=frame.id)
         measurement = self.client.measure(frame, mask=observation.mask, target=name)
-        self.targets[name]["measured"].append(measurement["id"])
+        history = self.targets[name]["measured"]
+        if len(history) == history.maxlen:
+            # An accepted job can outlive the daemon's measurement cache. Retire the
+            # oldest source before forgetting it so later loss cannot leave a usable guard.
+            self.client.withdraw([history[0]], "tracking history expired; use a newer measurement")
+        history.append(measurement["id"])
         return dict(measurement, tracking="tracked")
 
     def _lose(self, name, why) -> dict:

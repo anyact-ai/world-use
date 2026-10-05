@@ -51,7 +51,9 @@ def test_mcp_tools_drive_the_daemon(daemon):
         r = await server.call_tool("status", {})
         assert "idle" in r.content[0].text and "\n" not in r.content[0].text
         assert r.structured_content["power_uncertain"] is False
-        r = await server.call_tool("run", {"plan": [{"do": "line", "up": 0.03, "duration": 1.0}], "wait_s": 0})
+        r = await server.call_tool("run", {"plan": [{"do": "line", "up": 0.03, "duration": 1.0}], "wait_s": 0,
+                                          "camera": "side"})
+        assert "frame" not in r.structured_content and not any(item.type == "image" for item in r.content)
         assert "job 1 is still" in r.content[0].text and "job(job=1)" in r.content[0].text
         assert "wu " not in r.content[0].text                  # an MCP agent has tools, not a shell
         r = await server.call_tool("job", {"job": 1, "wait_s": 10})
@@ -78,4 +80,28 @@ def test_mcp_tools_drive_the_daemon(daemon):
                                                "size": [0.1, 0.1, 0.1], "speed": 0.02})
         assert "speed=0.02" in r.content[0].text
 
+    asyncio.run(session())
+
+
+@pytest.mark.usefixtures("file_camera")
+def test_mcp_phase_camera_preserves_outcomes_and_never_resubmits_on_camera_failure(daemon):
+    d, c = daemon
+    server = build(c.url)
+
+    async def session():
+        r = await server.call_tool("run", {"plan": [{"do": "checkpoint", "ask": "Continue?"},
+            {"do": "hold", "seconds": .01}], "rehearse": False, "camera": "side"})
+        job = r.structured_content["id"]
+        assert r.structured_content["status"] == "waiting" and any(i.type == "image" for i in r.content)
+        frame = r.structured_content["frame"]["id"]
+        assert c.frame(id=frame).id == frame
+        r = await server.call_tool("job", {"job": job, "camera": "side"})
+        assert any(i.type == "image" for i in r.content)
+        assert c.frame(id=r.structured_content["frame"]["id"]).camera == "side"
+        r = await server.call_tool("answer", {"job": job, "answer": "yes", "camera": "side"})
+        assert r.structured_content["status"] == "done" and any(i.type == "image" for i in r.content)
+        r = await server.call_tool("run", {"plan": {"do": "hold", "seconds": .01},
+                                           "rehearse": False, "camera": "missing"})
+        assert r.structured_content["status"] == "done" and r.structured_content["camera_error"]
+        assert len(d.k.jobs) == 2
     asyncio.run(session())

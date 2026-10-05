@@ -18,6 +18,11 @@ run(plan=[...], requires=[{"evidence": MEASUREMENT_ID, "max_age_s": 30}])
 measure_pixels(...) again after the step, and compare
 ```
 
+MCP `run`, `job` and `answer` also accept `camera="top", depth=true`: once the job reaches a checkpoint or
+outcome, the same reply includes a fresh picture and `frame.id` for measuring. A job still running at the wait
+timeout returns without a picture; wait with `job`, never resubmit it. A camera failure preserves the job and
+outcome and reports `camera_error`.
+
 To try it, start the block workcell (`wu up --workcell block`): its block's top face is near pixel (374, 112)
 of the `top` camera, and a measurement there gives a `surface_center` of about [0.34, 0.03, 0.25], the middle
 of that face in the work frame.
@@ -86,8 +91,9 @@ This check runs before rehearsal, when the run is accepted, and before every ste
 its closing. A step that is already moving finishes. The check compares numbers copied when the run was
 submitted, so it reads no files or pictures in the control loop, and the run keeps its copy even after the daemon
 forgets the measurement. Plans with custom (plugin) steps cannot require measurements, because their own moves
-would go unchecked. The agent picks `max_age_s`: long enough for its decisions, short enough for how fast the
-scene can change.
+would go unchecked, unless an embedded adapter explicitly audits and admits those exact types through
+[`Kernel.guarded_steps`](adapters.md#guarded-custom-steps). The agent picks `max_age_s`: long enough for its
+decisions, short enough for how fast the scene can change.
 
 ## Tracking
 
@@ -100,7 +106,9 @@ An agent often thinks for longer than the tracker accepts a picture's age (15 s)
 a picture is followed into a new picture before it is measured. A target the tracker loses is dropped, and
 the measurements made of it are withdrawn: a run that requires one stops before its next step. Select it
 again to continue. The tracker follows up to four targets and runs one request at a time; selecting a name
-again replaces it. Nothing tracks in the background. In Python, `Tracking(client, TrackerProcess())` from
+again withdraws its previous measurements. A stopped provider withdraws all its targets. Each target keeps 256
+measurement IDs; before forgetting an older one, it withdraws it too, including from already accepted jobs.
+Nothing tracks in the background. In Python, `Tracking(client, TrackerProcess())` from
 `world_use.tracking` and `world_use.vision_worker` offers the same `select` and `observe`.
 
 ## Records

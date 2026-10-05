@@ -180,6 +180,16 @@ def test_a_guarded_plan_with_a_custom_step_is_refused_before_any_step_starts(k, 
     with pytest.raises(Refused, match="built-in"):
         k.submit([{"do": "gripper", "aperture_mm": 65}, Custom()], guard=guard)
     assert not k.jobs
+    k.guarded_steps = k.guarded_steps | {Custom}
+    job = k.submit(Custom(), guard=guard)
+    advance(k, lambda: job.finished)
+    assert job.status == "done"
+
+    class Unreviewed(Custom):
+        pass
+
+    with pytest.raises(Refused, match="unchecked"):
+        k.submit(Unreviewed(), guard=guard)
 
 
 def test_expiry_during_rehearsal_refuses_before_submission(daemon, monkeypatch):
