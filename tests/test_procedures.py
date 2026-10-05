@@ -297,6 +297,31 @@ class StaticTracker:
         self.masks.clear()
 
 
+@pytest.mark.parametrize("failure", ["inference", "registration"])
+def test_failed_selection_releases_its_unreturned_target_slot(daemon, monkeypatch, failure):
+    _, c = daemon
+    frame, _ = capture(daemon)
+    tracker = StaticTracker()
+    p = Perception(c, tracker)
+    p.remember(frame)
+
+    def fail(*args, **kwargs):
+        raise Refused("fixture selection failed", "provider_error")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(tracker if failure == "inference" else c,
+                          "update" if failure == "inference" else "record", fail)
+            for _ in range(p.MAX_TARGETS + 1):
+                with pytest.raises(Refused, match="fixture selection failed"):
+                    p.select_target(frame.id, box=[10, 10, 90, 90])
+        selected = [p.select_target(frame.id, box=[10, 10, 90, 90]) for _ in range(p.MAX_TARGETS)]
+        refreshed = p.observe_targets([s["target"] for s in selected], frames={"fixture": frame.id})
+        assert all(o["status"] == "tracked" for o in refreshed["observations"])
+    finally:
+        p.close()
+
+
 def test_mcp_selection_and_fits_share_python_contract_and_slow_inference_does_not_block_status(daemon):
     _, c = daemon
     frame, _ = capture(daemon)

@@ -152,7 +152,13 @@ class Perception:
                                                                        else {"box": box}))
                 return self._result(identity, source, observation)
             except Exception:
-                self._failed(identity)
+                try:
+                    self._failed(identity)
+                finally:
+                    # The caller never received this handle and cannot replace it.
+                    self.targets.pop(identity, None)
+                    with suppress(Refused, OSError, ValueError):
+                        self.tracker.forget(identity)
                 raise
         finally:
             self.inference.release()
