@@ -75,6 +75,26 @@ kernel about an object with `add_box` and name the measurement in its source.
 stayed the same while `surface_center` rose. After letting go, the block is at its target if
 `surface_center` is there, and the tool is clear if `from_tool` points far enough down.
 
+## Aligning measured landmarks
+
+For planar placement, Python integrations can use `world_use.geometry.align_planar(source, target, tool,
+max_error_m=...)`. Supply 3-8 corresponding XYZ landmarks in each list and the captured 4x4 tool pose,
+all in the same coordinate frame. The caller chooses which visible features correspond; no object
+model or feature matching is supplied. Measure the source after verifying the grasp, while the part
+is held in the same way that the proposed motion assumes.
+
+The helper fits translation and yaw without scale or reflection, then applies the same correction to
+the captured tool pose. This accounts for an off-centre grasp. `tool_pose` preserves the tool's height;
+approach, insertion depth and collision checking remain the procedure's decisions. Inspect above contact,
+then remeasure if the part slips or the grasp changes. The inputs must span an area, not one edge.
+
+The result includes each horizontal fit error and disagreement between relative landmark heights.
+If either exceeds the caller's `max_error_m`, `valid` is false and `tool_pose` is absent (`None`). Check
+correspondence, depth and tilt instead of loosening the tolerance to force a fit. A small residual can
+still come from consistently wrong correspondences; it is not confidence in an object pose or proof
+of a secure grasp. Keep the original measurement IDs in the plan's `requires`: fitting does not
+create fresh evidence, change the world model or move the robot.
+
 ## Freshness
 
 A run that `requires` a measurement is refused when it is submitted if the daemon does not know that
