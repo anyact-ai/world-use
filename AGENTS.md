@@ -1,7 +1,7 @@
 # Working on world-use
 
 Keep world-use easy to install, understand, and use for a first robot task.
-`CLAUDE.md` is a symlink to this file; edit this file.
+`CLAUDE.md` imports this file; edit this file.
 
 ## Design
 
