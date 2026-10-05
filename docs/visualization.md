@@ -1,9 +1,9 @@
 # Rerun visualization
 
-Install the optional viewer with Python 3.13+:
+Install the optional viewer with Python 3.14:
 
 ```sh
-uv tool install --force --python 3.13 "world-use[rerun] @ git+https://github.com/anyact-ai/world-use"
+uv tool install --force --python 3.14 "world-use[rerun] @ git+https://github.com/anyact-ai/world-use"
 ```
 
 Include any other extras you use in the same command, for example `[mcp,rerun]`.

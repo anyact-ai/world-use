@@ -18,7 +18,7 @@ Keep world-use easy to install, understand, and use for a first robot task.
 
 ## Tests and checks
 
-Use Python 3.13+ and uv. Development commands:
+Use Python 3.14 and uv. Development commands:
 
 ```sh
 uv sync --locked

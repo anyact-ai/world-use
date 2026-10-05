@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
-      - run: uv sync --locked --python 3.13
+      - run: uv sync --locked --python 3.14
       - name: Install the optional CPU vision stack
         run: uv pip install --python .venv/bin/python --torch-backend cpu --editable '.[vision]'
       - name: Check types with vision dependencies installed
@@ -43,12 +43,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python: ['3.13', '3.14']
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
-      - run: uv sync --locked --extra rerun --python '${{ matrix.python }}'
+      - run: uv sync --locked --extra rerun --python 3.14
       - name: Install headless rendering libraries
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1-mesa-dri
@@ -65,7 +64,7 @@ jobs:
         shell: bash
         run: |
           uv build
-          uv venv --python '${{ matrix.python }}' "$RUNNER_TEMP/wheel-test"
+          uv venv --python 3.14 "$RUNNER_TEMP/wheel-test"
           for task_wheel in dist/*.whl; do
             uv pip install --python "$RUNNER_TEMP/wheel-test/bin/python" "${task_wheel}[mcp,rerun]"
           done
@@ -74,11 +73,3 @@ jobs:
             task_camera_args+=(--file-camera)
           fi
           "$RUNNER_TEMP/wheel-test/bin/python" scripts/wheel_smoke.py "${task_camera_args[@]}"
-      - name: Load the published hardware driver without opening CAN
-        if: matrix.python == '3.13'
-        shell: bash
-        run: |
-          for task_wheel in dist/*.whl; do
-            uv pip install --python "$RUNNER_TEMP/wheel-test/bin/python" "${task_wheel}[rebot]"
-          done
-          "$RUNNER_TEMP/wheel-test/bin/python" -c 'from motorbridge.abi import get_abi; get_abi()'
