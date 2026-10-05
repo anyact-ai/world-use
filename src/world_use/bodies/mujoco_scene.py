@@ -1,6 +1,7 @@
 """Build a MuJoCo scene from the robot URDF and the simulation's physical world."""
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import xml.etree.ElementTree as ET
@@ -19,6 +20,8 @@ if sys.platform == "linux" and not os.environ.get("DISPLAY"):
 
 # MuJoCo exposes its API dynamically from binary extensions without public type stubs.
 mj: Any = import_module("mujoco")
+# Otherwise MuJoCo appends its warnings to MUJOCO_LOG.TXT in whatever folder the process runs in.
+mj.set_mju_user_warning(logging.getLogger("mujoco").warning)
 
 KP, KV = 150.0, 10.0      # arm servos, Nm/rad and Nm s/rad; SimBody feeds gravity forward through the same gains
 FINGER = 3000.0, 20.0, 60.0   # each gripper finger's servo: kp N/m, kv N s/m, force limit N
