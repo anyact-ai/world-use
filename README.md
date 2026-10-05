@@ -79,6 +79,12 @@ camera images, structured status, job results, and the same actions as the CLI.
 The daemon outlives agent calls. An accepted plan continues after a client disconnects;
 use checkpoints where it needs an answer.
 
+The [procedure tools](docs/procedure-tools.md) add registered geometry references,
+checked phases, outcome verification and retrievable evidence. Optional
+`wu mcp --vision` exposes EdgeTAM selection and refresh. The
+[complete simulation procedure](docs/procedure-tools.md#run-the-complete-example)
+exercises the workflow through MCP and checks success independently after release.
+
 ## Python
 
 With an enabled daemon running, save the example below as `task.py`. The CLI
@@ -104,7 +110,9 @@ checks each step as it starts; call `check` explicitly for a whole-plan rehearsa
 
 For visual feedback inside a procedure, the optional [EdgeTAM tracker](examples/tracking)
 follows a selected object through camera frames. It runs locally with bounded history
-and reports image-space observations, including lost or stale tracking.
+and reports image-space observations, including lost or stale tracking. The
+[RGB-D block example](examples/perception) adds measured geometry, evidence freshness
+checks, visual lift/placement verification, and source evidence in Rerun.
 
 ## What the runtime provides
 
@@ -152,10 +160,6 @@ uv run ty check src
 See [adding a body](docs/adapters.md) for the complete adapter path, and the
 [design notes](DESIGN.md) for runtime contracts and the experiments behind them.
 The [changelog](CHANGELOG.md) covers release and API changes.
-
-Related work includes [Graph-as-Policy](https://arxiv.org/abs/2607.05369), which
-inspired writing and testing robot programs outside the control loop, and
-[Inspect Robots](https://github.com/robocurve/inspect-robots) for robot-policy evaluation.
 
 ## License
 

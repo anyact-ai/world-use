@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .cameras import Frame
+    from .perception import Measurement
 
 DEFAULT_URL = os.environ.get("WORLD_USE_URL", "http://127.0.0.1:7431")
 
@@ -47,16 +48,47 @@ class Client:
     def card(self) -> str:
         return self._call("GET", "/card")["card"]
 
-    def run(self, spec, wait: float = 0.0, check: bool = True) -> dict:
+    def capabilities(self) -> dict:
+        """The embodiment card plus structured cameras, supported effects and limits."""
+        return self._call("GET", "/card")
+
+    def run(self, spec=None, wait: float = 0.0, check: bool = True, *, requires: list[dict] | None = None,
+            plan_id: str | None = None, request_id: str | None = None) -> dict:
         """Rehearse (unless check=False), then run. A plan the kernel would refuse comes back refused, unmoved.
-        Each submission includes its own plan."""
-        return self._call("POST", "/run", dict(spec=spec, wait=wait, check=check))
+        A prepared plan fixes data and criteria; it still rehearses against the current state.
+        Retrying a prepared ID returns its original job. Literal plans can supply session_id:unique request_id."""
+        return self._call("POST", "/run", dict(spec=spec, wait=wait, check=check,
+                                               requires=[] if requires is None else requires,
+                                               plan_id=plan_id, request_id=request_id))
 
     def job(self, job_id: int, wait: float = 0.0) -> dict:
         return self._call("GET", f"/jobs/{job_id}?wait={wait}")
 
-    def check(self, spec) -> dict:
-        return self._call("POST", "/check", dict(spec=spec))
+    def check(self, spec, *, prepare=False, requires=None, max_age_s=None, effects=None) -> dict:
+        return self._call("POST", "/check", dict(spec=spec, prepare=prepare, requires=requires,
+                                                  max_age_s=max_age_s, effects=effects))
+
+    def fit_geometry(self, evidence: str, *, kind="known_box", frame="work", size_m=None,
+                     max_residual_m=.003) -> dict:
+        return self._call("POST", "/fit_geometry", dict(evidence=evidence, kind=kind, frame=frame,
+                                                         size_m=size_m, max_residual_m=max_residual_m))
+
+    def verify_effect(self, job: int, after: str, *, effect=0) -> dict:
+        return self._call("POST", "/verify_effect", dict(job=job, after=after, effect=effect))
+
+    def invalidate_target(self, target: str) -> dict:
+        return self._call("POST", "/invalidate_target", dict(target=target))
+
+    def inspect_run(self, *, since=0, limit=50, job=None) -> dict:
+        from urllib.parse import urlencode
+        query = dict(since=since, limit=limit)
+        if job is not None:
+            query["job"] = job
+        return self._call("GET", "/inspect?" + urlencode(query))
+
+    def evidence_image(self, evidence: str) -> dict:
+        from urllib.parse import urlencode
+        return self._call("GET", "/evidence_image?" + urlencode(dict(evidence=evidence)))
 
     def answer(self, job_id: int, answer: str, wait: float = 0.0) -> dict:
         return self._call("POST", "/answer", dict(job=job_id, answer=answer, wait=wait))
@@ -79,8 +111,8 @@ class Client:
     def home_route(self, steps: list | None, note: str = "") -> dict:
         return self._call("POST", "/home_route", dict(steps=steps, note=note))
 
-    def home(self, wait: float = 0.0) -> dict:
-        return self._call("POST", "/home", dict(wait=wait))
+    def home(self, wait: float = 0.0, *, request_id: str | None = None) -> dict:
+        return self._call("POST", "/home", dict(wait=wait, request_id=request_id))
 
     def world(self, **change) -> dict:
         return self._call("POST", "/world", change) if change else self._call("GET", "/world")
@@ -97,24 +129,32 @@ class Client:
         and nothing else); returns its path."""
         return self._call("POST", "/look", dict(camera=camera, spec=spec, grid=grid))
 
-    def frame(self, camera: str | None = None) -> Frame:
+    def frame(self, camera: str | None = None, *, depth: bool = False) -> Frame:
         """Read an unannotated frame in memory, without recording it. Pixels are not downscaled."""
         from urllib.parse import urlencode
 
         from .cameras import Frame
-        query = "?" + urlencode(dict(camera=camera)) if camera is not None else ""
+        params = dict(camera=camera) if camera is not None else {}
+        if depth:
+            params["depth"] = "true"
+        query = "?" + urlencode(params) if params else ""
         return Frame.from_dict(self._call("GET", "/frame" + query))
 
     def help(self) -> dict:
         return self._call("GET", "/help")["steps"]
 
-    def calibrate(self, camera: str, points: int = 8, spread: float | None = None, wait: float = 0.0) -> dict:
+    def calibrate(self, camera: str, points: int = 8, spread: float | None = None, wait: float = 0.0,
+                  *, request_id: str | None = None) -> dict:
         """Start calibrating a camera from the arm: a job whose checkpoints ask where the tool point is."""
-        return self._call("POST", "/calibrate", dict(camera=camera, points=points, spread=spread, wait=wait))
+        return self._call("POST", "/calibrate", dict(camera=camera, points=points, spread=spread, wait=wait,
+                                                      request_id=request_id))
 
-    def record(self, *, context: dict | None = None, note: str = "") -> dict:
+    def record(self, *, context: dict | None = None, note: str = "", evidence: Measurement | None = None) -> dict:
         """Write the flight record so far, without stopping anything."""
-        return self._call("POST", "/record", dict(context=context, note=note))
+        payload = dict(context=context, note=note)
+        if evidence is not None:
+            payload["evidence"] = evidence.request()
+        return self._call("POST", "/record", payload)
 
     def shutdown(self) -> dict:
         return self._call("POST", "/shutdown", {})

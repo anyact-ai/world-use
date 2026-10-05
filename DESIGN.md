@@ -120,12 +120,10 @@ the control thread without rebuilding the complete tape. See the [record format]
 
 ## Two loops, one runtime
 
-Agentic Robotics work such as [Graph-as-Policy](https://arxiv.org/abs/2607.05369) shows the strongest results
-when agents write, test and improve robot programs offline in simulation and export lightweight code. Our
-numbers agree: the frontier model does not belong in the control loop, and most of our gains came from moving
-work offline. Our runs also show the other half: a one-off task in a scene nobody has modelled (a magnetic
-door, a zip tie, a round neck that slips) is cheaper to supervise once than to simulate, and the remaining
-failures only showed up live.
+Agents develop and test procedures in simulation, then execute them through the
+same runtime. Preparing work offline reduces powered waiting. Unfamiliar tasks
+still need live observations and decisions, especially when contact or an
+unexpected scene change invalidates the plan.
 
 So world-use serves both loops with the same kernel, behaviors and records:
 
@@ -146,14 +144,33 @@ flight records in a separate process. It never imports a hardware driver or
 rehearses a plan; its 3D objects are labeled as estimates. See
 [visualization](docs/visualization.md).
 
-Optional perception runs in the procedure's process. `Client.frame()` reads an unannotated
+Optional perception runs in a procedure or its private model process. `Client.frame()` reads an unannotated
 camera frame without adding a flight-record image; `look` remains the recorded, annotated
 view. The EdgeTAM helper keeps one selected object and bounded forward history. Its
 observations carry frame identity and age, and do not update world facts or command the
 body. Procedures decide how to use them between checked phases; inference never belongs
 in a behavior tick. See the [tracking example](examples/tracking).
 
+MuJoCo frames optionally include aligned metric depth and copied calibration. Pure
+measurement helpers describe visible surfaces; `Client.record(evidence=...)` registers
+their source pixels. `Client.run(..., requires=[...])` checks session, calibration and
+capture age before admission and subsequent steps, including with rehearsal disabled.
+Observations do not invalidate checked plans; control mutations still do. Source
+artifacts persist in a bounded background queue and appear in Rerun at their capture
+and availability times. See the [contracts and limits](docs/perception-design.md)
+and [perception-assisted block example](examples/perception).
+
+The [procedure tools](docs/procedure-tools.md) resolve geometry references into the
+same numeric PlanSpec and freeze task criteria before acting. Prepared IDs submit
+once and rehearse against the current state. Region loss revokes dependent motion
+at existing prerequisite boundaries; historical measurements remain intact.
+Verification compares captured geometry and synchronized feedback, independently
+of job completion and power state. Python and MCP share these calculations.
+
 ## Where it goes
+
+The [agent tool design](docs/agent-tools-design.md) describes how to extend reusable
+procedures through task-driven experiments and additional perception capabilities.
 
 Start with repeatable tasks on one arm. The [block example](examples/pick-place) gives
 new users a complete run, a separate success predicate, controlled scene variations,

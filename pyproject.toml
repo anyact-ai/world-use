@@ -58,3 +58,8 @@ ignore = ["RUF005", "RUF012"]    # tuple concatenation reads fine; behavior exam
 testpaths = ["tests"]
 addopts = "-q"
 markers = ["rendering: requires a working MuJoCo OpenGL context (unavailable on hosted macOS VMs)"]
+
+[[tool.ty.overrides]]
+include = ["src/world_use/vision.py", "src/world_use/vision_worker.py"]
+# Optional-import suppressions are used in core CI and unused when vision is installed.
+rules.unused-ignore-comment = "ignore"

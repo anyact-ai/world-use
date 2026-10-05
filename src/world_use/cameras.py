@@ -20,10 +20,13 @@ Workcell entry (positions in the work frame, metres):
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 import os
 import subprocess
 import time
 import urllib.request
+import zlib
 from dataclasses import dataclass, field, replace
 from io import BytesIO
 from pathlib import Path
@@ -54,6 +57,33 @@ class Frame:
     camera: str
     id: str = field(default_factory=lambda: uuid4().hex)
     timestamp: float = field(default_factory=time.monotonic)
+    view: View | None = None
+    depth: np.ndarray | None = field(default=None, repr=False)
+    session: str | None = None
+    calibration: str | None = None
+    timing: str = "acquisition_start"
+    elapsed: float | None = None
+    tool: np.ndarray | None = field(default=None, repr=False)
+    aperture_mm: float | None = None
+
+    def __post_init__(self):
+        if self.aperture_mm is not None and not np.isfinite(self.aperture_mm):
+            raise ValueError("captured aperture must be finite")
+        if self.view is not None:
+            object.__setattr__(self, "view", View.from_dict(self.view.to_dict()).scaled(*self.image.size))
+        if self.depth is not None:
+            depth = np.array(self.depth, dtype=np.float32, copy=True)
+            if depth.shape != (self.image.height, self.image.width):
+                raise ValueError("depth must be aligned to the upright RGB pixels")
+            depth[~np.isfinite(depth) | (depth <= 0)] = np.nan
+            depth.flags.writeable = False
+            object.__setattr__(self, "depth", depth)
+        if self.tool is not None:
+            tool = np.array(self.tool, dtype=float, copy=True)
+            if tool.shape != (4, 4) or not np.isfinite(tool).all():
+                raise ValueError("captured tool pose must be a finite 4x4 transform")
+            tool.flags.writeable = False
+            object.__setattr__(self, "tool", tool)
 
     @property
     def age_s(self) -> float:
@@ -63,15 +93,42 @@ class Frame:
         data = BytesIO()
         self.image.save(data, format="PNG")
         return dict(camera=self.camera, id=self.id, timestamp=self.timestamp,
-                    png=base64.b64encode(data.getvalue()).decode("ascii"))
+                    png=base64.b64encode(data.getvalue()).decode("ascii"),
+                    view=None if self.view is None else self.view.to_dict(),
+                    depth=None if self.depth is None else pack(self.depth.astype("<f4").tobytes()),
+                    session=self.session, calibration=self.calibration, timing=self.timing, elapsed=self.elapsed,
+                    tool=None if self.tool is None else self.tool.tolist(), aperture_mm=self.aperture_mm)
 
     @classmethod
     def from_dict(cls, data: dict) -> Frame:
         image = Image.open(BytesIO(base64.b64decode(data["png"]))).convert("RGB")
-        return cls(image, data["camera"], data["id"], float(data["timestamp"]))
+        depth = None if data.get("depth") is None else np.frombuffer(
+            unpack(data["depth"], image.width * image.height * 4), dtype="<f4").reshape(image.height, image.width)
+        return cls(image, data["camera"], data["id"], float(data["timestamp"]),
+                   None if data.get("view") is None else View.from_dict(data["view"]), depth,
+                   data.get("session"), data.get("calibration"), data.get("timing", "acquisition_start"),
+                   elapsed=data.get("elapsed"), tool=data.get("tool"), aperture_mm=data.get("aperture_mm"))
 
 
-@dataclass
+def pack(data: bytes) -> str:
+    return base64.b64encode(zlib.compress(data)).decode("ascii")
+
+
+def unpack(data: str, size: int) -> bytes:
+    """Decode a bounded array; refuse malformed streams and expansion beyond the declared shape."""
+    if not 0 < size <= 64 * 1024 * 1024:
+        raise ValueError("array exceeds the 64 MiB limit")
+    try:
+        decoder = zlib.decompressobj()
+        value = decoder.decompress(base64.b64decode(data, validate=True), size + 1)
+    except (ValueError, zlib.error) as e:
+        raise ValueError("invalid compressed array") from e
+    if len(value) != size or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+        raise ValueError("compressed array does not match its declared shape")
+    return value
+
+
+@dataclass(frozen=True)
 class View:
     """A pinhole camera: its pose in the base frame (x right, y down, z along the view) and its intrinsics."""
     T: np.ndarray
@@ -81,6 +138,35 @@ class View:
     cy: float
     width: int
     height: int
+
+    def __post_init__(self):
+        T = np.array(self.T, dtype=float, copy=True)
+        if (T.shape != (4, 4) or not np.isfinite(T).all() or not np.allclose(T[3], [0, 0, 0, 1])
+                or not np.allclose(T[:3, :3].T @ T[:3, :3], np.eye(3), atol=1e-5)
+                or not np.isclose(np.linalg.det(T[:3, :3]), 1, atol=1e-5)):
+            raise ValueError("camera pose must be a rigid 4x4 transform")
+        if not np.isfinite([self.fx, self.fy, self.cx, self.cy]).all() or min(self.fx, self.fy) <= 0:
+            raise ValueError("camera intrinsics must be finite with positive focal lengths")
+        if any(isinstance(v, bool) or not isinstance(v, int) or v <= 0 for v in (self.width, self.height)):
+            raise ValueError("camera dimensions must be positive integers")
+        T.flags.writeable = False
+        object.__setattr__(self, "T", T)
+
+    def to_dict(self) -> dict:
+        return dict(T=self.T.tolist(), fx=self.fx, fy=self.fy, cx=self.cx, cy=self.cy,
+                    width=self.width, height=self.height)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> View:
+        return cls(**data)
+
+    def unproject(self, pixels, depth) -> np.ndarray:
+        """Native pixel coordinates and optical-z metres to base-frame surface points."""
+        uv = np.asarray(pixels, float)
+        z = np.asarray(depth, float)
+        xyz = np.stack([(uv[..., 0] - self.cx) * z / self.fx,
+                        (uv[..., 1] - self.cy) * z / self.fy, z], axis=-1)
+        return xyz @ self.T[:3, :3].T + self.T[:3, 3]
 
     @classmethod
     def look_at(cls, eye, target, fov_deg: float = 55.0, size=(800, 600), up=(0.0, 0.0, 1.0)) -> View:
@@ -136,6 +222,21 @@ class Camera:
             raise ValueError(f"camera {name!r}: rotate is 0, 90, 180 or 270 (degrees clockwise), not {rotate!r}")
         self.name, self.view, self.rotate = name, view, rotate
 
+    @property
+    def view(self):
+        return self._calibration[0]
+
+    @view.setter
+    def view(self, value):
+        self._revision = getattr(self, "_revision", 0) + 1
+        data = None if value is None else value.to_dict()
+        identity = f"{self._revision}:" + hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:16]
+        self._calibration = (value, identity)
+
+    @property
+    def calibration_id(self) -> str:
+        return self._calibration[1]
+
     def snap(self, k) -> Image.Image:
         raise NotImplementedError
 
@@ -148,7 +249,8 @@ class Camera:
 
     def capture(self, k) -> Frame:
         started = time.monotonic()
-        return Frame(self.picture(k), self.name, timestamp=started)
+        view, revision = self._calibration
+        return Frame(self.picture(k), self.name, timestamp=started, view=view, calibration=revision)
 
 
 class HttpCamera(Camera):
@@ -218,9 +320,11 @@ class FileCamera(Camera):
         return self._read()[0]
 
     def capture(self, k) -> Frame:
+        view, revision = self._calibration
         image, stat, timestamp = self._read()
         identity = f"{self.name}:{stat.st_ino}:{stat.st_mtime_ns}:{stat.st_size}"
-        return Frame(self._upright(image), self.name, identity, timestamp)
+        return Frame(self._upright(image), self.name, identity, timestamp, view=view,
+                     calibration=revision, timing="file_mtime")
 
 
 class SimCamera(Camera):
@@ -233,6 +337,14 @@ class SimCamera(Camera):
 
     def snap(self, k) -> Image.Image:
         return self.body.render(self.lens)
+
+    def capture(self, k, *, depth=False) -> Frame:
+        view, revision = self._calibration
+        if not depth:
+            return super().capture(k)
+        image, distance, tool, timestamp, aperture = self.body.capture(self.lens, feedback=True)
+        return Frame(image, self.name, timestamp=timestamp, view=view, depth=distance,
+                     calibration=revision, timing="simulation_snapshot", tool=tool, aperture_mm=aperture)
 
 
 def equirect_dirs(u, v) -> np.ndarray:
@@ -316,8 +428,10 @@ class EquirectCut(Camera):
         return self._cut(self.source.picture(k))
 
     def capture(self, k) -> Frame:
+        view, revision = self._calibration
         frame = self.source.capture(k)
-        return replace(frame, image=self._cut(frame.image), camera=self.name, id=f"{self.name}:{frame.id}")
+        return replace(frame, image=self._cut(frame.image), camera=self.name, id=f"{self.name}:{frame.id}",
+                       view=view, calibration=revision, depth=None, tool=None)
 
     def _cut(self, image: Image.Image) -> Image.Image:
         pano = np.asarray(image, dtype=np.uint8)

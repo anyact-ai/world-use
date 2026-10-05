@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import math
 import time
+from copy import copy
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 
@@ -87,15 +89,25 @@ class EdgeTAM:
         self._torch = torch
         self._dtype = torch.float32 if device == "cpu" else torch.float16
         source = str(model_path) if model_path is not None else MODEL
-        options = {} if model_path is not None else {"revision": REVISION}
+        revision = "main" if model_path is not None else REVISION
         self._model = transformers.EdgeTamVideoModel.from_pretrained(
-            source, dtype=self._dtype, **options).to(device).eval()
-        self._processor = transformers.Sam2VideoProcessor.from_pretrained(source, **options)
+            source, dtype=self._dtype, revision=revision)
+        # Transformers' decorated .to loses its bound signature; it implements nn.Module's contract.
+        cast(torch.nn.Module, self._model).to(device).eval()
+        self._processor = transformers.Sam2VideoProcessor.from_pretrained(source, revision=revision)
         self._recent = max(self._model.config.num_maskmem - 1, self._model.config.max_object_pointers_in_encoder - 1)
 
     def __enter__(self) -> EdgeTAM:
         self._check_open()
         return self
+
+    def fork(self) -> EdgeTAM:
+        """Independent target history sharing loaded weights. Serialize calls across these instances."""
+        self._check_open()
+        child = copy(self)
+        child._session = child._last = child._size = child._camera = None
+        child._index = 0
+        return child
 
     def __exit__(self, *_):
         self.close()

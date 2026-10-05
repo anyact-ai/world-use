@@ -11,6 +11,26 @@ from world_use.mcp_server import build
 
 
 @pytest.mark.usefixtures("file_camera")
+def test_mcp_capture_measurement_and_evidence_refusal(daemon):
+    import json
+
+    _, c = daemon
+    server = build(c.url)
+
+    async def session():
+        captured = await server.call_tool("camera_frame", {"camera": "side"})
+        metadata = json.loads(captured.content[0].text)
+        assert any(item.type == "image" for item in captured.content)
+        measured = await server.call_tool("measure_pixels", {"frame": metadata["frame"], "point": [200, 200]})
+        receipt = json.loads(measured.content[0].text)
+        assert not receipt["valid"] and receipt["reason"] == "missing_depth"
+        with pytest.raises(ToolError, match="no valid geometry"):
+            await server.call_tool("run", {"plan": {"do": "gripper", "aperture_mm": 65}, "rehearse": False,
+                                          "requires": [{"evidence": receipt["id"], "max_age_s": 10}]})
+    asyncio.run(session())
+
+
+@pytest.mark.usefixtures("file_camera")
 def test_mcp_tools_drive_the_daemon(daemon):
     _, c = daemon
     server = build(c.url)

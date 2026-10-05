@@ -261,6 +261,38 @@ def test_checked_run_revalidates_before_its_first_tick(daemon):
     assert job.status == "refused" and np.array_equal(d.k.cmd.q, before)
 
 
+def test_observation_events_do_not_invalidate_checked_admission(daemon, monkeypatch):
+    d, c = daemon
+    original = d.rehearser.check
+
+    def observed(*args, **kwargs):
+        report = original(*args, **kwargs)
+        c.record(note="looked at the scene", context={"observation": "unchanged"})
+        d.k.emit("evidence", "read-only measurement")
+        return report
+
+    monkeypatch.setattr(d.rehearser, "check", observed)
+    assert c.run({"do": "hold", "seconds": .01}, wait=5)["status"] == "done"
+
+
+def test_a_consumed_stop_still_invalidates_rehearsal(daemon, monkeypatch):
+    d, c = daemon
+    d.stop_loop.set()
+    d.control.join(2)
+    original = d.rehearser.check
+
+    def stopped(*args, **kwargs):
+        report = original(*args, **kwargs)
+        c.stop()
+        d.k.tick()
+        assert d.k._stop is None
+        return report
+
+    monkeypatch.setattr(d.rehearser, "check", stopped)
+    with pytest.raises(DaemonError, match="changed during rehearsal"):
+        c.run({"do": "hold", "seconds": .01})
+
+
 @pytest.mark.rendering
 def test_look_saves_a_picture_with_what_the_kernel_knows_drawn_on_it(daemon):
     _, c = daemon

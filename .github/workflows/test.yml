@@ -3,7 +3,36 @@ on:
   push:
     branches: [main]
   pull_request:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
+  vision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OMP_NUM_THREADS: '2'
+      HF_HUB_DISABLE_XET: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv sync --locked --python 3.13
+      - name: Install the optional CPU vision stack
+        run: uv pip install --python .venv/bin/python --torch-backend cpu --editable '.[vision]'
+      - name: Check types with vision dependencies installed
+        run: .venv/bin/ty check src
+      - name: Install headless rendering libraries
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1-mesa-dri
+      - name: Validate real EdgeTAM, Python and MCP procedures, recovery and Rerun
+        run: .venv/bin/python scripts/vision_smoke.py --output runs/vision-ci
+      - name: Preserve validation evidence
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: vision-evidence
+          path: runs/vision-ci
+          if-no-files-found: warn
+          retention-days: 14
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -17,12 +46,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python: ['3.13', '3.14']
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
-      - run: uv sync --locked --extra rerun --python '${{ matrix.python }}'
+      - run: uv sync --locked --extra rerun --python 3.13
       - name: Install headless rendering libraries
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1-mesa-dri
@@ -39,7 +67,7 @@ jobs:
         shell: bash
         run: |
           uv build
-          uv venv --python '${{ matrix.python }}' "$RUNNER_TEMP/wheel-test"
+          uv venv --python 3.13 "$RUNNER_TEMP/wheel-test"
           for task_wheel in dist/*.whl; do
             uv pip install --python "$RUNNER_TEMP/wheel-test/bin/python" "${task_wheel}[mcp,rerun]"
           done
@@ -49,7 +77,6 @@ jobs:
           fi
           "$RUNNER_TEMP/wheel-test/bin/python" scripts/wheel_smoke.py "${task_camera_args[@]}"
       - name: Load the published hardware driver without opening CAN
-        if: matrix.python == '3.13'
         shell: bash
         run: |
           for task_wheel in dist/*.whl; do

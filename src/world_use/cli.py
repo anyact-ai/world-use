@@ -178,7 +178,10 @@ def main(argv=None) -> int:
     p = sub.add_parser("help", help="the steps a plan can use")
     p.add_argument("step", nargs="?")
     sub.add_parser("world", help="frames, boxes and facts the kernel knows")
-    sub.add_parser("mcp", help="serve these commands as MCP tools over stdio (needs world-use[mcp])")
+    p = sub.add_parser("mcp", help="serve these commands as MCP tools over stdio (needs world-use[mcp])")
+    p.add_argument("--vision", action="store_true", help="load optional EdgeTAM selection before powered work")
+    p.add_argument("--device", choices=["cpu", "cuda", "mps", "auto"], default="cpu")
+    p.add_argument("--model-path", help="local EdgeTAM checkpoint; otherwise use the pinned public revision")
     p = sub.add_parser("box", help="tell the kernel about a surface, object or zone (work frame, metres)")
     p.add_argument("name")
     p.add_argument("kind", nargs="?", help="surface | object | keep_out | fragile | slow")
@@ -257,7 +260,7 @@ def main(argv=None) -> int:
                 print("the MCP server needs the mcp extra: uv tool install 'world-use[mcp] @ git+https://github.com/anyact-ai/world-use'",
                       file=sys.stderr)
                 return 1
-            serve(a.url)
+            serve(a.url, vision=a.vision, device=a.device, model_path=a.model_path)
             return 0
         if a.cmd == "down":
             r = c.shutdown()
