@@ -31,7 +31,7 @@ measured and the arm is never powered.
    measurement.
 4. Measure again, then descend and grip, requiring the new measurement.
 5. Measure, lift 6 cm, measure: the lift passed if `from_tool` held while the top face rose.
-6. Carry the block so its top lands on the target's, lower it, open and withdraw.
+6. Carry the block above the target, lower to the height calculated from its measured tool offset, open and withdraw.
 7. Measure: placed if the top face is within 1 cm of the target, the gripper is open and the tool is
    8 cm clear above the block.
 

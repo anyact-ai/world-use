@@ -132,7 +132,9 @@ async def procedure(server, evaluate, *, tracking=False) -> dict:
         # The block keeps its offset from the tool, so with the tool here its top is above the target's.
         to = TARGET + [0, 0, SIZE[2] / 2] - np.asarray(after["from_tool"])
         await run(dict(do="move_to", to=at(to[0], to[1], here[2])), after)
-        await run([dict(do="line", up=-.05), dict(do="gripper", aperture_mm=65), dict(do="line", up=.08)], after)
+        # Use the measured placement height; a fixed relative descent can release above the tray.
+        await run([dict(do="move_to", to=at(*to)), dict(do="gripper", aperture_mm=65),
+                   dict(do="line", up=.08)], after)
         final = await measure()
         aperture = (await tool("status"))["gripper"]["aperture_mm"]
         results["placement"] = "pass" if final and placed(final, aperture) else "fail"
