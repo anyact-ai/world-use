@@ -49,7 +49,7 @@ class Measurement:
                     target=self.target, valid=self.valid, reason=self.reason,
                     method="depth_surface", coordinates="base", units="m", geometry=geometry,
                     diagnostics=self.diagnostics,
-                    tool=None if f.tool is None else f.tool.tolist())
+                    tool=None if f.tool is None else f.tool.tolist(), aperture_mm=f.aperture_mm)
 
     def preview(self):
         image = self.frame.image.copy()
@@ -142,8 +142,12 @@ class Requirement:
     calibration: str
     timestamp: float
     max_age_s: float
+    revoked: threading.Event | None = field(default=None, repr=False, compare=False)
 
     def check(self, session, calibrations, now):
+        if self.revoked is not None and self.revoked.is_set():
+            raise Refused("target continuity was lost; select and measure again", "plan_invalidated",
+                          evidence=self.evidence)
         if self.session != session or calibrations.get(self.camera) != self.calibration:
             raise Refused("evidence belongs to a different session or calibration", "stale_evidence",
                           "capture and measure again", evidence=self.evidence)
@@ -158,12 +162,17 @@ class EvidenceStore:
     MAX_BYTES = 64 * 1024 * 1024
     MAX_FRAMES = 8
     MAX_RECEIPTS = 256
+    MAX_SUPPORT_BYTES = 64 * 1024 * 1024
 
     def __init__(self, kernel):
         self.k = kernel
         self.session = kernel.evidence_session
         self.frames: OrderedDict[tuple, Frame] = OrderedDict()
         self.receipts: OrderedDict[str, dict] = OrderedDict()
+        self.support: OrderedDict[str, Measurement] = OrderedDict()
+        self.support_bytes = 0
+        self.targets: OrderedDict[str, threading.Event] = OrderedDict()
+        self.revocations: dict[str, threading.Event | None] = {}
         self.bytes = 0
         self.lock = threading.Lock()
 
@@ -207,8 +216,18 @@ class EvidenceStore:
         # Only the request thread touches arrays. Control receives a copy of the small receipt.
         with self.lock:
             self.receipts[result.id] = receipt
+            if result.target and result.target not in self.targets:
+                self.targets[result.target] = threading.Event()
+                while len(self.targets) > self.MAX_RECEIPTS:
+                    self.targets.popitem(last=False)[1].set()
+            self.revocations[result.id] = self.targets.get(result.target)
+            self.support[result.id] = result
+            self.support_bytes += self.support_size(result)
+            while self.support_bytes > self.MAX_SUPPORT_BYTES or len(self.support) > self.MAX_RECEIPTS:
+                self.support_bytes -= self.support_size(self.support.popitem(last=False)[1])
             while len(self.receipts) > self.MAX_RECEIPTS:
-                self.receipts.popitem(last=False)
+                identity, _ = self.receipts.popitem(last=False)
+                self.revocations.pop(identity, None)
         self.k.emit("evidence", f"{result.target or 'surface'}: {result.reason or 'measured'}", measurement=receipt)
         if self.k.journal is not None:
             metadata = dict(receipt, format_version=1, selection=result.selection,
@@ -230,6 +249,25 @@ class EvidenceStore:
                                     save, dict(measurement=receipt, path=f"perception/{result.id}"))
         return deepcopy(receipt)
 
+    @classmethod
+    def support_size(cls, measurement):
+        return (cls.size(measurement.frame) + measurement.points.nbytes + measurement.pixels.nbytes
+                + len(measurement.selection.get("mask", "")))
+
+    def measurement(self, identity: str) -> Measurement:
+        with self.lock:
+            result = self.support.get(identity)
+        if result is None:
+            raise Refused("measurement support expired; capture and measure again", "data_unavailable")
+        return result
+
+    def invalidate(self, target: str):
+        with self.lock:
+            event = self.targets.get(target)
+            if event is not None:
+                event.set()
+        self.k.emit("target_lost", "target continuity invalidated", target=target)
+
     def resolve(self, requires) -> tuple[Requirement, ...]:
         if not isinstance(requires, list) or len(requires) > 16:
             raise ValueError("requires must be a list of at most 16 evidence prerequisites")
@@ -244,5 +282,9 @@ class EvidenceStore:
                 r = self.receipts.get(item["evidence"])
                 if r is None or not r["valid"]:
                     raise Refused("evidence is missing or has no valid geometry", "invalid_evidence", "remeasure")
-                out.append(Requirement(r["id"], r["session"], r["camera"], r["calibration"], r["timestamp"], age))
+                revoked = self.revocations.get(r["id"])
+                if r.get("target") and revoked is None:
+                    raise Refused("target metadata expired; measure again", "invalid_evidence")
+                out.append(Requirement(r["id"], r["session"], r["camera"], r["calibration"],
+                                       r["timestamp"], age, revoked))
         return tuple(out)

@@ -64,8 +64,11 @@ class Frame:
     timing: str = "acquisition_start"
     elapsed: float | None = None
     tool: np.ndarray | None = field(default=None, repr=False)
+    aperture_mm: float | None = None
 
     def __post_init__(self):
+        if self.aperture_mm is not None and not np.isfinite(self.aperture_mm):
+            raise ValueError("captured aperture must be finite")
         if self.view is not None:
             object.__setattr__(self, "view", View.from_dict(self.view.to_dict()).scaled(*self.image.size))
         if self.depth is not None:
@@ -94,7 +97,7 @@ class Frame:
                     view=None if self.view is None else self.view.to_dict(),
                     depth=None if self.depth is None else pack(self.depth.astype("<f4").tobytes()),
                     session=self.session, calibration=self.calibration, timing=self.timing, elapsed=self.elapsed,
-                    tool=None if self.tool is None else self.tool.tolist())
+                    tool=None if self.tool is None else self.tool.tolist(), aperture_mm=self.aperture_mm)
 
     @classmethod
     def from_dict(cls, data: dict) -> Frame:
@@ -104,7 +107,7 @@ class Frame:
         return cls(image, data["camera"], data["id"], float(data["timestamp"]),
                    None if data.get("view") is None else View.from_dict(data["view"]), depth,
                    data.get("session"), data.get("calibration"), data.get("timing", "acquisition_start"),
-                   elapsed=data.get("elapsed"), tool=data.get("tool"))
+                   elapsed=data.get("elapsed"), tool=data.get("tool"), aperture_mm=data.get("aperture_mm"))
 
 
 def pack(data: bytes) -> str:
@@ -339,9 +342,9 @@ class SimCamera(Camera):
         view, revision = self._calibration
         if not depth:
             return super().capture(k)
-        image, distance, tool, timestamp = self.body.capture(self.lens)
+        image, distance, tool, timestamp, aperture = self.body.capture(self.lens, feedback=True)
         return Frame(image, self.name, timestamp=timestamp, view=view, depth=distance,
-                     calibration=revision, timing="simulation_snapshot", tool=tool)
+                     calibration=revision, timing="simulation_snapshot", tool=tool, aperture_mm=aperture)
 
 
 def equirect_dirs(u, v) -> np.ndarray:

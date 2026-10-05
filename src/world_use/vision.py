@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import time
+from copy import copy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
@@ -99,6 +100,14 @@ class EdgeTAM:
     def __enter__(self) -> EdgeTAM:
         self._check_open()
         return self
+
+    def fork(self) -> EdgeTAM:
+        """Independent target history sharing loaded weights. Serialize calls across these instances."""
+        self._check_open()
+        child = copy(self)
+        child._session = child._last = child._size = child._camera = None
+        child._index = 0
+        return child
 
     def __exit__(self, *_):
         self.close()

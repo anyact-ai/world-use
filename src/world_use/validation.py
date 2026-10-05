@@ -40,6 +40,57 @@ def vector(value, field, length):
         number(v, field)
 
 
+def schema(kind: str) -> dict:
+    """Discover the built-in step's field types and constraints; validate() remains authoritative."""
+    def array(length):
+        return dict(type="array", items=dict(type="number"), minItems=length, maxItems=length)
+
+    props: dict = dict(do=dict(const=kind), label=dict(type="string"))
+    for name in sorted(FIELDS[kind]):
+        field: dict = dict(type="number")
+        if name in POSITIVE:
+            field["exclusiveMinimum"] = 0
+        if name in NONNEGATIVE:
+            field["minimum"] = 0
+        if name in {"frame", "ask", "view", "expect"} and not (name == "expect" and kind in {"grip", "grasp"}):
+            field = dict(type="string", minLength=1)
+        if name in {"target_deg", "delta_deg"}:
+            field = dict(type="object", minProperties=1, patternProperties={"^[1-9][0-9]*$": dict(type="number")},
+                         additionalProperties=False)
+        if name == "to" and kind == "move_to":
+            field = array(3)
+        if name in {"point", "jaws"}:
+            field = dict(anyOf=[dict(type="string"), array(3)])
+        if name in {"expect", "expect_mm"} and kind in {"grip", "grasp"}:
+            field = array(2)
+        if name == "expect_contact":
+            field = dict(type="boolean")
+        if name == "joints":
+            field = dict(type="array", items=dict(type="integer", minimum=1), minItems=1)
+        if name in {"legs", "search_mm"}:
+            field = dict(type="array", items=array(3 if name == "legs" else 2))
+            if name == "legs":
+                field["minItems"] = 1
+        if name == "steps":
+            field = dict(type="array", items=dict(type=["object", "array"]),
+                         description="Nested built-in steps, recursively validated by the runtime.")
+        if name == "roi":
+            field = array(4)
+        if name in {"hold_effort", "roi"} or (name == "seconds" and kind == "hold"):
+            field = dict(anyOf=[field, dict(type="null")])
+        props[name] = field
+    required = ["do"] + {"seq": ["steps"], "lines": ["legs"], "checkpoint": ["ask"]}.get(kind, [])
+    result: dict = dict(type="object", properties=props, required=required, additionalProperties=False)
+    pairs = [(a, b) for a, b in (("target_deg", "delta_deg"), ("aperture_mm", "to"),
+                                ("start_mm", "start"), ("expect_mm", "expect")) if a in props and b in props]
+    if pairs:
+        result["allOf"] = [{"not": dict(required=[a, b])} for a, b in pairs]
+    if kind in {"joints", "grasp"}:
+        a, b = ("target_deg", "delta_deg") if kind == "joints" else ("start_mm", "start")
+        result["anyOf"] = [dict(required=[a]), dict(required=[b])]
+    return result
+
+
 def validate(kind: str, p: dict):
     unknown = p.keys() - FIELDS[kind]
     if unknown:

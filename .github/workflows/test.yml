@@ -20,7 +20,7 @@ jobs:
         run: .venv/bin/ty check src
       - name: Install headless rendering libraries
         run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1-mesa-dri
-      - name: Validate real EdgeTAM inference, checked motion, recovery and Rerun
+      - name: Validate real EdgeTAM, Python and MCP procedures, recovery and Rerun
         run: .venv/bin/python scripts/vision_smoke.py --output runs/vision-ci
       - name: Preserve validation evidence
         if: always()

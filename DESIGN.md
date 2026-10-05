@@ -146,7 +146,7 @@ flight records in a separate process. It never imports a hardware driver or
 rehearses a plan; its 3D objects are labeled as estimates. See
 [visualization](docs/visualization.md).
 
-Optional perception runs in the procedure's process. `Client.frame()` reads an unannotated
+Optional perception runs in a procedure or its private model process. `Client.frame()` reads an unannotated
 camera frame without adding a flight-record image; `look` remains the recorded, annotated
 view. The EdgeTAM helper keeps one selected object and bounded forward history. Its
 observations carry frame identity and age, and do not update world facts or command the
@@ -162,7 +162,19 @@ artifacts persist in a bounded background queue and appear in Rerun at their cap
 and availability times. See the [contracts and limits](docs/perception-design.md)
 and [perception-assisted block example](examples/perception).
 
+The [procedure tools](docs/procedure-tools.md) resolve geometry references into the
+same numeric PlanSpec and freeze task criteria before acting. Prepared IDs submit
+once and rehearse against the current state. Region loss revokes dependent motion
+at existing prerequisite boundaries; historical measurements remain intact.
+Verification compares captured geometry and synchronized feedback, independently
+of job completion and power state. Python and MCP share these calculations.
+
 ## Where it goes
+
+The [agent tool interface proposal](docs/agent-tools-design.md) organizes observation,
+checked execution and verification around reusable robot procedures. Its staged
+acceptance criteria make new perception tools depend on demonstrated task needs.
+It distinguishes proposed capabilities from the implementation described above.
 
 Start with repeatable tasks on one arm. The [block example](examples/pick-place) gives
 new users a complete run, a separate success predicate, controlled scene variations,

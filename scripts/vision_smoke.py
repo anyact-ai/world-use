@@ -19,8 +19,10 @@ from PIL import Image
 
 from world_use.cameras import Frame
 from world_use.examples.perception import CONDITIONS, orange_mask, run
+from world_use.examples.procedures import run as run_mcp
 from world_use.records import inspect
 from world_use.vision import MODEL, REVISION, EdgeTAM
+from world_use.vision_worker import TrackerProcess
 
 
 def replay(image_path: Path, output: Path) -> dict:
@@ -68,6 +70,29 @@ def replay(image_path: Path, output: Path) -> dict:
     return dict(frames=samples)
 
 
+def worker_replay(image_path: Path) -> dict:
+    """Two independent prompts share loaded weights without sharing target history."""
+    with Image.open(image_path) as source:
+        image = source.convert("RGB")
+    expected = orange_mask(Frame(image, "worker-replay"))
+    ys, xs = np.nonzero(expected)
+    bounds = [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1]
+    samples = []
+    with TrackerProcess(device="cpu", max_age_s=15) as worker:
+        for target in ("first", "second"):
+            result = worker.select(target, Frame(image.copy(), "worker-replay"), box=bounds)
+            assert result.status == "tracked"
+        for _ in range(3):
+            frame = Frame(image.copy(), "worker-replay")
+            for target in ("first", "second"):
+                result = worker.update(target, frame)
+                assert result.status == "tracked"
+                overlap = float(np.count_nonzero(result.mask & expected) / np.count_nonzero(result.mask | expected))
+                assert overlap > .75, (target, overlap)
+                samples.append(dict(target=target, frame=frame.id, iou=overlap))
+    return dict(observations=samples)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
@@ -104,11 +129,27 @@ def main():
         verified = root / "verify-displaced"
         first = report["runs"]["verify-displaced"]["result"]["observations"][0]["evidence"]
         report["replay"] = replay(verified / "perception" / first / "rgb.png", root / "replay")
-        rrd = root / "verify-displaced.rrd"
-        subprocess.run([sys.executable, "-m", "world_use", "view", str(verified), "--out", str(rrd)], check=True)
+        report["worker_replay"] = worker_replay(verified / "perception" / first / "rgb.png")
+        for scenario in ("displaced", "missing"):
+            folder = root / f"mcp-{scenario}"
+            result = run_mcp(folder, scenario=scenario, model="edgetam", device="cpu")
+            record = inspect(folder)
+            report["runs"][f"mcp-{scenario}"] = dict(result=result, telemetry=record["summary"])
+            print(json.dumps(dict(case=f"mcp-{scenario}", evaluation=result["evaluation"],
+                                  lift=result["lift"], placement=result["placement"],
+                                  torque_off=result["torque_off"], reason=result.get("reason"))), flush=True)
+            assert result["torque_off"] and record["closed"] and "recording_lost" not in record["summary"]
+            if scenario == "displaced":
+                assert result["lift"] == result["placement"] == "pass", result
+                assert result["evaluation"]["success"], result
+            else:
+                assert not result["outcomes"] and record["summary"]["powered_s"] == 0, result
         from rerun.chunk import RrdReader
-        recording = RrdReader(rrd)
-        assert recording.recordings() and recording.blueprints()
+        for name in ("verify-displaced", "mcp-displaced"):
+            rrd = root / f"{name}.rrd"
+            subprocess.run([sys.executable, "-m", "world_use", "view", str(root / name), "--out", str(rrd)], check=True)
+            recording = RrdReader(rrd)
+            assert recording.recordings() and recording.blueprints()
         report["passed"] = True
     finally:
         (root / "validation.json").write_text(json.dumps(report, indent=2) + "\n")

@@ -27,6 +27,49 @@ def events(folder: Path) -> list[dict]:
     return out
 
 
+def page(folder: Path | None, *, since=0, limit=50, job=None, live=()) -> dict:
+    """Read committed history and its live tail with bounded output and an event-sequence cursor."""
+    if isinstance(since, bool) or not isinstance(since, int) or since < 0:
+        raise ValueError("since must be a nonnegative event sequence")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ValueError("limit must be in 1..100")
+    incomplete = []
+
+    def stream():
+        last = 0
+        path = None if folder is None else folder / "events.jsonl"
+        if path is not None and path.exists():
+            with path.open() as source:
+                for line in source:
+                    try:
+                        item = json.loads(line)
+                    except json.JSONDecodeError:
+                        incomplete.append("unreadable event record")
+                        continue
+                    if item["seq"] > last:
+                        last = item["seq"]
+                        yield item
+        for item in live:
+            if item["seq"] > last:
+                last = item["seq"]
+                yield item
+
+    items, cursor, missed, more = [], since, 0, False
+    for event in stream():
+        if event["seq"] <= cursor:
+            continue
+        matches = job is None or event.get("data", {}).get("job") == job
+        if matches and len(items) == limit:
+            more = True
+            break
+        missed += max(0, event["seq"] - cursor - 1)
+        cursor = event["seq"]
+        if matches:
+            items.append(event)
+    return dict(events=items, next_cursor=cursor, more=more, missed=missed,
+                record_complete=not incomplete and missed == 0, problems=incomplete, historical=True)
+
+
 def inspect(folder: Path | str) -> dict:
     folder = Path(folder)
     if not folder.is_dir() or not any((folder / name).exists() for name in ("session.json", "tape", "tape.npz")):

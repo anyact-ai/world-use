@@ -105,6 +105,10 @@ class Job:
     attention: threading.Event = field(default_factory=threading.Event)   # set on waiting or finished
     admission: Callable[[], None] | None = None    # revalidate a checked plan immediately before its first tick
     requires: tuple[Requirement, ...] = ()
+    evidence_started_at: float | None = None
+    evidence_ended_at: float | None = None
+    tool_started: list[float] | None = None
+    tool_ended: list[float] | None = None
 
     @property
     def finished(self) -> bool:
@@ -112,6 +116,9 @@ class Job:
 
     def to_dict(self) -> dict:
         d: dict = dict(id=self.id, status=self.status, what=self.behavior.describe())
+        d["capture_window"] = dict(clock="daemon_monotonic", start=self.evidence_started_at,
+                                   end=self.evidence_ended_at, tool_start_base_m=self.tool_started,
+                                   tool_end_base_m=self.tool_ended)
         if self.requires:
             d["requires"] = [dict(evidence=r.evidence, max_age_s=r.max_age_s) for r in self.requires]
         if self.question:
@@ -745,6 +752,8 @@ class Kernel:
 
     def _start(self, job: Job, now: float):
         job.t_start = time.time()
+        job.evidence_started_at = self.evidence_now()
+        job.tool_started = self.chain.fk(self.state.q)[:3, 3].tolist()
         self.active = job
         self.rebias()
         self.envelope.context = job.behavior.describe()
@@ -777,9 +786,11 @@ class Kernel:
         if out.status == "faulted":
             self.faulted = True
         job.outcome, job.status, job.t_end = out, out.status, time.time()
+        job.evidence_ended_at = self.evidence_now()
+        job.tool_ended = self.chain.fk(self.state.q)[:3, 3].tolist()
         level = "info" if out.ok else ("alarm" if out.status == "faulted" else "warn")
         self.emit("finished", f"job {job.id} {out.status}: {out.message}", level, job=job.id, status=out.status,
-                  outcome=out.to_dict())
+                  outcome=out.to_dict(), capture_window=job.to_dict()["capture_window"])
         if not out.ok:
             self._cancel_queue(f"job {job.id} ended {out.status}")
             if out.status in ("surprise", "faulted"):

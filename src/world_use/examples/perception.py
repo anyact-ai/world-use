@@ -18,6 +18,8 @@ from ..client import Client, DaemonError
 from ..config import load_workcell
 from ..daemon import Daemon, apply_workcell
 from ..perception import measure
+from ..procedures import lift_effect, placement_effect
+from ..procedures import upright_box as fit_upright_box
 from ..recorder import save_summary
 from .pick_place import TARGET, success
 
@@ -36,29 +38,17 @@ def upright_box(measurement, world):
     if not measurement.valid:
         return None
     points = np.array([world.from_base("work", p) for p in measurement.points])
-    top = np.quantile(points[:, 2], .95)
-    surface = points[np.abs(points[:, 2] - top) < .003]
-    if len(surface) < 16:
-        return None
-    lo, hi = np.quantile(surface[:, :2], [.02, .98], axis=0)
-    # Missing sides, merged masks and occlusion are unknown, not an invented object centre.
-    if np.any(hi - lo < SIZE[:2] * .65) or np.any(hi - lo > SIZE[:2] * 1.15):
-        return None
-    return np.array([*(lo + hi) / 2, top - SIZE[2] / 2])
+    return fit_upright_box(points, SIZE.tolist())[0]
 
 
 def lift_result(before, after, tool_delta):
-    if before is None or after is None:
-        return "unknown"
-    moved = after - before
-    return "pass" if moved[2] > .035 and np.linalg.norm(moved - tool_delta) < .015 else "fail"
+    return lift_effect(before, after, tool_delta)["status"]
 
 
 def placement_result(center, tool, aperture_mm):
-    if center is None or aperture_mm is None:
-        return "unknown"
-    return "pass" if (np.linalg.norm(center - TARGET) < .01 and tool[2] - center[2] > .08
-                      and abs(center[2] - .20) < .008 and aperture_mm >= 60) else "fail"
+    return placement_effect(center, tool, aperture_mm, target_m=TARGET, position_tolerance_m=.01,
+                            support_center_z_m=.20, height_tolerance_m=.008, min_clearance_m=.08,
+                            min_aperture_mm=60)["status"]
 
 
 def procedure(c: Client, *, condition="verify", tracker=None, evaluate=lambda: None):
@@ -185,7 +175,8 @@ def procedure(c: Client, *, condition="verify", tracker=None, evaluate=lambda: N
     return results
 
 
-def run(output: Path, *, scenario="shifted", condition="verify", model="color", device="cpu"):
+def run(output: Path, *, scenario="shifted", condition="verify", model="color", device="cpu",
+        procedure_fn=None, tracker_factory=None):
     """Runner owns truth, continuous physics, lifecycle and evaluation; none is passed to the procedure."""
     output = Path(output)
     if output.exists() and any(output.iterdir()):
@@ -207,7 +198,7 @@ def run(output: Path, *, scenario="shifted", condition="verify", model="color", 
     # Load inference before starting a powered session.
     if model == "edgetam":
         from ..vision import EdgeTAM
-        selector = EdgeTAM(device=device, max_age_s=15)
+        selector = (tracker_factory or EdgeTAM)(device=device, max_age_s=15)
     else:
         selector = nullcontext(None)
     with selector as tracker:
@@ -230,7 +221,7 @@ def run(output: Path, *, scenario="shifted", condition="verify", model="color", 
             k.emit("task_result", "independent simulator evaluation", **evaluated)
 
         try:
-            result = procedure(c, condition=condition, tracker=tracker, evaluate=evaluate)
+            result = (procedure_fn or procedure)(c, condition=condition, tracker=tracker, evaluate=evaluate)
             result.update(scenario=scenario, evaluation=evaluated)
             c.shutdown()
             result["recording"] = k.save_record()

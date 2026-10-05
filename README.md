@@ -79,6 +79,12 @@ camera images, structured status, job results, and the same actions as the CLI.
 The daemon outlives agent calls. An accepted plan continues after a client disconnects;
 use checkpoints where it needs an answer.
 
+The [procedure tools](docs/procedure-tools.md) add registered geometry references,
+checked phases, outcome verification and retrievable evidence. Optional
+`wu mcp --vision` exposes EdgeTAM selection and refresh. The
+[complete simulation procedure](docs/procedure-tools.md#run-the-complete-example)
+exercises the workflow through MCP and checks success independently after release.
+
 ## Python
 
 With an enabled daemon running, save the example below as `task.py`. The CLI

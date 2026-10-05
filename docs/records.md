@@ -76,3 +76,17 @@ CLI: `wu record --context inputs.json --note '...'`. MCP's `record` accepts the 
 fields. These values are saved as supplied; avoid placing credentials in them.
 A `done` outcome records command completion. The example saves its separate task
 predicate in `result.json` and a `task_result` event.
+
+The [procedure tools](procedure-tools.md) also emit `geometry`, `prepared`,
+`phase_submitted`, `target_lost` and `verification` events. These retain source
+receipt IDs, fitted assumptions, resolved numeric plans, criteria frozen before
+action, and observed effects. `finished` includes the job's capture-clock window
+for relating before/after observations to execution. Agent-authored annotations
+remain distinct from these calculated results.
+
+MCP `inspect_run` and `Client.inspect_run` page through the current session's
+committed events plus the live tail without loading its full telemetry. Continue
+from `next_cursor` while `more` is true. Missing sequence numbers and recorder
+errors remain visible; `record_complete` describes the available history, while
+`closed` separately reports session closure. Archived pixels are retrieved by
+evidence ID and remain explicitly historical.

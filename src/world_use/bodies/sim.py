@@ -212,10 +212,11 @@ class SimBody:
     def render(self, view):
         return self._capture(view, depth=False)[0]
 
-    def capture(self, view):
+    def capture(self, view, *, feedback=False):
         """RGB-D and tool pose from one physics snapshot, without advancing the scene."""
-        (rgb, depth), tool, timestamp = self._capture(view, depth=True)
-        return rgb, depth, tool, timestamp
+        (rgb, depth), tool, timestamp, aperture = self._capture(view, depth=True)
+        result = rgb, depth, tool, timestamp
+        return (*result, aperture) if feedback else result
 
     def _capture(self, view, *, depth):
         import time
@@ -228,10 +229,11 @@ class SimBody:
             mj.mj_copyData(data, model, self.data)
             timestamp = time.monotonic()
             tool = self.chain.fk(self.q).copy()
+            aperture = 1000 * self._aperture(self.grip) if self.manifest.gripper is not None else None
             if self._renderer is None:
                 self._renderer = CameraRenderer()
             renderer = self._renderer
-        return renderer.render(model, data, view, depth=depth), tool, timestamp
+        return renderer.render(model, data, view, depth=depth), tool, timestamp, aperture
 
     def _update_world(self):
         d, m = self.data, self.model

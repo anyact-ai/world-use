@@ -107,8 +107,10 @@ can return an invalid receipt for diagnosis; that receipt cannot authorize motio
 Optional note/context annotations link task assumptions to the receipt.
 
 The acquisition cache holds at most eight frames and 64 MiB. It retains 256
-compact receipts. A source or receipt that has expired from these caches requires
-reacquisition. Admission copies small prerequisite values into the job, so later
+compact receipts. Registered measurement support has a separate 64 MiB bound for
+geometry fitting; that support can outlive the acquisition cache. A missing source
+or receipt requires reacquisition for operations that need it. Admission copies
+small prerequisite values into the job, so later
 cache eviction or storage trouble cannot rewrite an accepted job's requirements.
 At most 16 prerequisites may be supplied per job.
 
@@ -177,8 +179,10 @@ freshness limits; there is no universal visual expiry for every use of a point.
 MCP exposes `camera_frame`, `measure_pixels` and `run(requires=...)` using the
 same Python contracts. Frame IDs reference a bounded local inspection cache.
 `measure_pixels` accepts a point or explicit rectangular region; it does not
-silently run segmentation. Long-running learned tracking stays in a Python
-procedure. Dense arrays stay out of model text context.
+silently run segmentation. Optional `wu mcp --vision` adds selection and refresh
+in a private client-side model process. Geometry fitting, prepared phases and
+effect verification use the [shared procedure contracts](procedure-tools.md).
+Dense arrays stay out of model text context.
 
 ## First task and validation
 
