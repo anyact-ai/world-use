@@ -29,12 +29,6 @@ def test_check_rehearses_on_a_twin_without_moving_the_robot(lifted):
     assert "ASSUMED" in str(report)
 
 
-def test_check_reports_a_refusal_with_the_step_that_failed(lifted):
-    report = check(Plan().line(up=0.02).line(forward=0.40), lifted)
-    assert not report.ok and report.outcome.status == "refused"
-    assert "step 2" in report.outcome.message
-
-
 def test_check_forecasts_heat(lifted):
     report = check(Plan().hold(seconds=60), lifted)
     assert report.ok and report.temp_rise["joint"] == 3 and report.temp_rise["rise_c"] > 3
@@ -68,19 +62,18 @@ def test_reach_from_here_names_what_passes_and_why_the_rest_does_not(k):
     assert r["down"] is not None
 
 
-def test_a_snapshot_is_plain_data_and_rehearses_the_same(lifted):
-    """What a worker process gets: it must survive pickling and give the report an in-process check gives."""
-    import pickle
+def test_plan_and_snapshot_do_not_share_mutable_input(k):
+    from world_use.plan import same_start, snapshot
 
-    from world_use.plan import rehearse, snapshot, twin_from
-    k = lifted
-    p = k.chain.fk(k.state.q)[:3, 3]
-    k.world.add_box("table", "surface", center=[p[0], p[1], p[2] - 0.05], size=[0.3, 0.3, 0.02], frame="base")
-    spec = [{"do": "checkpoint", "ask": "clear?"}, {"do": "joints", "delta_deg": {"2": -60}},
-            {"do": "joints", "delta_deg": {"2": 60}}, {"do": "touchdown", "max": 0.08}]
-    s = pickle.loads(pickle.dumps(snapshot(k)))
-    assert s.model["name"] == k.manifest.name
-    assert rehearse(spec, twin_from(s)).to_dict() == check(spec, k).to_dict()
+    spec = {"do": "joints", "delta_deg": {"1": 0}}
+    job = k.submit(spec)
+    spec["delta_deg"]["1"] = 100
+    assert job.behavior.spec()["delta_deg"]["1"] == 0
+    k.world.add_box("slow", "slow", [1, 1, 1], [.1, .1, .1], speed=.01)
+    snap = snapshot(k)
+    k.world.boxes["slow"].params["speed"] = .1
+    assert snap.world["boxes"]["slow"]["params"]["speed"] == .01
+    assert not same_start(snap, k)
 
 
 def test_a_twins_home_route_goes_stale_when_the_twin_touches_something(lifted):

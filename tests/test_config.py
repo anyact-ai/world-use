@@ -4,13 +4,13 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from conftest import serving
 
-from world_use import Kernel, World, fit, records
+from world_use import World, fit, records
 from world_use.bodies import manifests
 from world_use.bodies.sim import SimBody
-from world_use.client import Client
 from world_use.config import load_robot, load_workcell, manifest_data, manifest_from_data
-from world_use.daemon import Daemon, apply_workcell, make_body, session_identity
+from world_use.daemon import make_body, session_identity
 from world_use.robot_assets import archive, resolve
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "adapters"
@@ -23,37 +23,20 @@ def external_robot_record(tmp_path, monkeypatch, rehearser):
     monkeypatch.syspath_prepend(str(setup))
     cell = load_workcell(setup / "workcell.toml")
     cell["frame"][0]["origin"] = [.01, .02, .03]
-    body = make_body(cell["body"], cell)
-    k = Kernel(body, World(), run_dir=tmp_path / "run")
-    k.connect()
-    apply_workcell(cell, k)
-    identity = session_identity(cell["body"], cell)
-    d = Daemon(k, port=0, rehearser=rehearser, session=identity, config=cell)
-    d.start()
-    c = Client(f"http://127.0.0.1:{d.http.server_port}")
-    try:
+    with serving(tmp_path, cell, rehearser) as (d, c):
         assert len(c.status()["joints_deg"]) == 2
-        assert np.allclose(k.world.frame("work").T[:3, 3], [.01, .02, .03])
+        assert np.allclose(d.k.world.frame("work").T[:3, 3], [.01, .02, .03])
         phase = {"do": "joints", "delta_deg": {"1": 10, "2": -5}}
-        c.enable()
         assert c.check(phase)["ok"]
         assert c.run(phase, wait=10)["status"] == "done"
         c.release()
-        c.shutdown()
-    finally:
-        d.stop_loop.set()
-        d.control.join(timeout=2)
-        d.http.shutdown()
-        d.http.server_close()
-        if k.journal._thread.is_alive():
-            k.close()
 
     sim = make_body("sim", cell, World())
     assert sim.manifest.n == 2 and np.allclose(sim.q, np.radians([0, 28.65]))
     # A changed model at the same path is a different startup configuration.
     model_path = setup / "planar.toml"
     model_path.write_text(model_path.read_text().replace("v_max = 0.8", "v_max = 0.4"))
-    assert session_identity(cell["body"], cell) != identity
+    assert session_identity(cell["body"], cell) != d.session
     shutil.rmtree(setup)
     archived = tmp_path / "archived"
     shutil.move(tmp_path / "run", archived)

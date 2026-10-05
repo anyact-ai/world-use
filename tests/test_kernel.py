@@ -1,4 +1,5 @@
 """Kernel semantics on a simulated reBot: refusals, surprises, contact, grip, checkpoints, stop, heat, home."""
+import re
 import threading
 import time
 
@@ -7,6 +8,7 @@ import pytest
 from conftest import Q_REST, make_kernel, supported_object, table_below
 
 from world_use import Kernel, RealClock, Refused, World, bodies
+from world_use.body import JointState
 
 HOME = Q_REST.copy()
 HOME[1:4] = [0.02, 0.02, 0.0]   # declared rest, just off the shoulder and elbow stops
@@ -128,6 +130,46 @@ def test_too_fast_is_refused_with_a_hint(lifted):
 def test_turning_the_base_at_table_height_is_refused(k):
     out = k.run({"do": "joints", "delta_deg": {"1": 10}})
     assert out.status == "refused" and out.data["rule"] == "turn_clearance"
+
+
+@pytest.mark.parametrize("spec", [
+    {"do": "teleport", "to": [0, 0, 1]}, {"do": []}, {"do": "hold", "label": 5},
+    {"do": "hold", "second": 1}, {"do": "line", "up": .01, "duraton": 2},
+    {"do": "line", "up": .01, "speed": 0}, {"do": "hold", "seconds": float("nan")},
+    {"do": "line"}, {"do": "line", "up": 0}, {"do": "line", "up": .01, "down": .02},
+    {"do": "line", "up": .01, "frame": "tabel"},
+    [{"do": "hold", "seconds": .1}, {"do": "guarded", "frame": "tabel", "down": .01}],
+    {"do": "lines", "legs": []}, {"do": "lines", "legs": [[.01, 0, 0], [0, 0, 0]]},
+    {"do": "move_to"}, {"do": "move_to", "point": "sideways"}, {"do": "move_to", "to": [.2, 0, .1], "jaws": [0, 0, 0]},
+    {"do": "joints", "delta_deg": {"9": 3}}, {"do": "touchdown", "joints": [9]},
+    {"do": "checkpoint"}, {"do": "checkpoint", "ask": "ready?", "expect": 1},
+    {"do": "gripper"}, [{"do": "hold", "seconds": .1}, {"do": "gripper", "apeture_mm": 60}],
+    {"do": "grip", "effort": .6}, {"do": "grip", "squeeze": -.1}, {"do": "grip", "squeeze": float("nan")},
+    {"do": "grip", "start": float("nan")}, {"do": "grip", "expect": 2}, {"do": "grip", "expect": [.5, float("nan")]},
+    {"do": "grip", "hold_effort": "oops"},
+    {"do": "grasp", "expect": [.4, 1.]},
+    {"do": "grasp", "start": 3., "search_mm": None},
+    {"do": "grasp", "start": 3., "search_mm": [["oops", 0]]},
+    {"do": "grasp", "start": 3., "search_mm": [[float("inf"), 0]]},
+    {"do": "grasp", "start": 3., "lift_mm": "oops"},
+    {"do": "grasp", "start": 3., "lift_mm": 51},
+    {"do": "grasp", "start": 3., "expect_mm": [10]},
+    {"do": "grasp", "start": 3., "hold_effort": -1},
+])
+def test_bad_specs_are_rejected_before_queueing(k, spec):
+    with pytest.raises(Refused):
+        k.submit(spec)
+    assert not k.jobs and not k.queue and not k.faulted
+
+
+def test_every_step_documents_each_parameter_it_accepts():
+    """`wu help STEP` is the docstring: a parameter it leaves out is one a policy cannot know about."""
+    from world_use.behaviors import REGISTRY
+    from world_use.validation import FIELDS
+
+    for kind, fields in FIELDS.items():
+        missing = [name for name in fields if not re.search(rf"\b{name}\b", REGISTRY[kind].__doc__ or "")]
+        assert not missing, f"{kind} accepts {missing} but its help does not say so"
 
 
 def test_touchdown_finds_a_table_and_stops_on_it(lifted):
@@ -273,6 +315,16 @@ def test_home_folds_to_rest_and_release_is_then_allowed(lifted):
     out = k.run({"do": "seq", "steps": k.home_plan()})
     assert out.ok, out.message
     assert np.allclose(k.cmd.q, HOME, atol=1e-4)
+    k.release()
+    assert not k.enabled
+
+
+def test_home_returns_joints_and_gripper_changed_by_the_prefix(lifted):
+    k = lifted
+    k.set_home_route([{"do": "joints", "delta_deg": {"1": 5}}, {"do": "gripper", "to": 2}])
+    assert k.run(k.home_plan()).ok
+    assert abs(k.cmd.q[0] - k.q_start[0]) < 1e-6
+    assert k.cmd.gripper == k.grip_start
     k.release()
     assert not k.enabled
 
@@ -464,6 +516,43 @@ def test_a_failed_thermal_return_is_not_retried_automatically(lifted, monkeypatc
         lifted.clock.wait()
     assert lifted.active is None and lifted.home_route is None and lifted.enabled
     assert len([j for j in lifted.jobs.values() if j.behavior.label == "home: motor hot"]) == 1
+
+
+def test_hot_return_still_stops_for_a_jammed_arm(lifted, monkeypatch):
+    k = lifted
+    k.set_home_route([])
+    q, g = k.state.q.copy(), k.state.gripper
+    monkeypatch.setattr(k.body, "read", lambda: JointState(k.clock.now(), q.copy(), tau=k.chain.gravity(q),
+                                                        temp=np.full(6, 81.), gripper=g, gripper_tau=0.))
+    for _ in range(1000):
+        k.tick()
+        k.clock.wait()
+        if k.home_route is None:
+            break
+    job = list(k.jobs.values())[-1]
+    assert job.status == "surprise" and job.outcome.data["trip"] == "blocked"
+    assert k.home_route is None and k.enabled
+    assert np.allclose(k.cmd.q, q)
+
+
+def test_failed_thermal_release_is_not_reported_done(lifted, monkeypatch):
+    k = lifted
+    k.set_home_route([])
+    k.body.temp[:] = 81
+
+    def failed_disable():
+        raise OSError("one motor did not acknowledge disable")
+
+    monkeypatch.setattr(k.body, "disable", failed_disable)
+    for _ in range(3000):
+        k.tick()
+        k.clock.wait()
+        if k.faulted:
+            break
+    job = list(k.jobs.values())[-1]
+    assert job.status == "faulted" and "could not release" in job.outcome.message
+    assert k.power_uncertain and k.home_route is None
+    assert not any("thermal return complete" in e["message"] for e in k.events.since(0))
 
 
 def test_no_heat_forecast_until_the_switch_on_transient_has_passed(lifted):
@@ -814,7 +903,6 @@ def test_a_joint_on_its_rest_stop_is_not_judged_and_is_re_zeroed_until_it_leaves
     """Folded, the reBot's shoulder and elbow rest on hard stops that carry part of their load: arriving there or
     lifting off moved ~2 Nm between motor and stop with nothing touched, and stopped folds home on hardware."""
     from world_use.behaviors import ContactSense
-    from world_use.body import JointState
 
     assert k.manifest.rest.stops == (1, 2)
     for _ in range(k.residuals.need):

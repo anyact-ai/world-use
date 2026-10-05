@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from world_use import Client, Kernel, RealClock, VirtualClock, World, bodies, cameras
-from world_use.daemon import Daemon, apply_workcell, session_identity
+from world_use import Client, Kernel, VirtualClock, World, bodies, cameras
+from world_use.daemon import Daemon, apply_workcell, make_body, make_cameras, session_identity
 
 # Measured on the physical reBot (2026-09-16): its folded rest pose.
 Q_REST = np.array([0.3782, 0.0015, -0.0005, -0.0011, 0.0625, 0.0051])
@@ -48,18 +48,19 @@ def rehearser():
 
 @contextmanager
 def serving(tmp_path, cell=None, rehearser=None):
-    """A daemon on a simulated reBot as `wu up` makes it: the simulator's truth and the kernel's model apart.
+    """A daemon as `wu up` makes it from a workcell, with torque on. Unless the workcell names another body, a
+    simulated reBot at its measured rest: the simulator's truth and the kernel's model apart.
     Leaving stops its threads and closes its kernel and server, whatever state the arm is in."""
     cell = cell or {}
-    world, truth = World(), World()
-    body = bodies.make("sim", truth, q=Q_REST, gripper=1.0)
-    k = Kernel(body, world, RealClock(100.0), run_dir=tmp_path / "run")
+    name = cell.get("body", "sim")
+    truth = World() if name == "sim" else None
+    body = make_body(name, cell) if truth is None else bodies.make("sim", truth, q=Q_REST, gripper=1.0)
+    k = Kernel(body, World(), run_dir=tmp_path / "run")
     k.connect()
-    truth.frames.update(world.frames)
     apply_workcell(cell, k, truth)
     k.enable()
-    d = Daemon(k, port=0, cams=cameras.sim_cameras(body, truth), rehearser=rehearser,      # port 0: any free port
-               session=session_identity("sim", cell), config=cell)
+    d = Daemon(k, port=0, cams=make_cameras(cell, k, body, truth), rehearser=rehearser,   # port 0: any free port
+               session=session_identity(name, cell), config=cell)
     d.start()
     try:
         yield d, Client(f"http://127.0.0.1:{d.http.server_address[1]}")

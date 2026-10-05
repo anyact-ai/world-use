@@ -1,10 +1,11 @@
 """Kinematics against numbers measured on the physical reBot, and against finite differences."""
 import numpy as np
+import pytest
 from conftest import Q_REST
 
 from world_use import motion
 from world_use.bodies.rebot import MANIFEST
-from world_use.geometry import pose_error
+from world_use.geometry import axis_angle, interpolate_rotation, pose_error, rotation_log
 from world_use.kinematics import Chain
 
 CHAIN = Chain(MANIFEST.urdf, MANIFEST.tool_link)
@@ -44,6 +45,16 @@ def test_gravity_equals_the_derivative_of_potential_energy_and_matches_hardware(
     # +2.6 Nm (wrist) and ~0 at the shoulder. The model must agree in sign and rough size.
     g = CHAIN.gravity(np.radians([21.664, 31.088, 0.149, 26.348, 3.571, 0.122]))
     assert abs(g[1]) < 0.1 and 6.5 < g[2] < 7.6 and 1.7 < g[3] < 2.3
+
+
+@pytest.mark.parametrize("axis", [[0, 1, -1], [1, 0, -1], [1, -1, 0], [-1, 2, 3]])
+def test_half_turn_interpolation_reaches_the_requested_rotation(axis):
+    a = np.asarray(axis, float)
+    a /= np.linalg.norm(a)
+    R = axis_angle(a, np.pi)
+    w = rotation_log(R)
+    assert np.allclose(axis_angle(w / np.linalg.norm(w), np.linalg.norm(w)), R, atol=1e-7)
+    assert np.allclose(interpolate_rotation(np.eye(3), R, 1), R, atol=1e-7)
 
 
 def test_ik_round_trip():
