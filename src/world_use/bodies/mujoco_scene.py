@@ -10,7 +10,8 @@ from typing import Any
 
 import numpy as np
 
-from ..robot_assets import resolve
+from ..robot_assets import bundled, resolve
+from . import manifests
 
 # Respect an explicitly selected backend; EGL also supports Mesa on headless Linux.
 if sys.platform == "linux" and not os.environ.get("DISPLAY"):
@@ -55,7 +56,8 @@ def robot_spec(manifest):
             geom.group = 3                       # collisions can be inspected in the native viewer
             geom.friction = [0.8, 0.005, 0.0001]
             geom.condim = 4
-    if root.get("name") == "ReBot_Arm_RS":
+    rebot = manifests()["rebot"].urdf
+    if bundled(Path(manifest.urdf)) == rebot:       # Seeed's model: component hulls and upstream finger segments
         for name in ("link2", "link3", "link4", "link5", "gripper_end"):
             body = spec.body(name)
             for geom in list(body.geoms):
@@ -65,7 +67,7 @@ def robot_spec(manifest):
                     body.add_geom(type=mj.mjtGeom.mjGEOM_MESH, meshname=geom.meshname,
                                   pos=geom.pos, quat=geom.quat, group=3, condim=4,
                                   friction=[0.8, 0.005, 0.0001])
-        _rebot_fingers(spec, Path(manifest.urdf))
+        _rebot_fingers(spec, rebot)
     return spec
 
 

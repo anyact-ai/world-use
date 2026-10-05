@@ -11,11 +11,11 @@ wu view runs/YOUR-RUN --out recording.rrd      # headless export
 These commands run offline. Replay reconstructs measured joints and the recorded
 world model with the saved robot geometry. It does not operate a robot or
 re-run the plan. Original camera observations remain under `views/`; the rendered
-replay is labeled separately. New records include the robot description, URDF, and meshes,
-so they remain usable after moving the run folder or uninstalling its driver.
-Older records without a saved model use the installed built-in geometry. A saved
-reBot URDF without archived meshes can use the bundled meshes only when its URDF
-matches exactly; custom records need their original assets.
+replay is labeled separately. New records include the robot description and URDF, and
+copies of a custom robot's meshes, so they remain usable after moving the run folder or
+uninstalling its driver. A built-in robot's meshes ship with world-use: a record finds
+them when its URDF matches the installed one exactly. Older records without a saved
+model use the installed built-in geometry; custom records need their original assets.
 
 The optional [Rerun viewer](visualization.md) synchronizes the 3D reconstruction,
 telemetry, events, and saved observations. It can also follow a running recorder.
@@ -26,7 +26,7 @@ A run contains:
 | --- | --- |
 | `session.json` | Format/package version, source and URDF hashes, adapter, startup configuration, initial world/command/measurement snapshot, fitted model |
 | `robot.urdf` | The geometry used by this run; its limits and gripper description are in `session.json` |
-| `assets/`, `robot-assets.json` | Content-addressed meshes and their original URDF path mapping |
+| `assets/`, `robot-assets.json` | A custom robot's content-addressed meshes and their original URDF path mapping; a built-in robot's license notices |
 | `events.jsonl` | Submitted plan JSON, structured outcomes, checkpoint questions/answers, contacts, world changes, view paths and annotations |
 | `tape/000000.npz`, … | Append-only telemetry and power-transition chunks; the complete history of a new run |
 | `recording.json` | Missing sample, event, and power-transition counts, only if a recording buffer overran |

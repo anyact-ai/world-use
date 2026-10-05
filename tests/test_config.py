@@ -6,10 +6,12 @@ import numpy as np
 import pytest
 
 from world_use import Kernel, World, fit, records
+from world_use.bodies import manifests
 from world_use.bodies.sim import SimBody
 from world_use.client import Client
 from world_use.config import load_robot, load_workcell
 from world_use.daemon import Daemon, apply_workcell, make_body, session_identity
+from world_use.robot_assets import archive, resolve
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "adapters"
 
@@ -121,3 +123,33 @@ def test_supported_rest_uses_joint_names_and_preserves_release_rules(tmp_path):
     path.write_text(text + '\n[rest]\nq = [0.0, 0.5]\njoints = ["elbow"]\ntol = 0.1\n')
     model = load_robot(path)
     assert model.rest.holds([1, .5]) and not model.rest.holds([0, .7])
+
+
+def test_package_mesh_uris_resolve_inside_their_package(tmp_path):
+    package = tmp_path / "arm_description"
+    (package / "urdf").mkdir(parents=True)
+    (package / "meshes").mkdir()
+    (package / "meshes" / "link.stl").write_text("solid link\nendsolid link\n")
+    urdf = package / "urdf" / "arm.urdf"
+    urdf.write_text("<robot/>")
+    assert resolve(urdf, "package://arm_description/meshes/link.stl") == package / "meshes" / "link.stl"
+    with pytest.raises(ValueError, match="package://other/meshes/link"):
+        resolve(urdf, "package://other/meshes/link.stl")
+
+
+def test_records_copy_only_meshes_that_world_use_does_not_ship(tmp_path):
+    source = tmp_path / "arm"
+    (source / "meshes").mkdir(parents=True)
+    (source / "meshes" / "link.stl").write_text("solid link\nendsolid link\n")
+    (source / "arm.urdf").write_text('<robot><link name="a"><visual><geometry><mesh filename="meshes/link.stl"/>'
+                                     "</geometry></visual></link></robot>")
+    rebot = manifests()["rebot"].urdf
+    for urdf, name in ((source / "arm.urdf", "custom"), (rebot, "built-in")):
+        folder = tmp_path / name
+        folder.mkdir()
+        archive(urdf, folder)
+        shutil.copyfile(urdf, folder / "robot.urdf")
+    shutil.rmtree(source)
+    assert resolve(tmp_path / "custom" / "robot.urdf", "meshes/link.stl").read_text().startswith("solid link")
+    assert not [path for path in (tmp_path / "built-in").rglob("*") if path.suffix.lower() == ".stl"]
+    assert resolve(tmp_path / "built-in" / "robot.urdf", "../meshes/shared/base_link.STL").is_file()
