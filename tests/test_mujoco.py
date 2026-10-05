@@ -8,6 +8,7 @@ from world_use import Kernel, VirtualClock, World, bodies
 from world_use.bodies.mujoco_scene import mj
 from world_use.bodies.rebot import MANIFEST
 from world_use.cameras import View
+from world_use.config import load_workcell
 from world_use.examples.pick_place import pickup, setup
 
 
@@ -71,8 +72,10 @@ def test_grasp_uses_contacts_and_release_does_not_teleport_the_object():
         k.close()
 
 
-def test_disable_removes_actuation_and_gravity_keeps_running():
-    body = bodies.make("sim", q=[.3, .7, .8, -.3, .1, .2], gripper=2)
+@pytest.mark.parametrize("brakes", [False, True])
+def test_disable_removes_actuation_and_only_brakes_hold_a_raised_arm(brakes):
+    manifest = replace(MANIFEST, rest=None) if brakes else MANIFEST
+    body = bodies.make("sim", manifest=manifest, q=[.3, .7, .8, -.3, .1, .2], gripper=2)
     try:
         body.enable()
         for _ in range(20):
@@ -81,8 +84,23 @@ def test_disable_removes_actuation_and_gravity_keeps_running():
         body.disable()
         for _ in range(20):
             state = body.read()
-        assert np.linalg.norm(state.q - before) > .01
+        moved = np.linalg.norm(state.q - before)
+        assert moved < 1e-4 if brakes else moved > .01
         np.testing.assert_array_equal(body.data.qfrc_actuator, 0)
+    finally:
+        body.close()
+
+
+def test_with_torque_off_a_folded_arm_and_its_gripper_stay_put():
+    q = np.radians(load_workcell("block")["body_options"]["start_deg"])
+    body = bodies.make("sim", q=q)
+    g = body.manifest.gripper
+    try:
+        start = body.read()
+        for _ in range(3000):                    # 30 s: unpowered geared motors hold what gravity does not load
+            state = body.read()
+        assert np.degrees(np.abs(state.q - start.q)).max() < 1
+        assert abs(g.aperture(state.gripper) - g.aperture(start.gripper)) < .001
     finally:
         body.close()
 

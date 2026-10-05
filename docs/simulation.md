@@ -13,8 +13,14 @@ attaches them to the tool. They can slip, tip, fall, and collide after release.
 
 Physics advances one control period per `Body.read`, in substeps of at most
 2 ms. A virtual-clock rehearsal runs the same engine without wall-clock waits.
-Disabling removes actuator forces; gravity and collisions continue. Camera
-capture does not advance physics.
+Camera capture does not advance physics.
+
+Disabling removes actuator forces; gravity and collisions continue. With torque
+off, each joint resists load up to its gearbox friction, about 0.3 Nm per revolute
+joint and 10 N per prismatic one, as unpowered geared motors do. A folded arm and
+its gripper stay where they are; a raised arm without brakes falls. An arm without
+a rest pose (`self_supporting`) holds on its brakes. Powered, the servos hold every
+joint and this friction is off.
 
 ## Scene and model assumptions
 

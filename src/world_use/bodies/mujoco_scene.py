@@ -20,6 +20,10 @@ if sys.platform == "linux" and not os.environ.get("DISPLAY"):
 # MuJoCo exposes its API dynamically from binary extensions without public type stubs.
 mj: Any = import_module("mujoco")
 
+KP, KV = 150.0, 10.0      # arm servos, Nm/rad and Nm s/rad; SimBody feeds gravity forward through the same gains
+GEARBOX = {mj.mjtJoint.mjJNT_HINGE: 0.3, mj.mjtJoint.mjJNT_SLIDE: 10.0}   # Nm, N: unpowered geared motors hold this
+BRAKE = 1000.0            # Nm: brakes hold any arm load
+
 
 def quat(rotation):
     out = np.empty(4)
@@ -90,6 +94,8 @@ def _rebot_fingers(spec, urdf):
 
 
 def build(manifest, world, timestep):
+    """Joint friction is what holds the robot while its torque is off: gearbox friction, or brakes on an arm
+    without a rest pose. SimBody applies it only then; powered, the servos hold."""
     spec = robot_spec(manifest)
     spec.option.timestep = timestep
     arm = [joint.name for joint in manifest.joints]
@@ -97,14 +103,16 @@ def build(manifest, world, timestep):
         joint = spec.joint(name)
         joint.armature = 0.01
         joint.damping[0] = 0.05
+        joint.frictionloss = GEARBOX[joint.type] if manifest.rest is not None else BRAKE
         actuator = spec.add_actuator(name=f"servo/{name}", target=name, trntype=mj.mjtTrn.mjTRN_JOINT)
-        actuator.set_to_position(kp=150, kv=10)
+        actuator.set_to_position(kp=KP, kv=KV)
     fingers = [j for j in spec.joints if j.name not in arm]
     g = manifest.gripper
     if g is not None:
         if g.m_per_unit is None or len(fingers) != 2 or any(j.type != mj.mjtJoint.mjJNT_SLIDE for j in fingers):
             raise ValueError("MuJoCo grippers require two opposed prismatic finger joints and m_per_unit")
         for joint in fingers:
+            joint.frictionloss = GEARBOX[joint.type]
             actuator = spec.add_actuator(name=f"servo/{joint.name}", target=joint.name,
                                         trntype=mj.mjtTrn.mjTRN_JOINT)
             actuator.set_to_position(kp=3000, kv=20)
@@ -112,6 +120,9 @@ def build(manifest, world, timestep):
             actuator.forcerange = [-60, 60]
     elif fingers:
         raise ValueError("MuJoCo simulation requires a gripper description for joints outside the arm chain")
+    for joint in spec.joints:
+        joint.solref_friction = [2 * timestep, 1]          # stiff, so a held joint does not creep
+        joint.solimp_friction = [0.9999, 0.9999, 0.001, 0.5, 2]
     for box in world.boxes.values():
         if box.kind not in ("object", "surface"):
             continue

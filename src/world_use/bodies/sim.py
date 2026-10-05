@@ -13,7 +13,7 @@ import numpy as np
 from ..body import JointState, Manifest
 from ..kinematics import Chain
 from ..world import World
-from .mujoco_scene import build, mj, quat
+from .mujoco_scene import KP, KV, build, mj, quat
 
 THERMAL = dict(heat=0.0027, cool_on=0.001, cool_off=0.0068)
 
@@ -86,6 +86,7 @@ class SimBody:
             for joint in self._fingers:
                 self.data.qpos[joint.qposadr] = aperture / 2
         self._gains = self.model.actuator_gainprm.copy(), self.model.actuator_biasprm.copy()
+        self._hold = self.model.dof_frictionloss.copy()
         self._scene = scene
         if self._fit is not None:
             self._apply_fit()
@@ -133,10 +134,16 @@ class SimBody:
         with self.lock:
             self.enabled = False
             if self.model is not None:
-                self.model.actuator_gainprm[:] = 0
-                self.model.actuator_biasprm[:] = 0
+                self._power(False)
                 self.data.ctrl[:] = 0
                 self.data.qfrc_applied[:] = 0
+
+    def _power(self, on: bool):
+        """Powered, the servos hold every joint. Unpowered, joint friction does: gearbox friction, or brakes."""
+        gains, bias = self._gains
+        self.model.actuator_gainprm[:] = gains if on else 0
+        self.model.actuator_biasprm[:] = bias if on else 0
+        self.model.dof_frictionloss[:] = 0 if on else self._hold
 
     def close(self):
         with self.lock:
@@ -151,16 +158,12 @@ class SimBody:
         with self.lock:
             self._ensure_scene()
             m, d = self.model, self.data
-            if self.enabled:
-                m.actuator_gainprm[:], m.actuator_biasprm[:] = self._gains
-            else:
-                m.actuator_gainprm[:] = 0
-                m.actuator_biasprm[:] = 0
+            self._power(self.enabled)
             for _ in range(self.substeps):
                 d.qfrc_applied[:] = 0
                 if self.enabled:
                     # Gravity/velocity feed-forward, with actuator feedback integrated implicitly by MuJoCo.
-                    d.ctrl[:self.manifest.n] = self.q_cmd + (d.qfrc_bias[self._v] + 10 * self.dq_cmd) / 150
+                    d.ctrl[:self.manifest.n] = self.q_cmd + (d.qfrc_bias[self._v] + KV * self.dq_cmd) / KP
                     if self._fingers:
                         d.ctrl[self.manifest.n:] = self._aperture(self.grip_cmd) / 2
                     if self._fit is not None:
