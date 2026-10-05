@@ -48,19 +48,22 @@ class Measurement:
         return np.median(self.points, axis=0) if self.valid else None
 
     def summary(self, work: np.ndarray) -> dict:
-        """What an agent acts on, in metres in the frame plans use; work is that frame's pose in the base frame."""
+        """Surface coordinates in metres; work is the plan frame's pose in base, in_tool uses captured tool axes."""
         def local(p):
             return (np.asarray(p, float) - work[:3, 3]) @ work[:3, :3]
 
         out = dict(id=self.id, camera=self.frame.camera, frame=self.frame.id, target=self.target,
-                   valid=self.valid, reason=self.reason, surface_center=None, visible_bounds=None, from_tool=None,
+                   valid=self.valid, reason=self.reason, surface_center=None, visible_bounds=None,
+                   from_tool=None, in_tool=None,
                    **self.diagnostics)
         if self.valid:
             center = local(self.center)
             out.update(surface_center=_metres(center),
                        visible_bounds=_metres(np.quantile(local(self.points), [.02, .98], axis=0)))
             if self.frame.tool is not None:
-                out["from_tool"] = _metres(center - local(self.frame.tool[:3, 3]))
+                tool = self.frame.tool
+                out["from_tool"] = _metres(center - local(tool[:3, 3]))
+                out["in_tool"] = _metres((self.center - tool[:3, 3]) @ tool[:3, :3])
         return out
 
     def overlay(self) -> Image.Image:

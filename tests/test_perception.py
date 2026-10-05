@@ -78,6 +78,32 @@ def test_regions_reject_missing_mixed_or_insufficient_depth():
     depth[:, :] = np.nan
     assert measure(replace(frame, depth=depth), mask=mask).reason == "invalid_depth"
     assert measure(frame, mask=np.zeros_like(mask)).reason == "insufficient_support"
+    assert measure(frame, point=[30, 20]).summary(np.eye(4))["in_tool"] is None
+    assert measure(replace(frame, depth=None, tool=np.eye(4)), point=[30, 20]).summary(np.eye(4))["in_tool"] is None
+
+
+def test_tool_coordinates_distinguish_rotation_from_landmark_slip():
+    tool = np.eye(4)
+    tool[:3, 3] = [-.015, .035, .55]
+    first = measure(source(tool=tool), point=[30, 20]).summary(np.eye(4))
+    assert first["in_tool"] == pytest.approx([.02, -.03, -.05])
+    # The same feature after a 90-degree tool turn and translation: [0.16, -0.08, 0.2] in base.
+    tool[:3, :3] = [[0, -1, 0], [1, 0, 0], [0, 0, 1]]
+    tool[:3, 3] = [.13, -.10, .25]
+    camera = np.eye(4)
+    camera[:3, 3] = [.155, -.085, -.30]
+    frame = source(tool=tool, view=View(camera, 50, 50, 30, 20, 60, 40))
+    work = np.eye(4)                         # An independently rotated and translated work frame.
+    work[:3, :3] = [[0, 0, 1], [0, 1, 0], [-1, 0, 0]]
+    work[:3, 3] = [-.1, .2, .35]
+    second = measure(frame, point=[30, 20]).summary(work)
+    assert second["in_tool"] == pytest.approx(first["in_tool"])
+    assert second["from_tool"] != first["from_tool"]
+    assert second["surface_center"] != first["surface_center"]
+    # An 8 mm shift along base X is -8 mm along the turned tool's Y axis.
+    camera[0, 3] += .008
+    slipped = measure(replace(frame, view=View(camera, 50, 50, 30, 20, 60, 40)), point=[30, 20]).summary(work)
+    assert slipped["in_tool"] == pytest.approx([.02, -.038, -.05])
 
 
 @pytest.mark.rendering

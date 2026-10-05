@@ -215,8 +215,9 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         """Measure the visible surface under a point [x, y] or a box [left, top, right, bottom] (right and bottom
         exclusive) of a camera_frame, in its native pixels; the frame needs depth. Returns an id, valid and
         reason, and in work-frame metres: surface_center (of what the camera sees, not of a hidden object),
-        visible_bounds and from_tool (surface_center minus the tool point), with the measured pixels drawn on the
-        picture. Pass the id to run(requires=...) so later steps stop once it is too old."""
+        visible_bounds and from_tool (surface_center minus the tool point). in_tool expresses that surface in
+        the captured tool's axes, in metres: compare the same visible feature before/after a lift or rotation.
+        The measured pixels are drawn on the picture. Pass the id to run(requires=...) for freshness checks."""
         def measure():
             data = c.measure(frame, point=point, box=box, target=target)
             return measured([data], data)

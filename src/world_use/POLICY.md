@@ -93,10 +93,15 @@ parameters. A list runs in order and ends at the first step that does not end "d
 - To measure what you see (MCP or Python; simulated cameras give depth): `camera_frame(camera, depth=true)`, then
   `measure_pixels(frame, point=[x, y], target="block")` in that frame's own pixels, not a scaled `wu look`
   picture's. It returns, in work-frame metres, `surface_center` of the surface the camera sees (not the object's
-  centre) and `from_tool`, that point minus the tool point.
+  centre) and `from_tool`, that point minus the tool point in work axes. `in_tool` gives the surface point
+  in the captured tool's axes; a rigidly held feature keeps those coordinates through a lift or rotation.
 - `run(plan, requires=[{"evidence": ID, "max_age_s": 30}])` is refused, or stops before its next step, once that
-  measurement is older than 30 s or its camera was calibrated again. Check a phase by measuring again: a lifted
-  object keeps its `from_tool`.
+  measurement is older than 30 s or its camera was calibrated again. Check a phase by measuring the same visible
+  features again: compare `in_tool` for retention, and `surface_center` for placement. Occlusion or selecting
+  another surface makes that comparison inconclusive; one point cannot establish a complete grasp.
+- After release, withdraw clear and check the expected position and depth in a fresh frame. Before regrasping
+  a released object, remeasure it from the approach view: it may have settled since the previous judgement.
+  If it now meets the intended outcome, leave it; choose recovery only from a fresh measured discrepancy.
 
 ## Contact
 

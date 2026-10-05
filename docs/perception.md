@@ -62,6 +62,7 @@ robot.run(plan, requires=[{"evidence": block["id"], "max_age_s": 30}], wait=60)
 | `surface_center` | the median of the measured surface points, in work-frame metres: the frame plans use |
 | `visible_bounds` | the 2nd and 98th percentiles of those points along each work axis |
 | `from_tool` | `surface_center` minus the tool point when the picture was taken, in the work frame |
+| `in_tool` | the measured surface point in the captured tool's axes, in metres; null without a valid surface and captured tool pose |
 | `samples`, `valid_fraction`, `depth_spread_m` | how many pixels were sampled, how many had depth, and the depth range they spanned |
 | `age_s`, `capture_t` | the picture's age when measured, and its time on the run's clock |
 | `image` | the picture with the measured pixels (green, red when invalid) and the surface centre drawn on it |
@@ -71,9 +72,16 @@ Shape is the agent's knowledge. The example knows its block is a 4 x 4 x 10 cm u
 the block's centre 5 cm below the measured top. A measurement never changes the world model; tell the
 kernel about an object with `add_box` and name the measurement in its source.
 
-`from_tool` makes checking simple. After a grip and a lift, the block moved with the gripper if `from_tool`
-stayed the same while `surface_center` rose. After letting go, the block is at its target if
-`surface_center` is there, and the tool is clear if `from_tool` points far enough down.
+For a grip check, measure the same visible feature before and after a short lift or rotation. Its `in_tool`
+coordinates should stay within the procedure's measurement tolerance while `surface_center` moves. Unlike
+`from_tool`, `in_tool` accounts for wrist rotation and is independent of the work frame. This is a coordinate
+conversion, not tracking: a different selected surface, occlusion or a shifting box median makes the comparison
+inconclusive. One point cannot detect rotation about that point; inspect separated features when rotation matters.
+
+After release and clear withdrawal, measure the expected position and depth in a fresh frame. If revisiting
+an apparently incomplete placement, remeasure from the approach view before closing the gripper: the object
+may have settled in the meantime. Preserve an outcome that now meets the criteria; base recovery on a current
+measured discrepancy. Freshness guards bound evidence age, but cannot verify correspondence or seating.
 
 ## Aligning measured landmarks
 
