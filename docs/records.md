@@ -32,6 +32,7 @@ A run contains:
 | `complete.json` | Final chunk count and event byte count, committed only after the journal finishes successfully |
 | `summary.json`, `world.json` | Summary and world model at the last explicit save or normal close |
 | `views/` | Saved camera observations |
+| `perception/<id>.png`, `perception/<id>.npz` | One pair per [measurement](perception.md): the picture with the measured pixels drawn on it, and the measured `points` (base frame, metres) with the `pixels` they came from |
 
 Events and telemetry are flushed once per second on a background thread. A process kill may
 lose the current interval and an unfinished event line; it should not lose earlier
@@ -78,16 +79,9 @@ fields. These values are saved as supplied; avoid placing credentials in them.
 A `done` outcome records command completion. The example saves its separate task
 predicate in `result.json` and a `task_result` event.
 
-The [procedure tools](procedure-tools.md) also emit `geometry`, `prepared`,
-`phase_submitted`, `target_lost` and `verification` events. These retain source
-receipt IDs, fitted assumptions, resolved numeric plans, criteria frozen before
-action, and observed effects. `finished` includes the job's capture-clock window
-for relating before/after observations to execution. Agent-authored annotations
-remain distinct from these calculated results.
-
-MCP `inspect_run` and `Client.inspect_run` page through the current session's
-committed events plus the live tail without loading its full telemetry. Continue
-from `next_cursor` while `more` is true. Missing sequence numbers and recorder
-errors remain visible; `record_complete` describes the available history, while
-`closed` separately reports session closure. Archived pixels are retrieved by
-evidence ID and remain explicitly historical.
+Each measurement adds one `measurement` event with what the agent received: its id,
+camera and frame, `valid` and `reason`, `surface_center`, `visible_bounds` and
+`from_tool` in the work frame, the picture's capture time (`capture_t`) and the path
+of its picture. Its two files are written before the agent gets the reply, so a
+storage failure fails that measurement instead of losing it later. A `withdrawn`
+event lists measurements a tracker withdrew after losing their target.

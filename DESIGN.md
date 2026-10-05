@@ -144,33 +144,17 @@ flight records in a separate process. It never imports a hardware driver or
 rehearses a plan; its 3D objects are labeled as estimates. See
 [visualization](docs/visualization.md).
 
-Optional perception runs in a procedure or its private model process. `Client.frame()` reads an unannotated
-camera frame without adding a flight-record image; `look` remains the recorded, annotated
-view. The EdgeTAM helper keeps one selected object and bounded forward history. Its
-observations carry frame identity and age, and do not update world facts or command the
-body. Procedures decide how to use them between checked phases; inference never belongs
-in a behavior tick. See the [tracking example](examples/tracking).
-
-MuJoCo frames optionally include aligned metric depth and copied calibration. Pure
-measurement helpers describe visible surfaces; `Client.record(evidence=...)` registers
-their source pixels. `Client.run(..., requires=[...])` checks session, calibration and
-capture age before admission and subsequent steps, including with rehearsal disabled.
-Observations do not invalidate checked plans; control mutations still do. Source
-artifacts persist in a bounded background queue and appear in Rerun at their capture
-and availability times. See the [contracts and limits](docs/perception-design.md)
-and [perception-assisted block example](examples/perception).
-
-The [procedure tools](docs/procedure-tools.md) resolve geometry references into the
-same numeric PlanSpec and freeze task criteria before acting. Prepared IDs submit
-once and rehearse against the current state. Region loss revokes dependent motion
-at existing prerequisite boundaries; historical measurements remain intact.
-Verification compares captured geometry and synchronized feedback, independently
-of job completion and power state. Python and MCP share these calculations.
+Perception turns pixels into numbers a plan can use. The daemon keeps the last few camera frames, unannotated
+and unrecorded (`look` remains the recorded, annotated view); a MuJoCo frame can add aligned metric depth and the
+calibration the camera had. Measuring a point or a box of a frame gives the visible surface's centre and extent in
+the work frame and its offset from the tool, and saves the picture and points with the run. A run can require
+measurements: the kernel calls the job's guard before each step, and the guard refuses once a measurement is too
+old for the run, its camera was calibrated again, or a tracker withdrew it. The guard reads only numbers copied when
+the run was accepted. Measurements never change the world model, and checking an outcome means measuring again and
+comparing, in the agent's procedure. Optional EdgeTAM tracking runs in its own process, never in a behavior tick,
+and returns the same measurements. See [measuring from pictures](docs/perception.md).
 
 ## Where it goes
-
-The [agent tool design](docs/agent-tools-design.md) describes how to extend reusable
-procedures through task-driven experiments and additional perception capabilities.
 
 Start with repeatable tasks on one arm. The [block example](examples/pick-place) gives
 new users a complete run, a separate success predicate, controlled scene variations,
@@ -185,6 +169,9 @@ Near-term work should follow experiments:
   measurements to justify them.
 - Compare model-authored plans and live checkpoint decisions on the same tasks, keeping
   prompts, observations, interventions and measured outcomes with the records.
+- Run the [perception example](examples/perception) over held-out positions and appearances, then a second task
+  such as opening a door. Add text grounding, point tracking or grasp proposals when those tasks need them, and
+  physical RGB-D once a sensor's calibration and timing are measured.
 - Try two arms in simulation when a task needs cooperation, before introducing scheduling
   or a multi-robot graph API.
 

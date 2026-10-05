@@ -24,7 +24,6 @@ from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from uuid import uuid4
 
 import numpy as np
 
@@ -51,7 +50,6 @@ from .errors import Refused, explain
 from .events import EventLog
 from .kinematics import Chain
 from .motion import Timing
-from .perception import Requirement
 from .recorder import Journal, Tape, save_summary, session_record
 from .validation import references
 from .world import World
@@ -102,15 +100,11 @@ class Job:
     outcome: Outcome | None = None
     question: dict | None = None
     answer: str | None = None
-    t_start: float | None = None
+    t_start: float | None = None      # kernel clock
     t_end: float | None = None
     attention: threading.Event = field(default_factory=threading.Event)   # set on waiting or finished
     admission: Callable[[], None] | None = None    # revalidate a checked plan immediately before its first tick
-    requires: tuple[Requirement, ...] = ()
-    evidence_started_at: float | None = None
-    evidence_ended_at: float | None = None
-    tool_started: list[float] | None = None
-    tool_ended: list[float] | None = None
+    guard: Callable[[], None] | None = None        # raises Refused before a step once what the plan relied on is stale
 
     @property
     def finished(self) -> bool:
@@ -118,16 +112,11 @@ class Job:
 
     def to_dict(self) -> dict:
         d: dict = dict(id=self.id, status=self.status, what=self.behavior.describe())
-        d["capture_window"] = dict(clock="daemon_monotonic", start=self.evidence_started_at,
-                                   end=self.evidence_ended_at, tool_start_base_m=self.tool_started,
-                                   tool_end_base_m=self.tool_ended)
-        if self.requires:
-            d["requires"] = [dict(evidence=r.evidence, max_age_s=r.max_age_s) for r in self.requires]
         if self.question:
             d["question"] = self.question
         if self.outcome:
             d["outcome"] = self.outcome.to_dict()
-        if self.t_start and self.t_end:
+        if self.t_start is not None and self.t_end is not None:
             d["seconds"] = round(self.t_end - self.t_start, 2)
         return d
 
@@ -207,9 +196,6 @@ class Kernel:
         self.heat = Heat()
         self.lock = threading.RLock()
         self.control_revision = 0
-        self.evidence_session = uuid4().hex
-        self.evidence_now = time.monotonic
-        self.evidence_closed = False
         self.jobs: dict[int, Job] = {}
         self.queue: deque[Job] = deque()
         self.active: Job | None = None
@@ -359,7 +345,6 @@ class Kernel:
 
     def close(self) -> dict:
         """Close the connection (never switches torque off by itself) and write the flight record."""
-        self.evidence_closed = True
         try:
             self.body.close()
         except Exception as e:
@@ -392,24 +377,25 @@ class Kernel:
         return summary
 
     # -- requests (any thread) ---------------------------------------------------------------------
-    def submit(self, spec, admission: Callable[[], None] | None = None, *, requires=()) -> Job:
+    def submit(self, spec, admission: Callable[[], None] | None = None, *,
+               guard: Callable[[], None] | None = None) -> Job:
         """Queue a behavior. A malformed spec, or one naming a frame or joint this robot lacks, is refused here;
-        limits are checked when it starts. While a thermal return runs, the job ends refused at once."""
+        limits are checked when it starts. A guard is called now and before each step, and refuses the step once
+        what the plan relied on is stale. While a thermal return runs, the job ends refused at once."""
         behavior = build(spec if isinstance(spec, Behavior) else deepcopy(spec))
-        if requires:
-            self.evidence_capable(behavior)
+        if guard is not None and any(type(step) not in BUILTINS for step in walk(behavior)):
+            raise Refused("a guarded plan can use only built-in steps: a custom step starts its own moves unchecked",
+                          "custom_step")
         with self.lock:
             self._references(behavior)
-            self.check_requirements(requires)
+            if guard is not None:
+                guard()
             if admission is not None:
                 admission()
             self.changed()
-            job = Job(next(self._ids), behavior, deepcopy(behavior.spec()))
-            job.admission = admission
-            job.requires = tuple(requires)
+            job = Job(next(self._ids), behavior, deepcopy(behavior.spec()), admission=admission, guard=guard)
             self.jobs[job.id] = job
-            self.emit("submitted", f"job {job.id}: {behavior.describe()}", job=job.id, spec=job.spec,
-                      requires=job.to_dict().get("requires", []))
+            self.emit("submitted", f"job {job.id}: {behavior.describe()}", job=job.id, spec=job.spec)
             if self.faulted or self.power_uncertain:
                 self._end(job, Outcome("refused", behavior.kind, "the kernel is faulted or motor power is unconfirmed",
                                        hint="check the hardware, then reset"))
@@ -518,34 +504,21 @@ class Kernel:
         with self.lock:
             self.control_revision += 1
 
-    @staticmethod
-    def evidence_capable(behavior):
-        if type(behavior) not in BUILTINS:
-            raise Refused("evidence prerequisites require built-in behaviors", "evidence_behavior")
-        if isinstance(behavior, Sequence):
-            for child in behavior.steps:
-                Kernel.evidence_capable(child)
-
-    def check_requirements(self, requirements):
-        if not requirements:
-            return
-        if self.evidence_closed:
-            raise Refused("evidence session has closed", "stale_evidence")
-        calibrations = {name: camera.calibration_id for name, camera in self.cameras.items()}
-        for requirement in requirements:
-            requirement.check(self.evidence_session, calibrations, self.evidence_now())
-
-    def check_evidence(self):
-        try:
-            self.check_requirements(self.active.requires if self.active else ())
-        except Refused:
-            self.hold_here()
-            raise
+    def check_guard(self):
+        """Before a step moves: if the running job's guard refuses, hold here and let the refusal end the job."""
+        job = self.active
+        if job is not None and job.guard is not None:
+            try:
+                job.guard()
+            except Refused:
+                self.hold_here()
+                raise
 
     def start_behavior(self, behavior):
         """Start the running job's behavior or one of its steps. Every runner (a plan, a grasp, a grip's opening)
-        starts steps here, so each re-zeroes the contact check and names its place in the plan for rehearsals."""
-        self.check_evidence()
+        starts steps here, so each passes the job's guard, re-zeroes the contact check and names its place in the
+        plan for rehearsals."""
+        self.check_guard()
         self.rebias()
         step, where = self._step()
         self.envelope.context = ": ".join([*where, (step or behavior).describe()])
@@ -770,9 +743,7 @@ class Kernel:
                       self.cmd.gripper, st.gripper, st.gripper_tau)
 
     def _start(self, job: Job, now: float):
-        job.t_start = time.time()
-        job.evidence_started_at = self.evidence_now()
-        job.tool_started = self.chain.fk(self.state.q)[:3, 3].tolist()
+        job.t_start = now
         self.active = job
         try:
             if job.admission is not None:
@@ -804,12 +775,10 @@ class Kernel:
                               hint="treat the arm as energized; resolve motor power before reset")
         if out.status == "faulted":
             self.faulted = True
-        job.outcome, job.status, job.t_end = out, out.status, time.time()
-        job.evidence_ended_at = self.evidence_now()
-        job.tool_ended = self.chain.fk(self.state.q)[:3, 3].tolist()
+        job.outcome, job.status, job.t_end = out, out.status, self.clock.now()
         level = "info" if out.ok else ("alarm" if out.status == "faulted" else "warn")
         self.emit("finished", f"job {job.id} {out.status}: {out.message}", level, job=job.id, status=out.status,
-                  outcome=out.to_dict(), capture_window=job.to_dict()["capture_window"])
+                  outcome=out.to_dict())
         if not out.ok:
             self._cancel_queue(f"job {job.id} ended {out.status}")
             if out.status in ("surprise", "faulted"):

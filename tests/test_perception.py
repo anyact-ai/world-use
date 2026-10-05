@@ -1,7 +1,9 @@
-"""Evidence must describe captured pixels, and expire before subsequent actuation."""
-import time
+"""Measurements describe the daemon's own pixels, and a run that requires one stops before any step once it is stale."""
+import json
+import tempfile
 from concurrent.futures import Future
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -11,24 +13,34 @@ from PIL import Image
 from world_use import Refused
 from world_use.behaviors import Behavior, Joints
 from world_use.cameras import Camera, Frame, SimCamera, View, pack, unpack
-from world_use.perception import EvidenceStore, measure
+from world_use.client import DaemonError
+from world_use.perception import Measurements, measure
 from world_use.plan import snapshot
 
 
 def source(**kwargs):
-    return Frame(Image.new("RGB", (60, 40), "orange"), "test",
-                 view=View(np.eye(4), 50, 50, 30, 20, 60, 40),
-                 depth=np.full((40, 60), .5), **kwargs)
+    defaults = dict(view=View(np.eye(4), 50, 50, 30, 20, 60, 40), depth=np.full((40, 60), .5))
+    return Frame(Image.new("RGB", (60, 40), "orange"), "test", **(defaults | kwargs))
 
 
-def register(k):
-    frame = source(elapsed=0)
-    cam = Camera(frame.camera, frame.view)
-    k.cameras[cam.name] = cam
-    store = EvidenceStore(k)
-    frame = store.remember(replace(frame, calibration=cam.calibration_id))
-    receipt = store.register(measure(frame, point=[30, 20], target="block").request())
-    return store, frame, receipt, [dict(evidence=receipt["id"], max_age_s=5)]
+def held(cameras):
+    """A frame from a calibrated test camera, with depth and a tool pose, as the daemon keeps it."""
+    camera = cameras.setdefault("test", Camera("test", View(np.eye(4), 50, 50, 30, 20, 60, 40)))
+    tool = np.eye(4)
+    tool[:3, 3] = [.02, 0, .45]
+    return source(view=camera.view, calibration=camera.calibration_id, tool=tool)
+
+
+@pytest.fixture
+def required(k, monkeypatch, tmp_path):
+    """A guard requiring a 5 s fresh measurement, and the clock its age is read from."""
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    registry = Measurements(k, k.cameras)
+    frame = registry.keep(held(k.cameras))
+    m = registry.measure(frame.id, point=[30, 20], target="block")
+    now = [frame.timestamp + 1]
+    registry.now = lambda: now[0]
+    return registry.guard([dict(evidence=m["id"], max_age_s=5)]), now
 
 
 def advance(k, predicate, limit=300):
@@ -41,9 +53,9 @@ def advance(k, predicate, limit=300):
 
 
 def test_rgbd_roundtrip_and_pixel_centres():
-    frame = source(session="session", calibration="revision", tool=np.eye(4), elapsed=1.5)
+    frame = source(calibration="revision", tool=np.eye(4))
     decoded = Frame.from_dict(frame.to_dict())
-    assert decoded.elapsed == 1.5 and decoded.session == "session"
+    assert decoded.calibration == "revision"
     np.testing.assert_array_equal(decoded.tool, np.eye(4))
     np.testing.assert_array_equal(decoded.depth, frame.depth)
     result = measure(decoded, point=[30, 20])
@@ -68,19 +80,6 @@ def test_regions_reject_missing_mixed_or_insufficient_depth():
     assert measure(frame, mask=np.zeros_like(mask)).reason == "insufficient_support"
 
 
-def test_task_verification_needs_visible_geometry_and_consistent_displacement():
-    from world_use.examples.perception import TARGET, lift_result, placement_result
-
-    before = np.array([.34, .03, .20])
-    assert lift_result(before, before + [0, 0, .06], np.array([0, 0, .06])) == "pass"
-    assert lift_result(before, before, np.array([0, 0, .06])) == "fail"
-    assert lift_result(before, None, np.array([0, 0, .06])) == "unknown"
-    assert placement_result(TARGET, TARGET + [0, 0, .1], 65) == "pass"
-    assert placement_result(TARGET, TARGET + [0, 0, .1], 40) == "fail"
-    assert placement_result(TARGET + [0, 0, .05], TARGET + [0, 0, .15], 65) == "fail"
-    assert placement_result(None, TARGET + [0, 0, .1], 65) == "unknown"
-
-
 @pytest.mark.rendering
 def test_mujoco_depth_unprojects_to_the_actual_surface(k):
     k.body.world.add_box("plane", "surface", [.6, 0, .05], [.5, .5, .1], frame="base")
@@ -100,48 +99,43 @@ def test_mujoco_depth_unprojects_to_the_actual_surface(k):
     assert other.points[0, 0] - result.points[0, 0] == pytest.approx(.1, abs=1e-6)
 
 
-def test_registration_owns_capture_and_recomputes_geometry(k):
-    store, frame, receipt, requires = register(k)
-    frame.image.paste("blue", (0, 0, 60, 40))
-    request = measure(frame, point=[30, 20]).request()
-    request.update(timestamp=time.monotonic() + 1000, geometry={"surface_center": [99, 99, 99]})
-    registered = store.register(request)
-    assert registered["timestamp"] == frame.timestamp
-    assert registered["geometry"]["surface_center"] == pytest.approx([.005, .005, .5])
-    assert store.frames[(frame.id, frame.calibration)].image.getpixel((0, 0)) != (0, 0, 255)
-    assert not k.world.boxes and store.resolve(requires)
-    with pytest.raises(Refused, match="another session"):
-        store.register(dict(request, session="previous"))
-    store.MAX_FRAMES = 1
-    store.remember(source())
-    with pytest.raises(Refused, match="acquisition cache"):
-        store.register(request)
-    # Cache eviction removes raw images, not already accepted guard metadata.
-    assert store.resolve(requires)[0].evidence == receipt["id"]
+def test_the_daemon_measures_its_own_frame_in_the_work_frame_and_records_it(daemon):
+    d, c = daemon
+    frame = d.measurements.keep(held(d.cameras))
+    seen = d.k.events.seq
+    m = c.measure(frame.id, point=[30, 20], target="block")
+    work = d.k.world
+    center, tool = work.from_base("work", [.005, .005, .5]), work.from_base("work", [.02, 0, .45])
+    assert m["valid"] and m["surface_center"] == pytest.approx(center, abs=1e-4)
+    assert m["from_tool"] == pytest.approx(center - tool, abs=1e-4)
+    assert Image.open(m["image"]).size == frame.image.size
+    events = [e for e in d.k.events.since(seen) if e["kind"] == "measurement"]
+    assert len(events) == 1 and events[0]["data"]["measurement"]["image"] == f"perception/{m['id']}.png"
+    with np.load(d.k.run_dir / "perception" / f"{m['id']}.npz") as arrays:
+        np.testing.assert_allclose(arrays["points"], [[.005, .005, .5]])
+    with pytest.raises(DaemonError, match="no longer held"):
+        c.measure("an old frame", point=[30, 20])
 
 
-def test_expired_evidence_refuses_admission_and_changed_calibration_refuses_start(k):
-    store, frame, _, requires = register(k)
-    rules = store.resolve(requires)
-    k.evidence_now = lambda: frame.timestamp + 6
+def test_stale_or_recalibrated_measurements_refuse_admission_and_later_starts(k, required):
+    guard, now = required
+    now[0] += 5
     with pytest.raises(Refused, match="old"):
-        k.submit({"do": "gripper", "aperture_mm": 65}, requires=rules)
-    k.evidence_now = lambda: frame.timestamp + 1
-    job = k.submit({"do": "gripper", "aperture_mm": 65}, requires=rules)
+        k.submit({"do": "gripper", "aperture_mm": 65}, guard=guard)
+    now[0] -= 5
+    job = k.submit({"do": "gripper", "aperture_mm": 65}, guard=guard)
     before = k.cmd.gripper
-    cam = k.cameras[frame.camera]
-    cam.view = cam.view                  # reinstalling even identical calibration invalidates old evidence
+    camera = k.cameras["test"]
+    camera.view = camera.view            # installing even the same calibration again makes measurements stale
     advance(k, lambda: job.finished)
     assert job.status == "refused" and k.cmd.gripper == before
-    assert job.outcome.data["rule"] == "stale_evidence"
+    assert job.outcome.data["rule"] == "stale_measurement"
 
 
-def test_expiry_at_nested_step_does_not_open_the_gripper(k):
-    store, frame, _, requires = register(k)
-    now = [frame.timestamp + 1]
-    k.evidence_now = lambda: now[0]
-    job = k.submit([[{"do": "checkpoint", "ask": "continue?"}],
-                    [{"do": "gripper", "aperture_mm": 65}]], requires=store.resolve(requires))
+def test_expiry_at_a_nested_step_does_not_open_the_gripper(k, required):
+    guard, now = required
+    job = k.submit([[{"do": "checkpoint", "ask": "continue?"}], [{"do": "gripper", "aperture_mm": 65}]],
+                   guard=guard)
     advance(k, lambda: job.status == "waiting")
     before = k.cmd.gripper
     now[0] += 6
@@ -150,116 +144,112 @@ def test_expiry_at_nested_step_does_not_open_the_gripper(k):
     assert job.status == "refused" and k.cmd.gripper == before
 
 
-def test_grip_rechecks_evidence_between_its_preopen_and_closing_phases(k):
-    store, frame, _, requires = register(k)
-    now = [frame.timestamp + 1]
-    k.evidence_now = lambda: now[0]
-    job = k.submit({"do": "grip", "start_mm": 65, "expect_mm": [35, 45]}, requires=store.resolve(requires))
+def test_a_grip_checks_again_between_opening_and_closing(k, required):
+    guard, now = required
+    job = k.submit({"do": "grip", "start_mm": 65, "expect_mm": [35, 45]}, guard=guard)
     advance(k, lambda: job.status == "running")
     now[0] += 6
     advance(k, lambda: job.finished, limit=1000)
-    assert job.status == "refused" and job.outcome.data["rule"] == "stale_evidence"
+    assert job.status == "refused" and job.outcome.data["rule"] == "stale_measurement"
     assert k.manifest.gripper.aperture(k.cmd.gripper) == pytest.approx(.065)
 
 
-def test_expiry_during_background_preparation_is_checked_before_motion(k):
-    store, frame, _, requires = register(k)
-    now = [frame.timestamp + 1]
-    k.evidence_now = lambda: now[0]
+def test_expiry_during_background_preparation_is_checked_before_motion(k, required):
+    guard, now = required
     prepared = Joints(delta_deg={"1": 1})
     prepared.prepare(k)
     pending = Future()
     k.planner = SimpleNamespace(prepare=lambda *args: (pending, snapshot(k)))
     before = k.cmd.q.copy()
-    job = k.submit(prepared.spec(), requires=store.resolve(requires))
+    job = k.submit(prepared.spec(), guard=guard)
     advance(k, lambda: job.status == "running")
     now[0] += 6
     pending.set_result(prepared.__dict__)
     advance(k, lambda: job.finished)
-    assert job.status == "refused"
-    assert job.outcome.data["rule"] == "stale_evidence"
+    assert job.status == "refused" and job.outcome.data["rule"] == "stale_measurement"
     assert k.cmd.q[0] == pytest.approx(before[0], abs=.001)
     np.testing.assert_array_equal(k.cmd.q, k.state.q)  # hold measured feedback, including idle drift
 
 
-def test_custom_behavior_is_rejected_before_any_step_starts(k):
-    store, _, _, requires = register(k)
+def test_a_guarded_plan_with_a_custom_step_is_refused_before_any_step_starts(k, required):
+    guard, _ = required
 
     class Custom(Behavior):
         kind = "custom"
 
     with pytest.raises(Refused, match="built-in"):
-        k.submit([{"do": "gripper", "aperture_mm": 65}, Custom()], requires=store.resolve(requires))
+        k.submit([{"do": "gripper", "aperture_mm": 65}, Custom()], guard=guard)
     assert not k.jobs
 
 
 def test_expiry_during_rehearsal_refuses_before_submission(daemon, monkeypatch):
-    from world_use.client import DaemonError
-
     d, c = daemon
-    store, frame, _, requires = register(d.k)
-    d.evidence = store
+    frame = d.measurements.keep(held(d.cameras))
+    m = c.measure(frame.id, point=[30, 20])
     original = d.rehearser.check
 
     def delayed(*args, **kwargs):
         report = original(*args, **kwargs)
-        d.k.evidence_now = lambda: frame.timestamp + 6
+        d.measurements.now = lambda: frame.timestamp + 6
         return report
 
     monkeypatch.setattr(d.rehearser, "check", delayed)
     with pytest.raises(DaemonError, match="old"):
-        c.run({"do": "gripper", "aperture_mm": 65}, requires=requires)
+        c.run({"do": "gripper", "aperture_mm": 65}, requires=[dict(evidence=m["id"], max_age_s=5)])
     assert not d.k.jobs
 
 
-@pytest.mark.rendering
-def test_daemon_rgbd_receipt_and_no_check_prerequisite(daemon):
-    from world_use.client import DaemonError
+def test_a_withdrawn_measurement_stops_its_run_and_leaves_new_ones_of_the_target_usable(daemon):
+    d, c = daemon
+    first = c.measure(d.measurements.keep(held(d.cameras)).id, point=[30, 20], target="block")
+    job = c.run([{"do": "checkpoint", "ask": "continue?"}, {"do": "gripper", "aperture_mm": 65}], check=False,
+                wait=30, requires=[dict(evidence=first["id"], max_age_s=30)])
+    assert job["status"] == "waiting"
+    c.withdraw([first["id"]], "tracking lost 'block'")
+    result = c.answer(job["id"], "yes", wait=30)
+    assert result["status"] == "refused" and result["outcome"]["data"]["rule"] == "stale_measurement"
+    second = c.measure(d.measurements.keep(held(d.cameras)).id, point=[30, 20], target="block")
+    requires = [dict(evidence=second["id"], max_age_s=30)]
+    assert c.run({"do": "hold", "seconds": .01}, check=False, wait=30, requires=requires)["status"] == "done"
+    with pytest.raises(DaemonError, match="no measurement"):
+        c.run({"do": "hold", "seconds": .01}, requires=[dict(evidence="from another session", max_age_s=30)])
 
+
+@pytest.mark.rendering
+def test_simulated_depth_measurement_guards_runs_without_rehearsal(daemon):
     d, c = daemon
     frame = c.frame("top", depth=True)
     valid = np.argwhere(np.isfinite(frame.depth))
     y, x = valid[len(valid) // 2]
-    receipt = c.record(evidence=measure(frame, point=[int(x), int(y)], target="surface"))
-    assert receipt["valid"] and receipt["capture_t"] is not None
-    requires = [dict(evidence=receipt["id"], max_age_s=30)]
-    assert c.run({"do": "hold", "seconds": .01}, requires=requires, wait=5)["status"] == "done"
-    d.k.evidence_now = lambda: frame.timestamp + 31
+    m = c.measure(frame, point=[int(x), int(y)], target="surface")
+    assert m["valid"] and m["capture_t"] is not None
+    requires = [dict(evidence=m["id"], max_age_s=30)]
+    assert c.run({"do": "hold", "seconds": .01}, requires=requires, wait=30)["status"] == "done"
+    d.measurements.now = lambda: frame.timestamp + 31
     with pytest.raises(DaemonError, match="old"):
         c.run({"do": "gripper", "aperture_mm": 65}, requires=requires, check=False)
-    c.record()
-    folder = d.k.run_dir / "perception" / receipt["id"]
-    assert (folder / "rgb.png").is_file() and (folder / "surfaces.npz").is_file()
+
+
+def test_the_example_checks_lift_and_placement_from_measurements():
+    from world_use.examples.perception import TARGET, lifted, placed
+
+    before = dict(surface_center=[.34, .03, .25], from_tool=[-.02, 0, .03])
+    assert lifted(before, dict(surface_center=[.34, .03, .31], from_tool=[-.02, 0, .03]))
+    assert not lifted(before, dict(surface_center=[.34, .03, .25], from_tool=[-.02, 0, -.03]))   # stayed down
+    top = (TARGET + [0, 0, .05]).tolist()
+    assert placed(dict(surface_center=top, from_tool=[0, 0, -.06]), 65)
+    assert not placed(dict(surface_center=top, from_tool=[0, 0, -.06]), 40)                # still closed
+    assert not placed(dict(surface_center=top, from_tool=[0, 0, -.02]), 65)                # not withdrawn
+    assert not placed(dict(surface_center=[top[0] + .02, *top[1:]], from_tool=[0, 0, -.06]), 65)
 
 
 @pytest.mark.rendering
-@pytest.mark.parametrize("inference_delay_s", [0, 1.5])
-def test_live_procedure_transfers_an_unknown_block_and_verifies_from_pixels(tmp_path, monkeypatch, inference_delay_s):
-    import json
-    import time
-
-    from world_use.examples import perception
-
-    select = perception.orange_mask
-
-    def delayed_mask(frame):
-        time.sleep(inference_delay_s)  # continuous physics lets the unpowered wrist settle before enable
-        return select(frame)
-
-    monkeypatch.setattr(perception, "orange_mask", delayed_mask)
-    result = perception.run(tmp_path, scenario="shifted")
-    assert result["lift"] == result["placement"] == "pass"
-    assert result["evaluation"]["success"] and result["torque_off"]
-    initial = json.loads((tmp_path / "session.json").read_text())["initial"]["world"]
-    assert "block" not in initial["boxes"]
-    assert len(list((tmp_path / "perception").glob("*/measurement.json"))) >= 4
-
-
-@pytest.mark.rendering
-def test_nominal_missed_grasp_recovers_when_already_at_release_height(tmp_path):
+def test_the_example_measures_moves_and_measures_again(tmp_path):
     from world_use.examples.perception import run
 
-    result = run(tmp_path, condition="nominal", scenario="displaced")
-    assert "closed on nothing" in result["reason"]
-    assert not result["evaluation"]["success"]
-    assert result["return_outcome"]["status"] == "done" and result["torque_off"]
+    result = run(tmp_path, speed=4)           # physics at four times real time; a faster clock is not modest
+    assert result["lift"] == result["placement"] == "pass", result.get("reason")
+    assert result["evaluation"]["success"] and result["torque_off"]
+    assert "block" not in json.loads((tmp_path / "session.json").read_text())["initial"]["world"]["boxes"]
+    files = [Path(tmp_path / "perception" / m["id"]) for m in result["measurements"]]
+    assert len(files) == 5 and all(f.with_suffix(".png").is_file() and f.with_suffix(".npz").is_file() for f in files)

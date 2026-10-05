@@ -1,6 +1,7 @@
 """The MCP server: the CLI's verbs as tools, answering in the same short text (and pictures)."""
 import asyncio
 
+import numpy as np
 import pytest
 
 pytest.importorskip("mcp")
@@ -11,7 +12,7 @@ from world_use.mcp_server import build
 
 
 @pytest.mark.usefixtures("file_camera")
-def test_mcp_capture_measurement_and_evidence_refusal(daemon):
+def test_mcp_frames_measurements_and_crops_come_with_their_pictures(daemon):
     import json
 
     _, c = daemon
@@ -19,14 +20,19 @@ def test_mcp_capture_measurement_and_evidence_refusal(daemon):
 
     async def session():
         captured = await server.call_tool("camera_frame", {"camera": "side"})
-        metadata = json.loads(captured.content[0].text)
+        frame = json.loads(captured.content[0].text)["frame"]
         assert any(item.type == "image" for item in captured.content)
-        measured = await server.call_tool("measure_pixels", {"frame": metadata["frame"], "point": [200, 200]})
-        receipt = json.loads(measured.content[0].text)
-        assert not receipt["valid"] and receipt["reason"] == "missing_depth"
-        with pytest.raises(ToolError, match="no valid geometry"):
+        measured = await server.call_tool("measure_pixels", {"frame": frame, "point": [200, 200]})
+        measurement = json.loads(measured.content[0].text)
+        assert not measurement["valid"] and measurement["reason"] == "missing_depth"
+        assert any(item.type == "image" for item in measured.content)
+        with pytest.raises(ToolError, match="found no surface"):
             await server.call_tool("run", {"plan": {"do": "gripper", "aperture_mm": 65}, "rehearse": False,
-                                          "requires": [{"evidence": receipt["id"], "max_age_s": 10}]})
+                                          "requires": [{"evidence": measurement["id"], "max_age_s": 10}]})
+        crop = (await server.call_tool("inspect_image", {"frame": frame, "crop": [10, 20, 50, 80],
+                                                          "max_side": 600})).structured_content
+        assert crop["size"] == [400, 600]
+        assert crop["native_from_image"] @ np.array([200, 300, 1]) == pytest.approx([30, 50, 1])
     asyncio.run(session())
 
 

@@ -1,4 +1,4 @@
-"""Exercise the pinned CPU EdgeTAM model and live MuJoCo procedure; save full evidence.
+"""Exercise the pinned CPU EdgeTAM model through the live MuJoCo example; save everything it produced.
 
 Requires the vision and rerun extras and access to the public Hugging Face checkpoint.
 This is a constrained integration check, not an object-tracking or robotics benchmark.
@@ -17,28 +17,49 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from world_use import Kernel, VirtualClock, World, bodies, cameras
 from world_use.cameras import Frame
-from world_use.examples.perception import CONDITIONS, orange_mask, run
-from world_use.examples.procedures import run as run_mcp
+from world_use.config import load_workcell
+from world_use.daemon import apply_workcell
+from world_use.examples.perception import run, seen
 from world_use.records import inspect
 from world_use.vision import MODEL, REVISION, EdgeTAM
-from world_use.vision_worker import TrackerProcess
+from world_use.vision_worker import MAX_TARGETS, TrackerProcess
 
 
-def replay(image_path: Path, output: Path) -> dict:
-    """Check point/box prompts and forward history past the model's retention window."""
-    with Image.open(image_path) as source:
-        image = source.convert("RGB")
-    expected = orange_mask(Frame(image, "replay"))
-    ys, xs = np.nonzero(expected)
-    assert len(xs), "the replay fixture must contain the visible block"
-    box = [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1]
+def picture() -> Image.Image:
+    """The example's overhead view of the displaced block, rendered without a daemon."""
+    cell = load_workcell(Path("block"))
+    cell["box"][1]["center"] = [.34, .10, .20]
+    world, truth = World(), World()
+    body = bodies.make("sim", truth, q=np.radians(cell["body_options"]["start_deg"]), gripper=1.0)
+    k = Kernel(body, world, VirtualClock(100))
+    k.connect()
+    truth.frames.update(world.frames)
+    apply_workcell(cell, k, truth)
+    lens = cameras.View.look_at(world.to_base("work", [.34, 0, .90]), world.to_base("work", [.34, 0, .15]),
+                                size=(512, 512), fov_deg=40)
+    try:
+        return cameras.SimCamera("overhead", lens, body).picture(k)
+    finally:
+        k.close()
+
+
+def orange(image) -> np.ndarray:
+    rgb = np.asarray(image).astype(float)
+    return (rgb[..., 0] > 65) & (rgb[..., 0] > 1.6 * rgb[..., 1]) & (rgb[..., 1] > 1.3 * rgb[..., 2])
+
+
+def replay(image: Image.Image, output: Path) -> dict:
+    """Point and box prompts, and forward history past the model's retention window."""
+    expected = orange(image)
+    point, box = seen(image)
     output.mkdir()
     image.save(output / "rgb.png")
     Image.fromarray(expected).save(output / "color-reference.png")
     samples = []
     with EdgeTAM(device="cpu", max_age_s=15) as tracker:
-        for prompt in ({"point": (float(np.median(xs)), float(np.median(ys)))}, {"box": box}):
+        for prompt in ({"point": tuple(point)}, {"box": box}):
             seed = None
             for index in range(20):
                 frame = Frame(image.copy(), "replay")
@@ -54,7 +75,7 @@ def replay(image_path: Path, output: Path) -> dict:
                 stability = float(np.count_nonzero(observation.mask & seed)
                                   / np.count_nonzero(observation.mask | seed))
                 assert stability > .9, f"static selection drifted: IoU={stability:.3f}"
-                # A point can select the shadow too; only the task's box constrains the object outline.
+                # A point can select the shadow too; only the box constrains the object outline.
                 if "box" in prompt:
                     assert overlap > .75, f"fixture mask drifted: IoU={overlap:.3f}"
                 if index in (0, 19):
@@ -70,26 +91,29 @@ def replay(image_path: Path, output: Path) -> dict:
     return dict(frames=samples)
 
 
-def worker_replay(image_path: Path) -> dict:
-    """Two independent prompts share loaded weights without sharing target history."""
-    with Image.open(image_path) as source:
-        image = source.convert("RGB")
-    expected = orange_mask(Frame(image, "worker-replay"))
-    ys, xs = np.nonzero(expected)
-    bounds = [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1]
+def worker_replay(image: Image.Image) -> dict:
+    """Independent targets share loaded weights but not history; a full worker takes a name again, not a new one."""
+    expected = orange(image)
+    _, box = seen(image)
     samples = []
     with TrackerProcess(device="cpu", max_age_s=15) as worker:
-        for target in ("first", "second"):
-            result = worker.select(target, Frame(image.copy(), "worker-replay"), box=bounds)
-            assert result.status == "tracked"
+        names = [f"target-{i}" for i in range(MAX_TARGETS)]
+        for name in names:
+            assert worker.select(name, Frame(image.copy(), "worker-replay"), box=box).status == "tracked"
+        assert worker.select(names[0], Frame(image.copy(), "worker-replay"), box=box).status == "tracked"
+        try:
+            worker.select("one too many", Frame(image.copy(), "worker-replay"), box=box)
+            raise AssertionError("a full worker accepted another target")
+        except ValueError as e:
+            assert "at most" in str(e), e
         for _ in range(3):
             frame = Frame(image.copy(), "worker-replay")
-            for target in ("first", "second"):
-                result = worker.update(target, frame)
+            for name in names[:2]:
+                result = worker.update(name, frame)
                 assert result.status == "tracked"
                 overlap = float(np.count_nonzero(result.mask & expected) / np.count_nonzero(result.mask | expected))
-                assert overlap > .75, (target, overlap)
-                samples.append(dict(target=target, frame=frame.id, iou=overlap))
+                assert overlap > .75, (name, overlap)
+                samples.append(dict(target=name, frame=frame.id, iou=overlap))
     return dict(observations=samples)
 
 
@@ -102,54 +126,34 @@ def main():
                   packages={name: version(name) for name in ("torch", "torchvision", "transformers", "timm")},
                   runs={}, passed=False)
     try:
-        cases = [(condition, "displaced") for condition in CONDITIONS] + [("verify", "missing")]
-        for condition, scenario in cases:
-            name = f"{condition}-{scenario}"
-            folder = root / name
-            result = run(folder, condition=condition, scenario=scenario, model="edgetam", device="cpu")
+        for scenario in ("displaced", "missing"):
+            folder = root / scenario
+            result = run(folder, scenario=scenario, model="edgetam", device="cpu")
             record = inspect(folder)
-            report["runs"][name] = dict(result=result, telemetry=record["summary"])
-            print(json.dumps(dict(case=name, evaluation=result["evaluation"], lift=result["lift"],
+            report["runs"][scenario] = dict(result=result, telemetry=record["summary"])
+            print(json.dumps(dict(case=scenario, evaluation=result["evaluation"], lift=result["lift"],
                                   placement=result["placement"], torque_off=result["torque_off"],
                                   reason=result.get("reason"))), flush=True)
-            assert result["torque_off"], result
-            assert record["closed"] and "recording_lost" not in record["summary"], record["summary"]
-            for observation in result["observations"]:
-                evidence = folder / "perception" / observation["evidence"]
-                assert all((evidence / file).is_file()
-                           for file in ("measurement.json", "rgb.png", "overlay.png", "surfaces.npz"))
+            assert result["torque_off"] and record["closed"], result
+            assert "recording_lost" not in record["summary"], record["summary"]
+            for m in result["measurements"]:
+                assert all((folder / "perception" / f"{m['id']}{suffix}").is_file() for suffix in (".png", ".npz"))
             if scenario == "missing":
                 assert not result["outcomes"] and record["summary"]["powered_s"] == 0, result
                 assert not result["evaluation"]["success"], result
-            elif condition == "verify":
-                assert result["evaluation"]["success"], result
-                assert result["lift"] == result["placement"] == "pass", result
-            # The other conditions are ablations: measure their misses rather than require success.
-
-        verified = root / "verify-displaced"
-        first = report["runs"]["verify-displaced"]["result"]["observations"][0]["evidence"]
-        report["replay"] = replay(verified / "perception" / first / "rgb.png", root / "replay")
-        report["worker_replay"] = worker_replay(verified / "perception" / first / "rgb.png")
-        for scenario in ("displaced", "missing"):
-            folder = root / f"mcp-{scenario}"
-            result = run_mcp(folder, scenario=scenario, model="edgetam", device="cpu")
-            record = inspect(folder)
-            report["runs"][f"mcp-{scenario}"] = dict(result=result, telemetry=record["summary"])
-            print(json.dumps(dict(case=f"mcp-{scenario}", evaluation=result["evaluation"],
-                                  lift=result["lift"], placement=result["placement"],
-                                  torque_off=result["torque_off"], reason=result.get("reason"))), flush=True)
-            assert result["torque_off"] and record["closed"] and "recording_lost" not in record["summary"]
-            if scenario == "displaced":
-                assert result["lift"] == result["placement"] == "pass", result
-                assert result["evaluation"]["success"], result
             else:
-                assert not result["outcomes"] and record["summary"]["powered_s"] == 0, result
+                assert all(m["tracking"] == "tracked" for m in result["measurements"]), result["measurements"]
+                assert result["lift"] == result["placement"] == "pass", result
+                assert result["evaluation"]["success"], result
+        image = picture()
+        report["replay"] = replay(image, root / "replay")
+        report["worker_replay"] = worker_replay(image)
         from rerun.chunk import RrdReader
-        for name in ("verify-displaced", "mcp-displaced"):
-            rrd = root / f"{name}.rrd"
-            subprocess.run([sys.executable, "-m", "world_use", "view", str(root / name), "--out", str(rrd)], check=True)
-            recording = RrdReader(rrd)
-            assert recording.recordings() and recording.blueprints()
+        rrd = root / "displaced.rrd"
+        subprocess.run([sys.executable, "-m", "world_use", "view", str(root / "displaced"), "--out", str(rrd)],
+                       check=True)
+        recording = RrdReader(rrd)
+        assert recording.recordings() and recording.blueprints()
         report["passed"] = True
     finally:
         (root / "validation.json").write_text(json.dumps(report, indent=2) + "\n")

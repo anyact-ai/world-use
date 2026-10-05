@@ -29,13 +29,12 @@ observations show the captured scene, including any overlays made by `wu look`.
 The demo saves its original MuJoCo camera frames unless `--no-video` is supplied.
 Runs without camera observations have an empty camera pane.
 
-Registered [RGB-D evidence](perception-design.md) adds source RGB, depth, selected
-support and a compact metadata tab for each camera. Green observed surface points
-remain separate from the estimated boxes. RGB/depth appear at capture time;
-measurements appear when they became available and carry their capture time in
-the label. These are recorded observations, not a live scene reconstruction.
-Invalid results clear the associated observed surface. Missing source artifacts
-produce a warning in the event pane.
+A [measurement](perception.md) adds its picture, with the measured pixels drawn on
+it, to its camera's pane at the time the picture was taken, and its surface points
+to the 3D scene, in green, from the time it was measured. Measured points stay
+separate from the estimated boxes; they are recorded observations, not a live scene
+reconstruction. An invalid measurement clears that target's points. Missing
+measurement files produce a warning in the event pane.
 
 The viewer loads the saved URDF and meshes without opening an adapter or running
 physics. It moves the runtime's rotational arm joints and a calibrated gripper
@@ -55,7 +54,7 @@ With no folder argument, `wu view` discovers the local daemon's run folder and
 follows it. To follow a specified recording, use `wu view runs/YOUR-RUN --follow`.
 The viewer reads only new committed chunks and events, usually about one second
 behind control. Camera images update when another client calls `wu look` or
-registers measurement evidence; this is not continuous camera acquisition.
+measures; this is not continuous camera acquisition.
 
 Press Ctrl+C in the viewer command's terminal to stop following. Following stops
 automatically once the record's completion marker and all final data are readable.

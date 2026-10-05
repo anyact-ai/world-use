@@ -1,99 +1,64 @@
-# Measure, move, verify
+# Measure, move, measure again
 
-This simulation-only example transfers a known upright block using calibrated
-MuJoCo RGB-D. The procedure knows the block dimensions and the tray, but receives
-no simulator object positions or instance masks. It measures visible surfaces,
-asserts its shape estimate explicitly, and checks evidence before dependent motion.
-Physics and feedback continue while the procedure captures, measures and records.
-The gripper is explicitly aligned above the tray before approaching: the unpowered
-wrist can settle while inference runs, so its startup angle is not a grasp target.
+A simulated reBot moves a block nobody told it about. The procedure uses only the MCP tools an agent has:
+it takes pictures, measures the block, runs each phase requiring a fresh measurement, and checks the lift
+and the placement by measuring again. The robot's world model starts without the block, and the procedure
+reads no simulator data. See [measuring from pictures](../../docs/perception.md) for the tools.
+
+## Run it
 
 From the repository with Python 3.13+:
 
 ```sh
 uv sync --locked
 uv run python -m world_use.examples.perception --output runs/perception
+uv run wu inspect runs/perception
 uv run wu view runs/perception --out runs/perception.rrd
 ```
 
-Open the `.rrd` locally with Rerun 0.38, or omit `--out` on a desktop. Run directories
-must be new or empty. The example owns a local simulated daemon and returns home
-and releases torque before closing; it never connects to physical hardware.
-Headless rendering needs MuJoCo's [EGL setup](../../docs/simulation.md).
+The example starts its own simulated daemon with physics running in real time, and takes about a minute.
+It never connects to physical hardware, and it returns home and switches torque off before closing. Use a
+new output folder for each run; headless rendering needs MuJoCo's [EGL setup](../../docs/simulation.md).
+`--scenario missing` removes the block: nothing is measured and the arm is never powered.
 
-The default selector thresholds the orange fixture in rendered RGB. It makes the
-entire measurement, execution and recording path reproducible without downloaded
-weights. It is deliberately specific to this scene. To use the existing learned
-tracker instead:
+## What it does
+
+1. `camera_frame` with depth. Finding the block's lit top face by its orange colour stands in for the
+   agent looking at the picture.
+2. `measure_pixels` at the middle of that face, then `add_box` with the block's known 4 x 4 x 10 cm shape.
+3. `enable`, set the gripper's orientation above the tray, and move above the block, requiring the
+   measurement.
+4. Measure again, then descend and grip, requiring the new measurement.
+5. Measure, lift 6 cm, measure: the lift passed if `from_tool` held while the top face rose.
+6. Carry the block so its top lands on the target's, lower it, open and withdraw.
+7. Measure: placed if the top face is within 1 cm of the target, the gripper is open and the tool is
+   8 cm clear above the block.
+
+A separate evaluator, the only code that reads simulator truth, judges the result after the release and
+before homing. Any failure stops the arm, lowers the block onto the tray, opens and withdraws: safe only
+over this known clear tray. `result.json` holds the procedure's checks, its measurements, the job
+outcomes and the evaluator's verdict; `perception/` holds each measurement's picture and points.
+
+## With EdgeTAM
 
 ```sh
 uv run --extra vision python -m world_use.examples.perception \
   --model edgetam --device cpu --output runs/perception-edgetam
 ```
 
-EdgeTAM loads its pinned weights before enabling motors. The first selection is
-seeded from the same visible RGB box; later masks use `EdgeTAM.update`. Model files
-must be reachable from Hugging Face or already cached. The automated tests use
-deterministic masks and the color fixture; their success does not establish
-EdgeTAM accuracy or latency.
-
-The Linux CI vision job downloads the pinned checkpoint and runs the four
-displaced-block conditions plus a missing-block refusal. It records comparison
-outcomes and requires the full verification condition to place successfully. It
-checks visual verification, torque release, recorded evidence, point/box prompts
-and tracking beyond the history window, then exports Rerun. Its `vision-evidence`
-artifact contains full runs and `validation.json`, including inference and control
-timings. Run the same check with vision and Rerun installed:
+For a CPU-only install, use `uv pip install --python .venv/bin/python --torch-backend cpu --editable '.[vision]'`
+and run `.venv/bin/python` directly. The weights load before the arm is powered. The procedure selects the
+block with `select_target`, seeded by the box around its orange pixels, and measures it later with
+`observe_targets`. The CI vision job runs this with the pinned model for both scenarios, checks the
+tracker on a replayed picture and the Rerun export, and keeps everything as its `vision-evidence` artifact:
 
 ```sh
-OMP_NUM_THREADS=2 uv run --extra vision --extra rerun python scripts/vision_smoke.py \
-  --output runs/vision-validation
+OMP_NUM_THREADS=2 uv run --extra vision --extra rerun python scripts/vision_smoke.py --output runs/vision-validation
 ```
 
-These checks cover this rendered fixture on CPU; they do not establish general
-object-tracking accuracy, GPU behavior or physical RGB-D performance.
+## Limits
 
-## Inspect what happened
-
-`result.json` separates procedure-side lift/placement checks from the independent
-simulator evaluator. Both need more than a completed motion command. The evaluator
-runs after release and before returning home, and is the only consumer of object
-truth. Missing or occluded geometry produces an unknown visual result.
-
-Each registered observation has source RGB, metric depth, sampled support,
-calibration, a preview and metadata in `perception/<id>/`. Rerun shows source
-images at capture time and derived points when the measurement became available.
-Observed surfaces are distinct from the estimated planning boxes. Events link job
-prerequisites, shape assumptions and verification decisions to evidence IDs.
-
-The model assumes a 4 × 4 × 10 cm upright, work-aligned block with a substantially
-visible top face. It uses a static tray and a 45-second evidence age limit for this
-bounded simulation task. That value is not a hardware default. Tracking has its
-own 15-second observation budget. There is one grasp attempt; recovery lowers over
-this known clear tray, opens, withdraws and follows the checked return route.
-Do not use that recovery in an arbitrary scene.
-
-## Compare conditions
-
-```sh
-uv run python -m world_use.examples.perception \
-  --condition nominal --scenario displaced --output runs/nominal
-uv run python -m world_use.examples.perception \
-  --condition depth --scenario displaced --output runs/depth
-uv run python -m world_use.examples.perception \
-  --condition track --scenario displaced --output runs/track
-uv run python -m world_use.examples.perception \
-  --condition verify --scenario displaced --output runs/verify
-```
-
-`nominal` uses a fixed position; `depth` localizes once; `track` refreshes before
-descent and after lift; `verify` adds lift and placement checks. With the color
-fixture, refresh is color resegmentation rather than learned tracking. Add
-`--model edgetam` consistently to a learned-model comparison. Available scenarios
-are `nominal`, `shifted`, `displaced` and `missing`.
-
-Use the same scenario, selector, motion limits and after-release evaluator across
-conditions. Keep full run folders when reporting outcomes, latency, tick delays
-or powered holding time. These small fixture runs are integration checks, not a
-held-out robotics benchmark. See the [design and contracts](../../docs/perception-design.md)
-for validity, failure semantics, recording bounds and deferred work.
+The task assumes a known upright block, a fixed calibrated overhead camera, a clear tray and simulated
+depth. The block tilts a few degrees in the pinch grasp and settles 5 to 9 mm short of the target when
+released, inside the 1 cm tolerance. These runs check that the pieces work together; they are not a
+benchmark of tracking or grasping.

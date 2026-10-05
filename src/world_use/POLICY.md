@@ -117,6 +117,13 @@ A plain list is a sequence; the first step that does not end "done" ends the who
   sees more around it and calibrate again. A camera on the arm moves with the tool and cannot be calibrated this way.
 - A 360 camera serves pinhole cuts (`projection = "equirect"`); once calibrated, a cut is aimed at a point with
   `look_at` and drawn on like any other camera.
+- To measure a point you see (MCP; simulated cameras give depth): `camera_frame(camera, depth=true)`, then
+  `measure_pixels(frame, point=[x, y], target="block")` with x, y in that picture, not in a scaled `wu look`
+  one. It returns `surface_center` in work-frame metres and `from_tool` (that point minus the tool point): the
+  surface the camera sees, not the object's centre. Python: `Client.frame(...)` and `Client.measure(...)`.
+- Tie a phase to it: `run(plan, requires=[{"evidence": measurement id, "max_age_s": 30}])` is refused, or stops
+  before its next step, once the measurement is older than that or its camera was calibrated again. Measure again
+  after the phase to check it: a lifted object kept its `from_tool`.
 
 ## Contact
 

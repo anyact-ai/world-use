@@ -4,22 +4,20 @@
     claude mcp add world-use -- wu mcp       # for example, in Claude Code
 
 It is a thin layer on the daemon's client, like the CLI, and returns the same short text; `look` returns the
-picture itself.
+picture itself. Camera frames and measurements come with their pictures too.
 """
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from io import BytesIO
-from typing import Literal
 
 from . import views
 from .client import DEFAULT_URL, Client, DaemonError
 from .errors import Refused
-from .observations import Perception, crop_image
+from .perception import rectangle
 
 INSTRUCTIONS = ("Read the policy tool or world-use://policy resource before operating the robot, then card and status. "
                 "Plans use metres in the work frame. Every powered hold heats the motors. "
@@ -27,7 +25,24 @@ INSTRUCTIONS = ("Read the policy tool or world-use://policy resource before oper
 HINTS = dict(answer="answer(job={id}, answer=...)", wait="job(job={id})")
 
 
-def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None, perception=None):
+def crop_image(image, box=None, max_side=1024):
+    """A box [left, top, right, bottom] of native pixels scaled so its longer side is max_side, and the matrix that
+    maps the result's pixel edges back to native ones: native = native_from_image @ [x, y, 1]."""
+    if isinstance(max_side, bool) or not isinstance(max_side, int) or not 64 <= max_side <= 2048:
+        raise ValueError("max_side must be in 64..2048")
+    bounds = [0, 0, image.width, image.height] if box is None else list(box)
+    rectangle(bounds, image.size)
+    crop = image.crop(bounds)
+    scale = max_side / max(crop.size)
+    out = crop.resize((max(1, round(crop.width * scale)), max(1, round(crop.height * scale))))
+    return out, dict(size=list(out.size), native_size=list(image.size), crop=bounds,
+                     native_from_image=[[crop.width / out.width, 0, bounds[0]],
+                                        [0, crop.height / out.height, bounds[1]], [0, 0, 1]])
+
+
+def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None, tracker=None):
+    """vision loads EdgeTAM in its own process for select_target and observe_targets; tests and examples can pass
+    any object with the same select/update/forget/close methods as tracker instead."""
     from mcp.server.mcpserver import Image, MCPServer
     from mcp.server.mcpserver.exceptions import ToolError
     from mcp.types import CallToolResult, TextContent, ToolAnnotations
@@ -38,25 +53,36 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         if initial["enabled"] or initial["power_uncertain"]:
             raise Refused("load vision before enabling the arm", "not_ready")
         from .vision_worker import TrackerProcess
-        perception = Perception(c, TrackerProcess(device=device, model_path=model_path))
-    p = perception if perception is not None else Perception(c)
+        tracker = TrackerProcess(device=device, model_path=model_path)
+    tracking = None
+    if tracker is not None:
+        from .tracking import Tracking
+        tracking = Tracking(c, tracker)
 
     @asynccontextmanager
     async def lifespan(_):
         try:
             yield {}
         finally:
-            await asyncio.to_thread(p.close)
+            if tracking is not None:
+                await asyncio.to_thread(tracking.close)
 
     server = MCPServer("world-use", instructions=INSTRUCTIONS, lifespan=lifespan)
 
-    def result(data, text=None, image=None):
+    def result(data, text=None, images=()):
+        """Text, the same data as structured content, and pictures: PIL images or paths of saved ones."""
         content = [TextContent(type="text", text=json.dumps(data) if text is None else text)]
-        if image is not None:
-            buffer = BytesIO()
-            image.save(buffer, format="PNG")
-            content.append(Image(data=buffer.getvalue(), format="png").to_image_content())
+        for image in images:
+            if isinstance(image, str):
+                content.append(Image(path=image).to_image_content())
+            else:
+                buffer = BytesIO()
+                image.save(buffer, format="PNG")
+                content.append(Image(data=buffer.getvalue(), format="png").to_image_content())
         return CallToolResult(content=content, structured_content=data)
+
+    def measured(measurements: list[dict], data: dict):
+        return result(data, images=[m["image"] for m in measurements if m.get("image")])
 
     def job_reply(data):
         return result(data, views.job_text(data, **HINTS))
@@ -107,12 +133,10 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
     @server.tool(annotations=ToolAnnotations(read_only_hint=True))
     def card():
         """What this robot is and can do: joints, gripper, which way the tool points, the frames, the surfaces and
-        objects the kernel knows, cameras, and which short moves are possible from here. Read it once."""
+        objects the kernel knows, cameras (and which give depth), and which short moves are possible from here.
+        Read it once."""
         def describe():
             data = c.capabilities()
-            data["perception"] = dict(configured=p.tracker is not None,
-                                      ready=p.tracker is not None and getattr(p.tracker, "ready", True),
-                                      max_targets=p.MAX_TARGETS)
             return result(data, data["card"])
         return call(describe)
 
@@ -125,31 +149,21 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         return call(describe)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
-    def run(plan: list[dict] | dict | None = None, wait_s: float = 60.0, rehearse: bool = True,
-            requires: list[dict] | None = None, plan_id: str | None = None, request_id: str | None = None):
+    def run(plan: list[dict] | dict, wait_s: float = 60.0, rehearse: bool = True, requires: list[dict] | None = None):
         """Run a plan: a list of steps, e.g. [{"do": "line", "up": 0.05}, {"do": "grip", "expect_mm": [35, 45]}].
         Rehearsed on a twin first; if any step would break a limit nothing moves and every problem is listed.
-        Returns the outcome and the state line, or the
-        question a checkpoint is waiting on.
-        Evidence prerequisites are [{"evidence": receipt_id, "max_age_s": seconds}]; they apply even without rehearsal.
-        Supply plan OR plan_id. A prepared ID executes once; retrying it returns its job. Literal-plan retries
-        need the same request_id, formed as status.session_id + ':' + a unique value. Completion is not verification.
-        """
-        def execute():
-            data = c.run(plan, wait=wait_s, check=rehearse, requires=requires, plan_id=plan_id, request_id=request_id)
-            return job_reply(data)
-        return call(execute)
+        Returns the outcome and the state line, or the question a checkpoint is waiting on.
+        requires: [{"evidence": measurement id, "max_age_s": seconds}]; the run is refused, or stops before its
+        next step, once a measurement is older than that or its camera was calibrated again."""
+        return call(lambda: job_reply(c.run(plan, wait=wait_s, check=rehearse, requires=requires)))
 
-    @server.tool(annotations=ToolAnnotations(read_only_hint=False))
-    def check(plan: list[dict] | dict, requires: list[dict] | None = None,
-              max_age_s: float | None = None, effects: list[dict] | None = None):
-        """Resolve geometry references and rehearse without motion. Returns a prepared ID for run(plan_id=...).
-        move_to accepts {geometry: ID, component: center, offset_m: [x,y,z], offset_frame: work} in to;
-        references require max_age_s. Freeze optional lift/placement criteria from card.effects before acting."""
-        def prepare():
-            data = c.check(plan, prepare=True, requires=requires, max_age_s=max_age_s, effects=effects)
+    @server.tool(annotations=ToolAnnotations(read_only_hint=True))
+    def check(plan: list[dict] | dict):
+        """Rehearse a plan on a twin without running it: time, contacts, heat and every limit it would break."""
+        def rehearse():
+            data = c.check(plan)
             return result(data, data["text"])
-        return call(prepare)
+        return call(rehearse)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
     def answer(job: int, answer: str, wait_s: float = 60.0):
@@ -169,86 +183,57 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True))
     def camera_frame(camera: str | None = None, depth: bool = False):
-        """Inspect native upright RGB pixels. Request aligned metric depth for measurement (MuJoCo cameras).
-        Returns a frame ID for measure_pixels. Captures are bounded; recapture if an old ID has expired."""
+        """A camera's picture at native resolution, with nothing drawn on it, and its frame id for measure_pixels.
+        depth: also capture aligned metric depth (simulated cameras), which measuring needs."""
         def capture():
-            frame = p.capture(camera, depth=depth)
-            return result(dict(frame=frame.id, camera=frame.camera, size=frame.image.size,
-                               depth=frame.depth is not None, age_s=frame.age_s, session=frame.session,
-                               calibration=frame.calibration), image=frame.image)
+            frame = c.frame(camera, depth=depth)
+            return result(dict(frame=frame.id, camera=frame.camera, size=list(frame.image.size),
+                               depth=frame.depth is not None, age_s=round(frame.age_s, 2)), images=[frame.image])
         return call(capture)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
     def measure_pixels(frame: str, point: list[float] | None = None, box: list[int] | None = None,
                        target: str | None = None):
-        """Measure a point or rectangular visible region from camera_frame; register its source evidence.
-        Coordinates are native pixels; box is [left, top, right, bottom], right/bottom exclusive.
-        A region must contain one visible surface. Geometry is in base-frame metres, not an object pose.
-        Receipt ID can be used in run.requires. World assertions remain explicit add_box/fact calls."""
-        return call(lambda: result(p.measure_pixels(frame, point=point, box=box, target=target)))
+        """Measure the visible surface under a point [x, y] or a box [left, top, right, bottom] (right and bottom
+        exclusive) of a camera_frame, in its native pixels; the frame needs depth. Returns an id, valid and
+        reason, and in work-frame metres: surface_center (of what the camera sees, not of a hidden object),
+        visible_bounds and from_tool (surface_center minus the tool point), with the measured pixels drawn on the
+        picture. Pass the id to run(requires=...) so later steps stop once it is too old."""
+        def measure():
+            data = c.measure(frame, point=point, box=box, target=target)
+            return measured([data], data)
+        return call(measure)
 
-    if p.tracker is not None:
+    @server.tool(annotations=ToolAnnotations(read_only_hint=True))
+    def inspect_image(frame: str, crop: list[int] | None = None, max_side: int = 1024):
+        """A camera_frame again, optionally cropped to [left, top, right, bottom] native pixels and scaled to
+        max_side; native_from_image maps its pixels back to the frame's native pixels for measure_pixels."""
+        def inspect():
+            source = c.frame(id=frame)
+            image, mapping = crop_image(source.image, crop, max_side)
+            return result(dict(mapping, frame=source.id, camera=source.camera, age_s=round(source.age_s, 2)),
+                          images=[image])
+        return call(inspect)
+
+    if tracking is not None:
         @server.tool(annotations=ToolAnnotations(read_only_hint=False))
-        def select_target(frame: str, point: list[float] | None = None, box: list[int] | None = None,
-                          label: str | None = None, replace_target: str | None = None):
-            """Segment one native point/box selection. Returns target ID, evidence and exact-frame mask preview.
-            The label is an agent name, not a semantic prompt. Replacement invalidates the old target's plans."""
+        def select_target(frame: str, target: str, point: list[float] | None = None, box: list[int] | None = None):
+            """Select an object by a point or box in a camera_frame, name it target, and measure it as
+            measure_pixels does. observe_targets measures it again later without selecting. A frame older than the
+            tracker accepts is followed into a new one first. tracking says tracked or lost."""
             def select():
-                data = p.select_target(frame, point=point, box=box, label=label, replace_target=replace_target)
-                preview = None
-                if data["status"] == "tracked":
-                    preview, mapping = p.inspect_image(frame, target=data["target"])
-                    data["preview"] = mapping
-                return result(data, image=preview)
+                data = tracking.select(frame, target, point=point, box=box)
+                return measured([data], data)
             return call(select)
 
         @server.tool(annotations=ToolAnnotations(read_only_hint=False))
-        def observe_targets(targets: list[str], depth: bool = True, frames: dict[str, str] | None = None):
-            """Refresh 1..4 selected targets, capturing once per camera, or use explicit camera:frame IDs.
-            Reports masks and metric evidence separately. Lost targets need reselection; no background tracking."""
-            return call(lambda: result(p.observe_targets(targets, depth=depth, frames=frames)))
-
-    @server.tool(annotations=ToolAnnotations(read_only_hint=True))
-    def inspect_image(frame: str | None = None, evidence: str | None = None, crop: list[int] | None = None,
-                      target: str | None = None, max_side: int = 1024):
-        """Inspect a cached capture OR archived evidence image, with exact native-pixel crop mapping.
-        Optional target overlay must match the live capture. Archived evidence stays historical."""
-        def inspect():
-            if (frame is None) == (evidence is None):
-                raise ValueError("provide frame or evidence, not both")
-            if frame is not None:
-                image, metadata = p.inspect_image(frame, box=crop, target=target, max_side=max_side)
-            else:
-                from PIL import Image as PILImage
-                assert evidence is not None
-                if target is not None:
-                    raise ValueError("live target overlays cannot be drawn on archived evidence")
-                saved = c.evidence_image(evidence)
-                source = PILImage.open(BytesIO(base64.b64decode(saved["png"]))).convert("RGB")
-                image, metadata = crop_image(source, box=crop, max_side=max_side)
-                metadata.update(evidence=evidence, source=saved["metadata"], historical=True)
-            return result(metadata, image=image)
-        return call(inspect)
-
-    @server.tool(annotations=ToolAnnotations(read_only_hint=False))
-    def fit_geometry(evidence: str, kind: Literal["known_box", "plane", "axis"] = "known_box", frame: str = "work",
-                     size_m: list[float] | None = None, max_residual_m: float = .003):
-        """Fit registered support: known_box (explicit dimensions, upright visible top), plane, or axis.
-        Returns base-metre geometry IDs for check. Fits expose assumptions; directions can be unsigned."""
-        return call(lambda: result(c.fit_geometry(evidence, kind=kind, frame=frame, size_m=size_m,
-                                                  max_residual_m=max_residual_m)))
-
-    @server.tool(annotations=ToolAnnotations(read_only_hint=False))
-    def verify_effect(job: int, after: str, effect: int = 0):
-        """Evaluate a job's predeclared effect using a new geometry ID and captured tool/gripper feedback.
-        Returns pass/fail/unknown with evidence. Does not move, rewrite criteria or consult simulator truth."""
-        return call(lambda: result(c.verify_effect(job, after, effect=effect)))
-
-    @server.tool(annotations=ToolAnnotations(read_only_hint=True))
-    def inspect_run(since: int = 0, limit: int = 50, job: int | None = None):
-        """Inspect this session's committed history plus live tail, with event cursor and visible record gaps.
-        Includes plans, outcomes, evidence and verification; use inspect_image for archived evidence pixels."""
-        return call(lambda: result(c.inspect_run(since=since, limit=limit, job=job)))
+        def observe_targets(targets: list[str]):
+            """Measure selected targets again in one new frame per camera. A lost target is dropped and its
+            measurements are withdrawn, so runs that require them stop; select it again to continue."""
+            def observe():
+                data = tracking.observe(targets)
+                return measured(data, dict(measurements=data))
+            return call(observe)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True))
     def world():
@@ -305,9 +290,9 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         return call(lambda: views.home_text(c.home_route(steps, note)))
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
-    def home(wait_s: float = 60.0, request_id: str | None = None):
+    def home(wait_s: float = 60.0):
         """Go home along the home route, then fold to the rest pose."""
-        return call(lambda: job_reply(c.home(wait=wait_s, request_id=request_id)))
+        return call(lambda: job_reply(c.home(wait=wait_s)))
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
     def enable() -> str:
@@ -331,11 +316,11 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         return call(recent)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
-    def calibrate(camera: str, points: int = 8, wait_s: float = 60.0, request_id: str | None = None):
+    def calibrate(camera: str, points: int = 8, wait_s: float = 60.0):
         """Find where a camera is from the arm: the tool visits the corners of a box, and at each a question asks
         where the tool point is in `look(camera, grid=True)`; answer x,y pixels (or unseen) with `answer`. The
         reply to the last answer has the fit, installed if it is good, and the workcell lines to keep it."""
-        return call(lambda: job_reply(c.calibrate(camera, points, None, wait_s, request_id=request_id)))
+        return call(lambda: job_reply(c.calibrate(camera, points, None, wait_s)))
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
     def record(note: str = "", context: dict | None = None) -> str:

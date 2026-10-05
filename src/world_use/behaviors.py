@@ -137,7 +137,7 @@ class PathBehavior(Behavior):
             self._pending = None
             k.rebias()
         if self.i == 0:
-            k.check_evidence()
+            k.check_guard()
         return True
 
     def tick(self, k):
@@ -585,8 +585,6 @@ class Gripper(Behavior):
         self.i, self.settle = 0, int(0.3 * k.manifest.rate_hz)
 
     def tick(self, k):
-        if self.i == 0:
-            k.check_evidence()
         if self.i < len(self.traj):
             k.set_gripper(self.traj[self.i], self.v[self.i])
             self.i += 1
@@ -670,7 +668,7 @@ class Grip(Behavior):
         if self.phase == "open":
             if self.pre is not None and self.pre.tick(k) is None:
                 return None
-            k.check_evidence()
+            k.check_guard()
             self.phase = "close"
         if self.phase == "close":
             effort = 0.0 if st.gripper_tau is None else abs(st.gripper_tau)

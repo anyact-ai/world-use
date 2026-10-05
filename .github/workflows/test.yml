@@ -24,7 +24,7 @@ jobs:
         run: .venv/bin/ty check src
       - name: Install headless rendering libraries
         run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1-mesa-dri
-      - name: Validate real EdgeTAM, Python and MCP procedures, recovery and Rerun
+      - name: Run the perception example with real EdgeTAM tracking, then replay and export it
         run: .venv/bin/python scripts/vision_smoke.py --output runs/vision-ci
       - name: Preserve validation evidence
         if: always()

@@ -50,7 +50,10 @@ class Frame:
 
     timestamp uses this host's monotonic clock: file modification time converted to
     that clock, or the start of acquisition when sensor timing is unavailable.
-    HTTP/command sources must themselves serve current images.
+    HTTP/command sources must themselves serve current images. view and calibration
+    are the camera's calibration and its revision when the frame was taken. A simulated
+    camera can add aligned optical-z depth in metres (NaN where nothing was hit) and
+    the tool pose (base frame) from the same physics state.
     """
 
     image: Image.Image
@@ -59,16 +62,10 @@ class Frame:
     timestamp: float = field(default_factory=time.monotonic)
     view: View | None = None
     depth: np.ndarray | None = field(default=None, repr=False)
-    session: str | None = None
     calibration: str | None = None
-    timing: str = "acquisition_start"
-    elapsed: float | None = None
     tool: np.ndarray | None = field(default=None, repr=False)
-    aperture_mm: float | None = None
 
     def __post_init__(self):
-        if self.aperture_mm is not None and not np.isfinite(self.aperture_mm):
-            raise ValueError("captured aperture must be finite")
         if self.view is not None:
             object.__setattr__(self, "view", View.from_dict(self.view.to_dict()).scaled(*self.image.size))
         if self.depth is not None:
@@ -96,8 +93,7 @@ class Frame:
                     png=base64.b64encode(data.getvalue()).decode("ascii"),
                     view=None if self.view is None else self.view.to_dict(),
                     depth=None if self.depth is None else pack(self.depth.astype("<f4").tobytes()),
-                    session=self.session, calibration=self.calibration, timing=self.timing, elapsed=self.elapsed,
-                    tool=None if self.tool is None else self.tool.tolist(), aperture_mm=self.aperture_mm)
+                    calibration=self.calibration, tool=None if self.tool is None else self.tool.tolist())
 
     @classmethod
     def from_dict(cls, data: dict) -> Frame:
@@ -106,8 +102,7 @@ class Frame:
             unpack(data["depth"], image.width * image.height * 4), dtype="<f4").reshape(image.height, image.width)
         return cls(image, data["camera"], data["id"], float(data["timestamp"]),
                    None if data.get("view") is None else View.from_dict(data["view"]), depth,
-                   data.get("session"), data.get("calibration"), data.get("timing", "acquisition_start"),
-                   elapsed=data.get("elapsed"), tool=data.get("tool"), aperture_mm=data.get("aperture_mm"))
+                   data.get("calibration"), data.get("tool"))
 
 
 def pack(data: bytes) -> str:
@@ -323,8 +318,7 @@ class FileCamera(Camera):
         view, revision = self._calibration
         image, stat, timestamp = self._read()
         identity = f"{self.name}:{stat.st_ino}:{stat.st_mtime_ns}:{stat.st_size}"
-        return Frame(self._upright(image), self.name, identity, timestamp, view=view,
-                     calibration=revision, timing="file_mtime")
+        return Frame(self._upright(image), self.name, identity, timestamp, view=view, calibration=revision)
 
 
 class SimCamera(Camera):
@@ -342,9 +336,9 @@ class SimCamera(Camera):
         view, revision = self._calibration
         if not depth:
             return super().capture(k)
-        image, distance, tool, timestamp, aperture = self.body.capture(self.lens, feedback=True)
-        return Frame(image, self.name, timestamp=timestamp, view=view, depth=distance,
-                     calibration=revision, timing="simulation_snapshot", tool=tool, aperture_mm=aperture)
+        image, distance, tool, timestamp = self.body.capture(self.lens)
+        return Frame(image, self.name, timestamp=timestamp, view=view, depth=distance, calibration=revision,
+                     tool=tool)
 
 
 def equirect_dirs(u, v) -> np.ndarray:

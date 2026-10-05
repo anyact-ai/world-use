@@ -11,6 +11,7 @@ from conftest import serving
 from PIL import Image
 
 from world_use import Client, Refused
+from world_use.cameras import Frame
 from world_use.client import DaemonError
 
 
@@ -323,7 +324,7 @@ def test_observation_events_do_not_invalidate_checked_admission(daemon, monkeypa
     def observed(*args, **kwargs):
         report = original(*args, **kwargs)
         c.record(note="looked at the scene", context={"observation": "unchanged"})
-        d.k.emit("evidence", "read-only measurement")
+        c.measure(d.measurements.keep(Frame(Image.new("RGB", (8, 8)), "side")).id, point=[4, 4])
         return report
 
     monkeypatch.setattr(d.rehearser, "check", observed)

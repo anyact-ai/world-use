@@ -21,7 +21,6 @@ import threading
 import time
 import traceback
 from copy import deepcopy
-from dataclasses import replace
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -36,8 +35,7 @@ from .errors import Refused, explain
 from .events import _plain
 from .fit import load as load_fit
 from .kernel import Kernel
-from .perception import EvidenceStore
-from .phases import Phases
+from .perception import Measurements
 from .plan import Report, same_start, snapshot
 from .worker import Rehearser
 from .world import World
@@ -56,10 +54,7 @@ class Daemon:
         self.session = session
         self.cameras = dict(cams or {})
         kernel.cameras = self.cameras                    # the card lists them
-        self.evidence = EvidenceStore(kernel)
-        self.phases = Phases(kernel, self.evidence)
-        self._submissions: dict[str, tuple[str, tuple[int, dict]]] = {}
-        self._submission_lock = threading.Lock()
+        self.measurements = Measurements(kernel, self.cameras)
         kernel.record_session(session=self.session, config=config or {})
         self.shots = 0
         self.calibrations: dict[int, dict] = {}         # job id -> camera, picture size and, once solved, the result
@@ -107,23 +102,17 @@ class Daemon:
         if method == "GET" and route == ["status"]:
             with k.lock:
                 status = views.status(k)
-                status.update(session=self.session, session_id=self.evidence.session,
-                              line=f"{self.session['adapter']} | {status['line']}")
+                status.update(session=self.session, line=f"{self.session['adapter']} | {status['line']}")
                 return 200, status
         if method == "GET" and route == ["card"]:
-            from .procedures import EFFECTS
             # The worker probes reach before the lock is taken: the control loop must never wait for it.
             reach = self.rehearser.reach_line(k) if k.enabled and k.active is None else ""
             with k.lock:
                 card = views.card(k, reach=lambda _: reach)
-            return 200, dict(card=card, schema_version=1,
-                             session_id=self.evidence.session, session=self.session,
+            return 200, dict(card=card, session=self.session,
                              cameras={name: dict(depth=isinstance(cam, cameras.SimCamera),
                                                  calibrated=cam.view is not None)
                                       for name, cam in self.cameras.items()},
-                             effects=EFFECTS, geometry_fits=["known_box", "plane", "axis"],
-                             limits=dict(geometry=Phases.MAX_GEOMETRY, prepared_plans=Phases.MAX_PLANS,
-                                         evidence_support_bytes=EvidenceStore.MAX_SUPPORT_BYTES, request_keys=1024),
                              collision_coverage=dict(checked=["padded_link_segments", "tool_point_surfaces"],
                                  unchecked=["fingers", "payload", "pedestal", "self_collision"]))
         if method == "GET" and route == ["help"]:
@@ -145,80 +134,30 @@ class Daemon:
         if method == "GET" and route == ["world"]:
             with k.lock:
                 return 200, dict(k.world.to_dict(), text=views.world_text(k))
-        if method == "GET" and route == ["inspect"]:
-            from .records import page
-            with k.lock:
-                status = views.status(k)
-            history = page(k.run_dir, since=int(query.get("since", 0)), limit=int(query.get("limit", 50)),
-                           job=int(query["job"]) if "job" in query else None, live=k.events.since(0))
-            if status["recording"]["error"]:
-                history["record_complete"] = False
-                history["problems"].append(status["recording"]["error"])
-            return 200, dict(session_id=self.evidence.session, status=status, closed=k.evidence_closed, **history)
-        if method == "GET" and route == ["evidence_image"]:
-            import base64
-            from io import BytesIO
-            from uuid import UUID
-
-            from PIL import Image
-            identity = str(UUID(query["evidence"])).replace("-", "")
-            if k.run_dir is None:
-                raise Refused("this session has no persisted images", "data_unavailable")
-            folder = k.run_dir / "perception" / identity
-            try:
-                metadata = json.loads((folder / "measurement.json").read_text())
-                metadata.pop("selection", None)  # Dense selection support stays in the artifact, not model context.
-                with Image.open(folder / "rgb.png") as image:
-                    data = BytesIO()
-                    image.save(data, format="PNG")
-            except FileNotFoundError:
-                raise Refused("source image has not committed or was lost; inspect recording status",
-                              "data_unavailable") from None
-            return 200, dict(metadata=metadata, png=base64.b64encode(data.getvalue()).decode("ascii"), historical=True)
         if method == "GET" and route == ["frame"]:
+            if "id" in query:
+                return 200, self.measurements.frame(query["id"]).to_dict()
             _, cam = self._camera(query.get("camera"))
             depth = str(query.get("depth", "false")).lower()
             if depth not in ("true", "false", "1", "0"):
                 raise ValueError("depth must be true or false")
             if depth in ("true", "1"):
                 if not isinstance(cam, cameras.SimCamera):
-                    raise Refused("this camera does not provide aligned metric depth", "missing_depth")
+                    raise Refused(f"camera {cam.name!r} has no aligned metric depth", "missing_depth",
+                                  "depth comes from simulated (MuJoCo) cameras")
                 frame = cam.capture(k, depth=True)
             else:
                 frame = cam.capture(k)
-            elapsed = k.clock.now() - k.t0 - (time.monotonic() - frame.timestamp)
-            return 200, self.evidence.remember(replace(frame, elapsed=elapsed)).to_dict()
+            return 200, self.measurements.keep(frame).to_dict()
         if method != "POST":
             return 404, dict(error=f"no route {method} /{path.strip('/')}")
         if route == ["run"]:
             if body.get("checked"):
                 raise Refused("submit the plan explicitly; checked plans are no longer shared between clients", "spec")
-            def submit():
-                if body.get("plan_id") is not None:
-                    if body.get("spec") is not None or body.get("requires") or not body.get("check", True):
-                        raise ValueError("prepared plans cannot override spec, prerequisites or rehearsal")
-                    prepared = self.phases.load(body["plan_id"])
-                    return self._run(prepared["plan"], 0, True, prepared["requires"], prepared=prepared)
-                return self._run(body["spec"], 0, bool(body.get("check", True)), body.get("requires", []))
-            if body.get("plan_id") is not None:
-                key = f"{self.evidence.session}:{body['plan_id']}"
-                if body.get("request_id") not in (None, key):
-                    raise ValueError("a prepared plan has one request_id; check again for another execution")
-                body = dict(body, request_id=key)
-            return self._once("run", body, wait, submit)
+            return self._run(body["spec"], wait, bool(body.get("check", True)), body.get("requires"))
         if route == ["look"]:
             return 200, self.look(body.get("camera"), body.get("spec"), bool(body.get("grid")))
         if route == ["check"]:
-            if body.get("prepare"):
-                prepared = self.phases.prepare(body["spec"], requires=body.get("requires"),
-                                               max_age_s=body.get("max_age_s"), effects=body.get("effects"))
-                report = self.rehearser.check(prepared["plan"], k)
-                out = dict(report.to_dict(), text=str(report))
-                if not report.refused:
-                    out["prepared"] = self.phases.save(prepared, report.to_dict())
-                return 200, out
-            if any(body.get(key) is not None for key in ("requires", "max_age_s", "effects")):
-                raise ValueError("requires, max_age_s and effects need prepare=true")
             report = self.rehearser.check(body["spec"], k)
             return 200, dict(report.to_dict(), text=str(report))
         if route == ["answer"]:
@@ -248,32 +187,18 @@ class Daemon:
             with k.lock:
                 return 200, dict(home=views.status(k)["home"], **rehearsal)
         if route == ["home"]:
-            return self._once("home", body, wait, lambda: self._job(
-                k.submit({"do": "seq", "steps": k.home_plan(), "label": "home"}).id, 0))
+            return self._job(k.submit({"do": "seq", "steps": k.home_plan(), "label": "home"}).id, wait)
         if route == ["world"]:
             with k.lock:
                 return self._world(body)
         if route == ["calibrate"]:
-            return self._once("calibrate", body, wait, lambda: self.calibrate(
-                body["camera"], int(body.get("points", 8)), body.get("spread"), 0))
-        if route == ["fit_geometry"]:
-            return 200, self.phases.fit(body["evidence"], kind=body.get("kind", "known_box"),
-                                       frame=body.get("frame", "work"), size_m=body.get("size_m"),
-                                       max_residual_m=body.get("max_residual_m", .003))
-        if route == ["verify_effect"]:
-            return 200, self.phases.verify(int(body["job"]), body.get("effect", 0), body["after"])
-        if route == ["invalidate_target"]:
-            if not isinstance(body.get("target"), str) or not 0 < len(body["target"]) <= 128:
-                raise ValueError("target must be a nonempty reference of at most 128 characters")
-            self.evidence.invalidate(body["target"])
-            return 200, dict(target=body["target"], status="lost")
+            return self.calibrate(body["camera"], int(body.get("points", 8)), body.get("spread"), wait)
+        if route == ["measure"]:
+            return 200, self.measurements.measure(body["frame"], point=body.get("point"), box=body.get("box"),
+                                                  mask=body.get("mask"), target=body.get("target"))
+        if route == ["withdraw"]:
+            return 200, dict(withdrawn=self.measurements.withdraw(body["measurements"], str(body.get("reason", ""))))
         if route == ["record"]:
-            if "evidence" in body:
-                receipt = self.evidence.register(body["evidence"])
-                if body.get("context") or body.get("note"):
-                    k.emit("annotation", body.get("note", "measurement context"),
-                           context=body.get("context", {}), evidence=receipt["id"])
-                return 200, receipt
             if body.get("context") or body.get("note"):
                 k.emit("annotation", body.get("note", "agent context"), context=body.get("context", {}))
             return 200, dict(summary=k.save_record(), run=str(k.run_dir) if k.run_dir else None)
@@ -281,61 +206,18 @@ class Daemon:
             return 200, dict(summary=self.shutdown())
         return 404, dict(error=f"no route POST /{path.strip('/')}")
 
-    def _once(self, operation, body, wait, submit):
-        """A session-scoped key is reserved through admission. No completed key is evicted/replayed."""
-        key = body.get("request_id")
-        if key is None:
-            code, result = submit()
-        else:
-            prefix = self.evidence.session + ":"
-            if not isinstance(key, str) or not key.startswith(prefix) or not len(prefix) < len(key) <= 160:
-                raise Refused("request_id must start with this daemon's session_id followed by ':'", "request_session",
-                              "inspect the previous run; never replay an uncertain submission in a new session")
-            payload = dict(body)
-            payload.pop("wait", None)
-            encoded = json.dumps([operation, payload], sort_keys=True, allow_nan=False).encode()
-            digest = hashlib.sha256(encoded).hexdigest()
-            with self._submission_lock:
-                previous = self._submissions.get(key)
-                if previous is not None:
-                    if previous[0] != digest:
-                        raise Refused("request_id was already used for a different submission", "request_conflict")
-                    code, result = deepcopy(previous[1])
-                else:
-                    if len(self._submissions) >= 1024:
-                        raise Refused("session submission-key capacity reached", "request_capacity")
-                    # Preserve an uncertain reservation even if an unexpected exception interrupts admission.
-                    uncertain: tuple[int, dict] = (409, dict(refused=dict(
-                        message="submission outcome uncertain; inspect jobs",
-                        rule="request_uncertain", hint="do not replay this action")))
-                    self._submissions[key] = digest, uncertain
-                    try:
-                        code, result = submit()
-                    except Refused as e:
-                        code, result = 409, dict(refused=e.to_dict())
-                    except (ValueError, KeyError, TypeError) as e:
-                        code, result = 400, dict(error=explain(e))
-                    self._submissions[key] = digest, deepcopy((code, result))
-        job_id = result.get("id")
-        if code == 200 and isinstance(job_id, int):
-            _, current = self._job(job_id, wait)
-            return code, dict(result, **current)
-        return code, result
-
-    def _run(self, spec, wait: float, rehearse: bool, requires=None, *, prepared=None) -> tuple[int, dict]:
-        """Rehearse an idle snapshot, then admit only while that snapshot is still current."""
-        behavior = build(spec)       # malformed plans are request errors, before rehearsal or queueing
+    def _run(self, spec, wait: float, rehearse: bool, requires=None) -> tuple[int, dict]:
+        """Rehearse an idle snapshot, then admit only while that snapshot is still current. Required measurements
+        are checked before rehearsal, at admission and before each step, with or without rehearsal."""
+        build(spec)                  # malformed plans are request errors, before rehearsal or queueing
         k = self.k
-        requirements = self.evidence.resolve([] if requires is None else requires)
-        if requirements:
-            k.evidence_capable(behavior)
-            k.check_requirements(requirements)
+        guard = self.measurements.guard(requires or [])
+        if guard is not None:
+            guard()
         report: Report | None = None
         admission = None
         if rehearse:
             with k.lock:
-                if prepared is not None:
-                    self.phases.load(prepared["id"])
                 if not k.enabled or k.faulted or k.power_uncertain:
                     raise Refused("checked runs need torque on, confirmed power and a cleared fault", "not_ready",
                                   "inspect status and resolve the power state before running")
@@ -367,9 +249,7 @@ class Daemon:
                         + self.rehearser.reach_line(k))
                 return 200, dict(id=None, status="refused", incident=text, rehearsal=report.to_dict(),
                                  line=views.state_line(k))
-        job = k.submit(spec, admission=admission, requires=requirements)
-        if prepared is not None:
-            self.phases.submitted(job.id, prepared)
+        job = k.submit(spec, admission=admission, guard=guard)
         code, d = self._job(job.id, wait)
         if report is not None:
             d["rehearsal"] = dict(seconds=report.seconds, moving_s=report.moving_s, ok=report.ok)
@@ -502,11 +382,6 @@ class Daemon:
         if wait and not job.finished and job.status != "waiting":
             job.attention.wait(wait)
         d = job.to_dict()
-        with self.phases.lock:
-            phase = self.phases.jobs.get(job_id)
-            if phase is not None:
-                d["phase"] = phase["id"]
-                d["effects"] = [deepcopy(effect["spec"]) for effect in phase["effects"]]
         d["line"] = views.state_line(self.k)
         if job.outcome is not None and not job.outcome.ok:
             d["incident"] = views.incident(self.k, job, reach=self.rehearser.reach_line)

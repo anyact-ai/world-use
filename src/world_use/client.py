@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .cameras import Frame
-    from .perception import Measurement
 
 DEFAULT_URL = os.environ.get("WORLD_USE_URL", "http://127.0.0.1:7431")
 
@@ -49,46 +48,20 @@ class Client:
         return self._call("GET", "/card")["card"]
 
     def capabilities(self) -> dict:
-        """The embodiment card plus structured cameras, supported effects and limits."""
+        """The card's text, plus its cameras: which are calibrated and which give depth."""
         return self._call("GET", "/card")
 
-    def run(self, spec=None, wait: float = 0.0, check: bool = True, *, requires: list[dict] | None = None,
-            plan_id: str | None = None, request_id: str | None = None) -> dict:
+    def run(self, spec, wait: float = 0.0, check: bool = True, *, requires: list[dict] | None = None) -> dict:
         """Rehearse (unless check=False), then run. A plan the kernel would refuse comes back refused, unmoved.
-        A prepared plan fixes data and criteria; it still rehearses against the current state.
-        Retrying a prepared ID returns its original job. Literal plans can supply session_id:unique request_id."""
-        return self._call("POST", "/run", dict(spec=spec, wait=wait, check=check,
-                                               requires=[] if requires is None else requires,
-                                               plan_id=plan_id, request_id=request_id))
+        Each submission includes its own plan. requires=[{"evidence": measurement ID, "max_age_s": seconds}]
+        refuses the run, or its next step, once a measurement is older than that or its camera was recalibrated."""
+        return self._call("POST", "/run", dict(spec=spec, wait=wait, check=check, requires=requires or []))
 
     def job(self, job_id: int, wait: float = 0.0) -> dict:
         return self._call("GET", f"/jobs/{job_id}?wait={wait}")
 
-    def check(self, spec, *, prepare=False, requires=None, max_age_s=None, effects=None) -> dict:
-        return self._call("POST", "/check", dict(spec=spec, prepare=prepare, requires=requires,
-                                                  max_age_s=max_age_s, effects=effects))
-
-    def fit_geometry(self, evidence: str, *, kind="known_box", frame="work", size_m=None,
-                     max_residual_m=.003) -> dict:
-        return self._call("POST", "/fit_geometry", dict(evidence=evidence, kind=kind, frame=frame,
-                                                         size_m=size_m, max_residual_m=max_residual_m))
-
-    def verify_effect(self, job: int, after: str, *, effect=0) -> dict:
-        return self._call("POST", "/verify_effect", dict(job=job, after=after, effect=effect))
-
-    def invalidate_target(self, target: str) -> dict:
-        return self._call("POST", "/invalidate_target", dict(target=target))
-
-    def inspect_run(self, *, since=0, limit=50, job=None) -> dict:
-        from urllib.parse import urlencode
-        query = dict(since=since, limit=limit)
-        if job is not None:
-            query["job"] = job
-        return self._call("GET", "/inspect?" + urlencode(query))
-
-    def evidence_image(self, evidence: str) -> dict:
-        from urllib.parse import urlencode
-        return self._call("GET", "/evidence_image?" + urlencode(dict(evidence=evidence)))
+    def check(self, spec) -> dict:
+        return self._call("POST", "/check", dict(spec=spec))
 
     def answer(self, job_id: int, answer: str, wait: float = 0.0) -> dict:
         return self._call("POST", "/answer", dict(job=job_id, answer=answer, wait=wait))
@@ -112,8 +85,8 @@ class Client:
     def home_route(self, steps: list | None, note: str = "") -> dict:
         return self._call("POST", "/home_route", dict(steps=steps, note=note))
 
-    def home(self, wait: float = 0.0, *, request_id: str | None = None) -> dict:
-        return self._call("POST", "/home", dict(wait=wait, request_id=request_id))
+    def home(self, wait: float = 0.0) -> dict:
+        return self._call("POST", "/home", dict(wait=wait))
 
     def world(self, **change) -> dict:
         return self._call("POST", "/world", change) if change else self._call("GET", "/world")
@@ -130,32 +103,44 @@ class Client:
         and nothing else); returns its path."""
         return self._call("POST", "/look", dict(camera=camera, spec=spec, grid=grid))
 
-    def frame(self, camera: str | None = None, *, depth: bool = False) -> Frame:
-        """Read an unannotated frame in memory, without recording it. Pixels are not downscaled."""
+    def frame(self, camera: str | None = None, *, depth: bool = False, id: str | None = None) -> Frame:
+        """An unannotated frame at native resolution, not recorded: a new one from a camera (depth=True adds
+        aligned metric depth, from simulated cameras), or with id, one the daemon still holds."""
         from urllib.parse import urlencode
 
         from .cameras import Frame
-        params = dict(camera=camera) if camera is not None else {}
-        if depth:
-            params["depth"] = "true"
-        query = "?" + urlencode(params) if params else ""
-        return Frame.from_dict(self._call("GET", "/frame" + query))
+        if id is not None:
+            params = dict(id=id)
+        else:
+            params = ({} if camera is None else dict(camera=camera)) | (dict(depth="true") if depth else {})
+        return Frame.from_dict(self._call("GET", "/frame" + ("?" + urlencode(params) if params else "")))
+
+    def measure(self, frame: Frame | str, *, point=None, box=None, mask=None, target: str | None = None) -> dict:
+        """Measure the visible surface under a point [x, y], a box [left, top, right, bottom] (right and bottom
+        exclusive) or a boolean mask of a frame (or its id), from its depth. Returns the measurement in work-frame
+        metres, with the path of the frame's picture with the measured pixels drawn on it."""
+        body = dict(frame=frame if isinstance(frame, str) else frame.id, point=point, box=box, target=target)
+        if mask is not None:
+            import numpy as np
+
+            from .cameras import pack
+            body["mask"] = pack(np.packbits(np.asarray(mask, bool)).tobytes())
+        return self._call("POST", "/measure", body)
+
+    def withdraw(self, measurements: list[str], reason: str) -> dict:
+        """Mark measurements as no longer true (a tracker lost their target): runs that require them stop."""
+        return self._call("POST", "/withdraw", dict(measurements=measurements, reason=reason))
 
     def help(self) -> dict:
         return self._call("GET", "/help")["steps"]
 
-    def calibrate(self, camera: str, points: int = 8, spread: float | None = None, wait: float = 0.0,
-                  *, request_id: str | None = None) -> dict:
+    def calibrate(self, camera: str, points: int = 8, spread: float | None = None, wait: float = 0.0) -> dict:
         """Start calibrating a camera from the arm: a job whose checkpoints ask where the tool point is."""
-        return self._call("POST", "/calibrate", dict(camera=camera, points=points, spread=spread, wait=wait,
-                                                      request_id=request_id))
+        return self._call("POST", "/calibrate", dict(camera=camera, points=points, spread=spread, wait=wait))
 
-    def record(self, *, context: dict | None = None, note: str = "", evidence: Measurement | None = None) -> dict:
+    def record(self, *, context: dict | None = None, note: str = "") -> dict:
         """Write the flight record so far, without stopping anything."""
-        payload = dict(context=context, note=note)
-        if evidence is not None:
-            payload["evidence"] = evidence.request()
-        return self._call("POST", "/record", payload)
+        return self._call("POST", "/record", dict(context=context, note=note))
 
     def shutdown(self) -> dict:
         return self._call("POST", "/shutdown", {})

@@ -79,11 +79,9 @@ camera images, structured status, job results, and the same actions as the CLI.
 The daemon outlives agent calls. An accepted plan continues after a client disconnects;
 use checkpoints where it needs an answer.
 
-The [procedure tools](docs/procedure-tools.md) add registered geometry references,
-checked phases, outcome verification and retrievable evidence. Optional
-`wu mcp --vision` exposes EdgeTAM selection and refresh. The
-[complete simulation procedure](docs/procedure-tools.md#run-the-complete-example)
-exercises the workflow through MCP and checks success independently after release.
+An agent can also measure what a camera sees, in metres in the work frame, and make a
+plan stop once that measurement is too old; `wu mcp --vision` adds EdgeTAM tracking.
+Depth comes from simulated cameras for now. See [measuring from pictures](docs/perception.md).
 
 ## Python
 
@@ -108,11 +106,8 @@ Plans are JSON data: save them, generate them in code, and inspect them before
 execution. `Client.run` rehearses against the current state. Embedded `Kernel.run`
 checks each step as it starts; call `check` explicitly for a whole-plan rehearsal.
 
-For visual feedback inside a procedure, the optional [EdgeTAM tracker](examples/tracking)
-follows a selected object through camera frames. It runs locally with bounded history
-and reports image-space observations, including lost or stale tracking. The
-[RGB-D block example](examples/perception) adds measured geometry, evidence freshness
-checks, visual lift/placement verification, and source evidence in Rerun.
+`Client.frame`, `Client.measure` and `Client.run(..., requires=[...])` give Python the same
+[measurements](docs/perception.md) as MCP.
 
 ## What the runtime provides
 

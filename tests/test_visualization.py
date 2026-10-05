@@ -66,19 +66,17 @@ def component_rows(path, entity, component):
     return sorted(out, key=lambda pair: pair[0])
 
 
-def test_evidence_uses_capture_and_availability_times(run_folder):
+def test_a_measurement_shows_its_picture_at_capture_and_its_points_when_measured(run_folder):
     rr = pytest.importorskip("rerun")
     rr.set_strict_mode(True)
-    folder = run_folder / "perception" / "one"
-    folder.mkdir(parents=True)
-    for name in ("rgb.png", "overlay.png"):
-        Image.new("RGB", (16, 16), "orange").save(folder / name)
-    save_arrays(folder / "surfaces.npz", dict(points=np.array([[.3, .1, .2]]), depth=np.ones((16, 16))))
-    event = dict(seq=1, t=3, kind="evidence_saved", level="info", message="saved",
-                 data=dict(path="perception/one", measurement=dict(id="one", camera="side", target="block",
-                           capture_t=1, available_t=2, valid=True)))
+    (run_folder / "perception").mkdir()
+    Image.new("RGB", (16, 16), "orange").save(run_folder / "perception/one.png")
+    save_arrays(run_folder / "perception/one.npz", dict(points=np.array([[.3, .1, .2]]), pixels=np.array([[8, 8]])))
+    event = dict(seq=1, t=2, kind="measurement", level="info", message="block at F+0.300 L+0.100 U+0.200",
+                 data=dict(measurement=dict(id="one", camera="side", target="block", valid=True, capture_t=1,
+                                            image="perception/one.png")))
     (run_folder / "events.jsonl").write_text(json.dumps(event) + "\n")
-    output = view(run_folder, output=run_folder / "evidence.rrd")
+    output = view(run_folder, output=run_folder / "measurement.rrd")
     assert component_rows(output, "/observations/side", "EncodedImage:blob")[0][0] == 1_000_000_000
     rows = component_rows(output, "/scene/observed/block", "Points3D:positions")
     assert rows[0][0] == 2_000_000_000

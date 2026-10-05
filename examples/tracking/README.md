@@ -81,6 +81,11 @@ an observation; it becomes `stale` as it ages (one second by default, configurab
 with `max_age_s`). Repeated file frames return the same observation without
 advancing tracking. Camera read errors propagate to the procedure.
 
+To turn a mask into numbers a plan can use, measure it with the frame it came from:
+`robot.measure(frame, mask=observation.mask, target="block")` returns the same measurement as
+MCP's `measure_pixels`, for frames captured with `depth=True`. MCP agents get selection and
+tracking as tools with `wu mcp --vision`; see [measuring from pictures](../../docs/perception.md#tracking).
+
 ## Limits and memory
 
 An empty mask reports `lost`. `tracked` means the model produced a mask, not that
