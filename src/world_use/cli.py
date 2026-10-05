@@ -288,7 +288,8 @@ def main(argv=None) -> int:
             return 0
         if a.cmd == "down":
             r = c.shutdown()
-            print(json.dumps(r["summary"]) if a.json else views.record_line(r["summary"]))
+            print(json.dumps(r["summary"]) if a.json
+                  else f"{r['run'] or '(no run folder)'}\n{views.record_line(r['summary'])}")
             return 0
         if a.cmd == "record":
             r = c.record(note=a.note, context=_spec(a.context) if a.context else None)

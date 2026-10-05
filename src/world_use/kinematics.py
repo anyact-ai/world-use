@@ -79,7 +79,7 @@ class Chain:
             path.append(by_child[link])
             link = by_child[link].parent
         path.reverse()
-        self._length = sum(float(np.linalg.norm(j.origin[:3, 3])) for j in path)
+        self.length = sum(float(np.linalg.norm(j.origin[:3, 3])) for j in path)   # m, root to tool, any pose
         self.active = [j for j in path if j.type in MOVABLE]
         if any(j.type == "prismatic" for j in self.active):
             raise ValueError("the runtime supports rotational arm joints only; prismatic joints are unsupported")
@@ -138,7 +138,7 @@ class Chain:
 
     def motion_bound(self, a, b) -> float:
         """Upper bound on any stick-model point's travel during linear joint interpolation (metres)."""
-        return float(self._length * np.abs(np.asarray(b) - np.asarray(a)).sum())
+        return float(self.length * np.abs(np.asarray(b) - np.asarray(a)).sum())
 
     def axes(self, q) -> np.ndarray:
         """Each moving joint's axis in the root frame, one row per joint."""

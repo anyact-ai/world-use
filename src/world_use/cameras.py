@@ -447,7 +447,7 @@ REBOT_LENGTH = 0.9587                   # m from the reBot's base through its jo
 
 def sim_cameras(body, world) -> dict[str, Camera]:
     """SIM_VIEWS, scaled to the simulated arm's length."""
-    s = np.linalg.norm(np.diff(body.chain.points(body.q), axis=0), axis=1).sum() / REBOT_LENGTH
+    s = body.chain.length / REBOT_LENGTH
     return {name: SimCamera(name, View.look_at(world.to_base("work", s * np.asarray(eye)),
                                                world.to_base("work", s * np.asarray(at)), 55.0, (800, 600),
                                                world.frame("work").T[:3, :3] @ np.asarray(up, float)), body)

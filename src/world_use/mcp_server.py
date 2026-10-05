@@ -127,7 +127,8 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         """Release at rest, save the record, and stop the daemon. Refused while raised or busy."""
         def stop_daemon():
             data = c.shutdown()
-            return result(data, "daemon stopped; " + views.record_line(data["summary"]))
+            return result(data, f"daemon stopped; record {data['run'] or '(none)'}; "
+                                f"{views.record_line(data['summary'])}")
         return call(stop_daemon)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True))

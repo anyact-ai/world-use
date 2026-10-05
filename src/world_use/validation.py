@@ -22,19 +22,6 @@ def _numbers(v, n: int) -> bool:
     return isinstance(v, (list, tuple)) and len(v) == n and all(map(_finite, v))
 
 
-def number(value, field):
-    if not _finite(value):
-        raise Refused(f'{field} must be a finite number', 'spec')
-    return value
-
-
-def vector(value, field, length):
-    if not isinstance(value, (list, tuple)) or len(value) != length:
-        raise Refused(f'{field} must contain {length} numbers', 'spec')
-    for v in value:
-        number(v, field)
-
-
 @dataclass(frozen=True)
 class Param:
     """A parameter's type: its JSON Schema, the check validate() applies, and what that check wants, in words."""

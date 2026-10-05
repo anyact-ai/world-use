@@ -204,7 +204,7 @@ class Daemon:
                 k.emit("annotation", body.get("note", "agent context"), context=body.get("context", {}))
             return 200, dict(summary=k.save_record(), run=str(k.run_dir) if k.run_dir else None)
         if route == ["shutdown"]:
-            return 200, dict(summary=self.shutdown())
+            return 200, dict(summary=self.shutdown(), run=None if k.run_dir is None else str(k.run_dir))
         return 404, dict(error=f"no route POST /{path.strip('/')}")
 
     def _run(self, spec, wait: float, rehearse: bool, requires=None) -> tuple[int, dict]:
@@ -612,10 +612,11 @@ def main(argv=None):
     try:
         d.rehearser.check([], k)            # build the twin once: a robot it cannot model must not start
     except Exception as e:
-        k.close()
-        d.rehearser.close()                 # its worker outlives an exiting parent
-        d.http.server_close()
-        raise ValueError(f"the rehearsal twin cannot model this robot: {e}") from e
+        if getattr(e, "rule", None) != "worker_extension":    # registered plugin steps are refused per plan
+            k.close()
+            d.rehearser.close()             # its worker outlives an exiting parent
+            d.http.server_close()
+            raise ValueError(f"the rehearsal twin cannot model this robot: {e}") from e
     d.start()
     if a.enable:
         try:

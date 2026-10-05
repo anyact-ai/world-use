@@ -24,7 +24,7 @@ def _gripper(k, pos, effort=None) -> str:
         return ""
     a = g.aperture(pos)
     s = f"grip {pos:.2f}{g.unit}" + ("" if a is None else f" ({1000 * a:.0f}mm)")
-    return s + ("" if effort is None else f" {effort:+.1f}")
+    return s + ("" if effort is None else f" {effort:+.2f}")
 
 
 def state_line(k) -> str:
@@ -261,7 +261,7 @@ def card(k, reach=None) -> str:
     lines += [box_line(k, b) for b in k.world.boxes.values()]
     cams = k.cameras
     if cams:
-        lines.append(f"cameras: {', '.join(cams)}. `wu look NAME` saves an image and prints its path.")
+        lines.append(f"cameras: {', '.join(cams)}. look at one for a picture with what the kernel knows drawn on it.")
     if k.enabled and k.active is None:
         lines.append((reach or reach_line)(k))
     if k.fit is not None:

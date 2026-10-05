@@ -47,9 +47,9 @@ def tour(k, camera: str, size, points: int = 8, spreads=(0.12, 0.09, 0.06), chec
             steps.append({"do": "move_to", "to": [round(float(c), 4) for c in corner],
                           "label": f"calibration point {i + 1}"})
             steps.append({"do": "checkpoint", "view": camera, "expect": None,
-                          "ask": f"calibrating {camera!r} ({i + 1}/{points}): where is the tool point{where} in "
-                                 f"`wu look {camera} --grid`? answer x,y in pixels of that {w}x{h} picture "
-                                 "(0,0 top left), or unseen"})
+                          "ask": f"calibrating {camera!r} ({i + 1}/{points}): where is the tool point{where} when "
+                                 f"you look at {camera} with the grid? answer x,y in pixels of that {w}x{h} "
+                                 "picture (0,0 top left), or unseen"})
         steps.append({"do": "move_to", "to": [round(float(c), 4) for c in here], "label": "back to where it started"})
         report = check(steps, k)
         if not report.refused:

@@ -844,10 +844,10 @@ class Hold(Behavior):
 
 
 class Checkpoint(Behavior):
-    """Stop and ask; the arm holds until `wu answer`. A check assumes the expected answer and says so.
+    """Stop and ask; the arm holds until the question is answered. A check assumes the expected answer and says so.
 
     ask     the question, e.g. "is the black loop between the jaws?"
-    view    the camera that answers it best (`wu look VIEW`); roi = [x0, y0, x1, y1] in that image
+    view    the camera that answers it best (look at it); roi = [x0, y0, x1, y1] in that image
     expect  the answer that means carry on (default "yes"); any other answer ends the plan. null: any answer carries
             on, and is kept in the outcome with where the tool was (a measurement, like "512,300" in a picture)
     """

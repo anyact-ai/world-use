@@ -79,7 +79,7 @@ def robot_of(folder: Path | str):
 def overview(chain: Chain) -> tuple[np.ndarray, np.ndarray]:
     """An eye and the point it looks at, (forward, left, up) from the arm's base: in front of the arm, to its right
     and above, scaled to the length of its links."""
-    size = float(np.linalg.norm(np.diff(chain.points(np.zeros(chain.n)), axis=0), axis=1).sum())
+    size = chain.length
     target = size * np.array([.3, 0, .2])
     return target + size * np.array([.4, -.8, .5]), target
 
