@@ -277,11 +277,14 @@ def test_observation_events_do_not_invalidate_checked_admission(daemon, monkeypa
 
 def test_a_consumed_stop_still_invalidates_rehearsal(daemon, monkeypatch):
     d, c = daemon
+    d.stop_loop.set()
+    d.control.join(2)
     original = d.rehearser.check
 
     def stopped(*args, **kwargs):
         report = original(*args, **kwargs)
         c.stop()
+        d.k.tick()
         assert d.k._stop is None
         return report
 
