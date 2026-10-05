@@ -48,7 +48,8 @@ def test_up_refuses_a_robot_the_twin_cannot_model_and_leaves_no_daemon(tmp_path,
 
     example = Path(__file__).resolve().parents[1] / "examples" / "adapters"
     shutil.copy(example / "planar.urdf", tmp_path)
-    gripper = "\n[gripper]\nclosed = 0.0\nopen = 1.0\n"         # no fingers in the URDF for MuJoCo to move
+    # A gripper the planar URDF has no joint for: the twin has nothing to move.
+    gripper = "\n[gripper]\nclosed = 0.0\nopen = 1.0\napproach = [1.0, 0.0, 0.0]\nopens_along = [0.0, 1.0, 0.0]\n"
     (tmp_path / "robot.toml").write_text((example / "planar.toml").read_text() + gripper)
     (tmp_path / "cell.toml").write_text('robot = "robot.toml"\n')
     url = unused_url()
