@@ -210,7 +210,7 @@ class Kernel:
         self.last_touch = 0                        # event seq of the last contact (0 = none this session)
         self.home_route: tuple[list, int] | None = None   # (specs, event seq when set)
         self._thermal_home: Job | None = None
-        self._finding: tuple[str, int | None] | None = None   # the watchdog finding of the last tick, reported once
+        self._finding: tuple | None = None         # the watchdog finding of the last tick, reported once
         self._warned: set[int] = set()
         self._sense: ContactSense | None = None    # collision check for every move (guarded moves add their own)
         self.held_at: float | None = None          # where the fingers closed on something, known to the world or not
@@ -431,6 +431,7 @@ class Kernel:
                 raise Refused("motor power is unconfirmed: release at a freshly measured rest pose first",
                               "power_uncertain")
             self.faulted = False
+            self._finding = None                  # a fault still present is reported again, not re-latched silently
         self.emit("reset", "fault cleared by operator", "warn")
 
     def _home_steps(self, specs: list) -> list:
@@ -705,7 +706,8 @@ class Kernel:
                 if (trip is None or trip.kind == "hot") and b is not None and b.moves and not b.senses_contact:
                     trip = self._collision() or trip
                 if trip:
-                    finding = (trip.kind, trip.joint)
+                    # Faults and keep-out zones name no joint: what they say tells one from another.
+                    finding = (trip.kind, trip.joint, trip.message if trip.kind in ("fault", "keep_out") else None)
                     self._on_trip(trip, now, finding != self._finding)
                 self._heat_warnings(st)
             self._finding = finding

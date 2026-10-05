@@ -57,6 +57,28 @@ def test_a_persistent_idle_finding_is_reported_once_and_still_cancels_work(lifte
     assert kinds.count("trip") == 1 and kinds.count("contact") == (finding == "overload")
 
 
+def test_a_fault_that_outlasts_a_reset_or_changes_is_reported_again(lifted, monkeypatch):
+    """The latch must not swallow a fault the operator's reset did not fix, or a second fault on top of the first."""
+    from dataclasses import replace
+
+    k = lifted
+    read, faults = k.body.read, ["joint3 overcurrent"]
+    monkeypatch.setattr(k.body, "read", lambda: replace(read(), faults=list(faults)))
+
+    def alarms():
+        seq = k.events.seq
+        for _ in range(20):
+            k.tick()
+            k.clock.wait()
+        return [e["message"] for e in k.events.since(seq) if e["kind"] == "trip"]
+
+    assert alarms() == ["joint3 overcurrent"] and k.faulted
+    k.reset()
+    assert alarms() == ["joint3 overcurrent"] and k.faulted
+    faults.append("joint5 encoder lost")
+    assert alarms() == ["joint3 overcurrent; joint5 encoder lost"]
+
+
 @pytest.mark.parametrize("phase", ["start", "tick"])
 def test_a_behavior_exception_latches_the_fault(k, phase):
     from world_use.behaviors import Behavior

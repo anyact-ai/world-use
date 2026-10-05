@@ -177,6 +177,7 @@ class Daemon:
             return 200, dict(line=views.state_line(k))
         if route == ["reset"]:
             k.reset()
+            self._settle()                    # a fault still present latches again on the next tick
             return 200, dict(line=views.state_line(k))
         if route == ["home_route"]:
             if "steps" not in body:
