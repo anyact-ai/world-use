@@ -161,10 +161,6 @@ See [adding a body](docs/adapters.md) for the complete adapter path, and the
 [design notes](DESIGN.md) for runtime contracts and the experiments behind them.
 The [changelog](CHANGELOG.md) covers release and API changes.
 
-Related work includes [Graph-as-Policy](https://arxiv.org/abs/2607.05369), which
-inspired writing and testing robot programs outside the control loop, and
-[Inspect Robots](https://github.com/robocurve/inspect-robots) for robot-policy evaluation.
-
 ## License
 
 Apache-2.0. The reBot URDF and meshes are Seeed Studio's, under CERN-OHL-W-2.0;

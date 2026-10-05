@@ -1,26 +1,12 @@
 # Measured perception for checked robot phases
 
-The first implementation extends the existing camera, tracking, recording and job APIs.
+Measured perception extends the camera, tracking, recording and job APIs.
 A procedure can measure visible surfaces, declare the evidence a motion depends on,
 and inspect that evidence alongside execution in Rerun. The [block example](../examples/perception)
 uses a known upright shape on a known clear tray, with the object's position withheld.
 Physical RGB-D acquisition, arbitrary object poses and grasp generation remain future work.
 
-## Why this boundary
-
-Robo-Harness K1 (arXiv:2609.29389v1) combines grounded regions, calibrated depth,
-tracked points, grasp candidates and reusable motions. The useful principle here
-is to give the policy measurements it can act on and outcomes it can check.
-It does not require copying the whole stack. Start with reusable Python procedures
-that compose existing checked motions, and involve the policy when measurements
-are ambiguous or an expectation fails.
-
-The paper's paired Astra results are 11/18 versus 16/18, with McNemar p=.125;
-several interface features change together. Its simulator pauses during inference.
-These results do not establish which individual component improves this robot, or
-prove operation with continuous physical time. Transfer experiments retain the
-Panda gripper and do not establish compatibility with the reBot fingers. Evaluate
-this implementation independently before drawing capability or hardware conclusions.
+## Ownership
 
 ```mermaid
 flowchart LR
@@ -39,7 +25,7 @@ Camera acquisition belongs to the daemon. Inference, target selection, shape
 assumptions, planning decisions and verification belong to the procedure. The
 kernel owns power, limits and command execution. Its evidence checks use only
 copied metadata: no images, file access, inference or network calls occur there.
-No perception service, scene graph, policy language or second viewer is needed.
+These responsibilities use the existing daemon, kernel and flight record.
 
 ## Captures and measurements
 

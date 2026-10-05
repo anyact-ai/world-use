@@ -120,12 +120,10 @@ the control thread without rebuilding the complete tape. See the [record format]
 
 ## Two loops, one runtime
 
-Agentic Robotics work such as [Graph-as-Policy](https://arxiv.org/abs/2607.05369) shows the strongest results
-when agents write, test and improve robot programs offline in simulation and export lightweight code. Our
-numbers agree: the frontier model does not belong in the control loop, and most of our gains came from moving
-work offline. Our runs also show the other half: a one-off task in a scene nobody has modelled (a magnetic
-door, a zip tie, a round neck that slips) is cheaper to supervise once than to simulate, and the remaining
-failures only showed up live.
+Agents develop and test procedures in simulation, then execute them through the
+same runtime. Preparing work offline reduces powered waiting. Unfamiliar tasks
+still need live observations and decisions, especially when contact or an
+unexpected scene change invalidates the plan.
 
 So world-use serves both loops with the same kernel, behaviors and records:
 
@@ -171,10 +169,8 @@ of job completion and power state. Python and MCP share these calculations.
 
 ## Where it goes
 
-The [agent tool interface proposal](docs/agent-tools-design.md) organizes observation,
-checked execution and verification around reusable robot procedures. Its staged
-acceptance criteria make new perception tools depend on demonstrated task needs.
-It distinguishes proposed capabilities from the implementation described above.
+The [agent tool design](docs/agent-tools-design.md) describes how to extend reusable
+procedures through task-driven experiments and additional perception capabilities.
 
 Start with repeatable tasks on one arm. The [block example](examples/pick-place) gives
 new users a complete run, a separate success predicate, controlled scene variations,

@@ -20,8 +20,8 @@ This scripted procedure calls the public MCP tools to select, estimate, approach
 grip, verify a lift, place, verify release and withdrawal, and return with torque
 off. Its runner alone receives simulator truth for independent evaluation. The
 default selector is a deterministic orange-color fixture, not learned tracking.
-The setup, estimator and predicates are shared with the
-[perception example](../examples/perception), rather than a second task simulator.
+It shares the runner, estimator and predicates with the
+[perception example](../examples/perception).
 See [simulation setup](simulation.md) for headless EGL requirements.
 
 With the optional vision dependencies installed, the same task uses a separate
@@ -35,8 +35,7 @@ uv run --extra vision python -m world_use.examples.procedures \
 Weights load before enabling motors. For a CPU-only development install, use
 `uv pip install --python .venv/bin/python --torch-backend cpu --editable '.[vision]'`
 and run `.venv/bin/python` directly. The model revision is pinned by `vision.py`;
-the checkpoint must already be cached or downloadable. Neither this example nor
-its tests authorize or operate physical hardware.
+the checkpoint must already be cached or downloadable. This example runs in simulation.
 
 The task assumes a 4 × 4 × 10 cm upright block, a substantially visible top face,
 a calibrated fixed overhead camera, and a known clear tray. Its 45-second evidence
@@ -72,7 +71,7 @@ its weights are then reported as local rather than as the pinned public revision
 | `verify_effect` | Evaluates a predeclared lift or placement criterion using new geometry and synchronized captured feedback; returns `pass`, `fail` or `unknown`. |
 | `inspect_run` | Pages through this daemon session's committed events plus its live tail, including plans, outcomes, geometry and verification. Supports a job filter and reports missing records. |
 
-Tool replies preserve concise text and include MCP `structuredContent`. `card`
+Observation, phase and history replies include MCP `structuredContent`. `card`
 reports capabilities, effect fields, storage limits and collision coverage.
 `help(step)` adds a JSON schema for the built-in step's fields; runtime validation
 remains authoritative. `events(since, limit)` now returns the first bounded page
@@ -106,10 +105,9 @@ source receipt to the prerequisites. The result includes the exact plan,
 derivations and assumptions. Inspect it before `run(plan_id=...)`.
 `to` accepts position components; `point` and `jaws` accept direction components.
 An unsigned fitted normal/axis requires an explicit `sign` of `-1` or `1`.
-Direction references cannot take position offsets. There is no expression language
-or automatic following of a moving target.
+Direction references cannot take position offsets. References resolve once at check time.
 
-Prepared IDs freeze data, not execution permission. Changed reference frames,
+Prepared IDs retain the resolved plan. Changed reference frames,
 calibration, expired evidence or reported target loss can refuse admission.
 Reselecting uses a new target ID; `replace_target` invalidates the old selection.
 Accepted jobs retain small prerequisite values and revocation signals, so loss
