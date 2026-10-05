@@ -10,8 +10,8 @@ Workcell entry (positions in the work frame, metres):
     [[camera]]
     name = "side"
     path = "~/frames/side.jpg"                     # the newest frame a capture app keeps writing (refused when
-    max_age_s = 3                                  # older than this); or url = "http://.../snapshot.jpg", or
-                                                   # command = "imagesnap -q -" (prints an image to stdout)
+    max_age_s = 3                                  # older than this); or url = "http://.../snapshot.jpg", or a
+                                                   # command that prints one image to stdout (see docs/rebot.md)
     rotate = 180                                   # optional: 90, 180 or 270 clockwise, for a camera mounted turned
     eye = [0.35, -0.60, 0.40]                      # calibration, optional: where the camera is,
     look_at = [0.30, 0.0, 0.15]                    # what the image centre shows,

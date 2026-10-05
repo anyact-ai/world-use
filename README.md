@@ -14,7 +14,7 @@ Start with one arm and a laptop. Use the CLI, Python, or MCP; the same plan form
 works in the included simulator and on a Seeed reBot.
 
 Early development. Tested in simulation and on one physical arm. The
-[hardware records](docs/hardware-2026-09-27.md) describe what was tried and measured.
+[hardware records](docs/hardware.md) describe what was tried and measured.
 
 ## Try it
 
@@ -55,7 +55,7 @@ wu view                       # follow the local daemon's recording
 
 Rerun is optional and runs outside the control loop. The viewer shows measured
 joints and the estimated world alongside saved camera observations. Closing it
-does not stop a job. See [visualization and headless export](docs/visualization.md).
+does not stop a job. See [visualization and headless export](docs/records.md#view-in-rerun).
 
 ![MuJoCo block demo in Rerun: measured robot and estimated world, camera observation, joint plots, and events](docs/assets/simulation-rerun.png)
 

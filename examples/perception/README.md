@@ -7,7 +7,7 @@ reads no simulator data. See [measuring from pictures](../../docs/perception.md)
 
 ## Run it
 
-From the repository with Python 3.13+:
+From a checkout of world-use:
 
 ```sh
 uv sync --locked
@@ -17,9 +17,10 @@ uv run wu view runs/perception --out runs/perception.rrd
 ```
 
 The example starts its own simulated daemon with physics running in real time, and takes about a minute.
-It never connects to physical hardware, and it returns home and switches torque off before closing. Use a
-new output folder for each run; headless rendering needs MuJoCo's [EGL setup](../../docs/simulation.md).
-`--scenario missing` removes the block: nothing is measured and the arm is never powered.
+It never connects to physical hardware, and it goes home and switches torque off before closing. Use a new
+output folder for each run; headless rendering needs MuJoCo's
+[EGL setup](../../docs/simulation.md#cameras-and-replay). `--scenario missing` removes the block: nothing is
+measured and the arm is never powered.
 
 ## What it does
 
@@ -34,8 +35,8 @@ new output folder for each run; headless rendering needs MuJoCo's [EGL setup](..
 7. Measure: placed if the top face is within 1 cm of the target, the gripper is open and the tool is
    8 cm clear above the block.
 
-A separate evaluator, the only code that reads simulator truth, judges the result after the release and
-before homing. Any failure stops the arm, lowers the block onto the tray, opens and withdraws: safe only
+A separate evaluator, the only code that reads simulator truth, judges the result after the gripper lets go
+and before homing. Any failure stops the arm, lowers the block onto the tray, opens and withdraws: safe only
 over this known clear tray. `result.json` holds the procedure's checks, its measurements, the job
 outcomes and the evaluator's verdict; `perception/` holds each measurement's picture and points.
 
@@ -60,5 +61,5 @@ OMP_NUM_THREADS=2 uv run --extra vision --extra rerun python scripts/vision_smok
 
 The task assumes a known upright block, a fixed calibrated overhead camera, a clear tray and simulated
 depth. The block tilts a few degrees in the pinch grasp and settles 5 to 9 mm short of the target when
-released, inside the 1 cm tolerance. These runs check that the pieces work together; they are not a
+let go, inside the 1 cm tolerance. These runs check that the pieces work together; they are not a
 benchmark of tracking or grasping.

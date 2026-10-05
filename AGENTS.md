@@ -18,7 +18,7 @@ Keep world-use easy to install, understand, and use for a first robot task.
 
 ## Tests and checks
 
-Use Python 3.13+ and uv. Development commands:
+Use Python 3.11+ and uv. Development commands:
 
 ```sh
 uv sync --locked
@@ -57,5 +57,6 @@ Code-change requests do not authorize hardware experiments. An ended physical
 session stays offline until another is requested. Before operating a robot, read
 `wu policy` or its [canonical source](src/world_use/POLICY.md), which owns the
 operating and power-recovery rules. Never leave a physical arm holding while
-waiting for an open-ended reply. The [September 29 incident](docs/hardware-2026-09-29.md)
+waiting for an open-ended reply. The
+[September 29 incident](docs/hardware.md#2026-09-29-a-prolonged-hold-and-a-blocked-thermal-return)
 records why this matters.

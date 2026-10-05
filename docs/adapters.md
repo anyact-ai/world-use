@@ -37,7 +37,7 @@ run `uv run python examples/adapters/planar.py`.
 
 Copy [planar.toml](../examples/adapters/planar.toml) and substitute your measured
 specifications. `urdf` is relative to that file. `tool_link` identifies the point
-Cartesian actions control. Each `[[joints]]` entry must follow the URDF chain's
+that `line`, `lines` and `move_to` steps control. Each `[[joints]]` entry must follow the URDF chain's
 joint order; its limits may be tighter than the URDF's, never wider.
 
 The MuJoCo twin prepares every motion, also on hardware, so the description must
@@ -49,7 +49,7 @@ zero and sign. A driver that reports another convention, such as LeRobot's
 normalized -100..100 joints and 0..100 gripper, converts in `read` and `command`.
 
 The runtime supports revolute and continuous arm joints. Prismatic arm joints are
-rejected before a driver is loaded: joint actions, limits, telemetry and torque
+rejected before a driver is loaded: joint steps, limits, telemetry and torque
 monitoring use rotational units.
 
 The fields follow [Manifest](../src/world_use/body.py):
@@ -67,7 +67,7 @@ The fields follow [Manifest](../src/world_use/body.py):
 | `max_segment_m`, `link_radius_m`, `max_excursion` | Cartesian segment length, collision padding, joint excursion in radians |
 | `[turn_clearance]` | Joint names in `joints`, required clearance in `height_m` |
 | `ik_weights` | Weights of x, y, z, rx, ry, rz (base frame) that Cartesian moves hold; 0 frees one |
-| `notes`, `hardware_notes` | Lines for the embodiment card; `hardware_notes` describe the physical robot, not its simulation |
+| `notes`, `hardware_notes` | Lines for the card. `hardware_notes` describe the physical robot, not its simulation: name its motor supply there, which an operator switches off when the arm cannot go home |
 
 An arm with fewer than six joints cannot hold every tool orientation. Unless
 `ik_weights` says otherwise, it holds position and tilt and lets the heading (yaw
@@ -198,8 +198,8 @@ that manifest and opens no connection until `connect`. The
 | `close` | Close the connection without changing motor power |
 
 The kernel calls I/O from one thread. Keep `read` and `command` bounded to the
-control period. Driver receipt timestamps or sequence counters establish freshness;
-changing values do not. Test constant fresh samples, frozen caches, disconnects,
+control period. The time the driver received a sample, or a sequence counter,
+establishes freshness; changing values do not. Test constant fresh samples, frozen caches, disconnects,
 and partial power transitions with a fake transport before connecting hardware.
 
 Check the card, frames, motions, stop, home, release and records in simulation.

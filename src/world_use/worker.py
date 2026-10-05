@@ -2,7 +2,7 @@
 
 Rehearsal, reach probes and per-step preparation share this worker. Requests are serialized on a helper
 thread; the control loop only submits a snapshot and polls a Future. A timeout kills the process through
-multiprocessing's public API, which works on Python 3.13 and later.
+multiprocessing's public API.
 """
 from __future__ import annotations
 

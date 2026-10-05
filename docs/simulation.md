@@ -1,16 +1,16 @@
 # MuJoCo simulation
 
-`--body sim`, `--body sim:rebot`, `wu check`, and `wu demo` use MuJoCo. It is a
-core dependency; there is no kinematic simulator fallback. The twin that rehearses
-and prepares every motion, on hardware as well, is this simulation. The kernel
-still owns commands, motion limits, watchdogs, faults, and recovery.
+`--body sim`, `--body sim:rebot`, `wu check` and `wu demo` use MuJoCo, a core
+dependency. The twin that checks and prepares every motion, on hardware as well,
+is this simulation. The kernel owns commands, motion limits, watchdogs, faults and
+recovery.
 
 The bundled reBot uses Seeed's URDF, link inertias, colored component meshes,
 and convex finger collision segments. Arm collision uses component convex hulls
 where a whole-link hull would fill gaps around the wrist. Adjacent links are
 excluded from self-contact. MuJoCo handles joint limits, gravity, collisions,
 and friction. Grasped objects have free joints: no weld or pose-following rule
-attaches them to the tool. They can slip, tip, fall, and collide after release.
+attaches them to the tool. They can slip, tip, fall, and collide once let go.
 
 Physics advances one control period per `Body.read`, in substeps of at most
 2 ms. A virtual-clock rehearsal runs the same engine without wall-clock waits.
@@ -92,8 +92,8 @@ a calibrated opening (`m_per_unit`), zero at closed. A hinged jaw's servo acts
 like a finger's 5 cm from the hinge. An object counts as held when it touches
 both fingers, or the jaw and the link it closes against. Other mechanisms need an
 explicit simulation model. Without a gripper description, joints outside the arm
-chain stay at their URDF zero. The runtime arm joints remain rotational, as
-described in the adapter guide.
+chain stay at their URDF zero. Arm joints are revolute or continuous; see the
+[adapter guide](adapters.md).
 
 A workcell's `[simulation]` table accepts `start_deg` (or `q` in radians),
 `gripper`, `temp_c`, `ambient_c`, `noise`, and `seed`.
