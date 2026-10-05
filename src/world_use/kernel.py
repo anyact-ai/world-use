@@ -181,7 +181,7 @@ class Kernel:
     t0: float
 
     def __init__(self, body: Body, world: World | None = None, clock=None, run_dir: Path | None = None,
-                 ik_weights=None, auto_answer: bool = False):
+                 auto_answer: bool = False):
         self.body, self.manifest = body, body.manifest
         self.chain = Chain(self.manifest.urdf, self.manifest.tool_link)
         if any(j.type == "prismatic" for j in self.chain.active):
@@ -198,7 +198,10 @@ class Kernel:
         self.t0 = self.clock.now()
         m = self.manifest
         self.timing = Timing(m.rate_hz, m.speed, m.auto_accel, m.min_move_s)
-        self.ik_weights = ik_weights
+        # Fewer than six joints cannot hold every orientation: unless the manifest says otherwise, such an arm keeps
+        # the tool's tilt and lets its heading (yaw about the base's vertical) turn.
+        free_yaw = m.ik_weights is None and m.n < 6
+        self.ik_weights = (1.0, 1.0, 1.0, 1.0, 1.0, 0.0) if free_yaw else m.ik_weights
         self.auto_answer = auto_answer             # twin checks: assume the expected answer at checkpoints
         self.run_dir = Path(run_dir).expanduser().resolve() if run_dir else None
         if self.run_dir:

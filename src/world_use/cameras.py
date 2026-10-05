@@ -442,15 +442,20 @@ class EquirectCut(Camera):
         return Image.fromarray(np.clip(out + 0.5, 0, 255).astype(np.uint8).reshape(self.size[1], self.size[0], 3))
 
 
-SIM_VIEWS = {                           # eye, look_at, up (work frame): three views that together fix a position
+# Eye, look_at and up in the work frame: three views of the reBot that together fix a position.
+SIM_VIEWS = {
     "side": ([0.12, -0.82, 0.46], [0.12, 0.0, 0.13], [0, 0, 1]),
     "front": ([0.95, 0.38, 0.50], [0.16, 0.0, 0.14], [0, 0, 1]),
     "top": ([0.12, 0.0, 1.15], [0.12, 0.0, 0.10], [1, 0, 0]),
 }
+REBOT_LENGTH = 0.9587                   # m from the reBot's base through its joints to the tool point
 
 
 def sim_cameras(body, world) -> dict[str, Camera]:
-    return {name: SimCamera(name, View.look_at(world.to_base("work", eye), world.to_base("work", at), 55.0, (800, 600),
+    """SIM_VIEWS, scaled to the simulated arm's length."""
+    s = np.linalg.norm(np.diff(body.chain.points(body.q), axis=0), axis=1).sum() / REBOT_LENGTH
+    return {name: SimCamera(name, View.look_at(world.to_base("work", s * np.asarray(eye)),
+                                               world.to_base("work", s * np.asarray(at)), 55.0, (800, 600),
                                                world.frame("work").T[:3, :3] @ np.asarray(up, float)), body)
             for name, (eye, at, up) in SIM_VIEWS.items()}
 

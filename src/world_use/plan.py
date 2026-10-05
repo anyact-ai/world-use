@@ -126,7 +126,6 @@ class Snapshot:
     home_route: list | None           # the steps, while the robot's route is still valid
     held_at: float | None
     grip_start: float | None
-    ik_weights: list[float] | None
     fit: dict | None = None           # the fitted robot model the kernel judges torque by (fit.py), if any
 
 
@@ -143,7 +142,6 @@ def snapshot(k: Kernel) -> Snapshot:
             overrides=dict(env.overrides),
             home_route=deepcopy(route[0]) if route is not None and k.last_touch < route[1] else None,
             held_at=k.held_at, grip_start=k.grip_start,
-            ik_weights=None if k.ik_weights is None else list(k.ik_weights),
             fit=None if k.fit is None else k.fit.to_dict())
 
 
@@ -166,7 +164,7 @@ def twin_from(s: Snapshot, manifest: Manifest | None = None) -> Kernel:
         manifest = manifest_from_data(s.model)
     world = World.from_dict(s.world)
     body = SimBody(manifest, World.from_dict(s.world), q=s.q, gripper=s.gripper, temp_c=s.temp)
-    t = Kernel(body, world, VirtualClock(manifest.rate_hz), ik_weights=s.ik_weights, auto_answer=True)
+    t = Kernel(body, world, VirtualClock(manifest.rate_hz), auto_answer=True)
     t.connect()                       # the world already holds the session's frames, so they are kept
     if s.fit is not None:             # the twin weighs its links, and feels friction, as the robot's own fit says
         from .fit import Model

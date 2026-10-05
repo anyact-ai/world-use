@@ -115,9 +115,11 @@ WRAP_SUSPECT = 3.3                    # rad: a motor reading beyond this has pro
 
 
 class ReBotBody:
-    manifest = MANIFEST
-
-    def __init__(self, channel: str | None = None, velocity_ff: bool = True, stiffness: float = 1.0):
+    def __init__(self, manifest: Manifest = MANIFEST, channel: str | None = None, velocity_ff: bool = True,
+                 stiffness: float = 1.0):
+        if manifest is not MANIFEST:
+            raise ValueError("the rebot driver uses its built-in model; use a custom adapter for a different robot")
+        self.manifest = manifest
         self.channel = channel or os.environ.get("REBOT_CHANNEL", "can0")
         self.velocity_ff, self.stiffness = velocity_ff, float(np.clip(stiffness, 0.2, 1.0))
         self.chain = Chain(MANIFEST.urdf, MANIFEST.tool_link)

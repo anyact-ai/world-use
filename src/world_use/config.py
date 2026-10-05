@@ -114,10 +114,10 @@ def manifest_from_data(data: dict, folder: Path = Path(".")) -> Manifest:
         g = _make(GripperSpec, data["gripper"], "gripper")
         for key in ("closed", "open", "squeeze"):
             _number(getattr(g, key), f"gripper.{key}")
-        for key in ("v_max", "track_tol", "tau_max"):
-            _number(getattr(g, key), f"gripper.{key}", positive=True)
         if g.open == g.closed or g.squeeze < 0:
             raise ValueError("gripper: open and closed must differ; squeeze cannot be negative")
+        for key in ("v_max", "track_tol", "tau_max"):
+            _number(getattr(g, key), f"gripper.{key}", positive=True)
         if g.m_per_unit is not None:
             _number(g.m_per_unit, "gripper.m_per_unit")
             if (g.open - g.closed) * g.m_per_unit <= 0:
@@ -127,6 +127,11 @@ def manifest_from_data(data: dict, folder: Path = Path(".")) -> Manifest:
             if not np.isclose(np.linalg.norm(axis), 1):
                 raise ValueError(f"gripper.{key}: expected a unit vector")
         data["gripper"] = g
+    if "ik_weights" in data:
+        weights = _vector(data["ik_weights"], 6, "robot.ik_weights")
+        if min(weights) < 0 or max(weights) <= 0:
+            raise ValueError("robot.ik_weights: expected 6 nonnegative weights for x, y, z, rx, ry, rz")
+        data["ik_weights"] = weights
     if "turn_clearance" in data:
         turn = data["turn_clearance"]
         _keys(turn, ("joints", "height_m"), "turn_clearance")
@@ -201,7 +206,8 @@ def load_workcell(path: Path | str | None) -> dict:
             raise ValueError(f"{key}: expected a table of constructor options")
     sections = dict(
         frame=("name", "origin", "rpy_deg"),
-        box=("name", "kind", "center", "size", "frame", "yaw_deg", "known", "grip_width", "dtau", "speed"),
+        box=("name", "kind", "center", "size", "frame", "yaw_deg", "known", "grip_width", "dtau", "speed",
+             "mass_kg", "friction"),
         camera=("name", "path", "url", "command", "max_age_s", "rotate", "projection", "eye", "look_at", "up",
                 "frame", "fov_deg", "size", "facing", "yaw_deg", "pitch_deg"),
         fact=("key", "value", "source", "note"))

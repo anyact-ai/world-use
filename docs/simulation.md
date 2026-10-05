@@ -1,8 +1,9 @@
 # MuJoCo simulation
 
 `--body sim`, `--body sim:rebot`, `wu check`, and `wu demo` use MuJoCo. It is a
-core dependency; there is no kinematic simulator fallback. The kernel still
-owns commands, motion limits, watchdogs, faults, and recovery.
+core dependency; there is no kinematic simulator fallback. The twin that rehearses
+and prepares every motion, on hardware as well, is this simulation. The kernel
+still owns commands, motion limits, watchdogs, faults, and recovery.
 
 The bundled reBot uses Seeed's URDF, link inertias, colored component meshes,
 and convex finger collision segments. Arm collision uses component convex hulls
@@ -33,9 +34,10 @@ belief used in planning; it never moves the simulated object.
 
 `surface` boxes are static colliders. `object` boxes are rigid bodies, defaulting
 to 50 g and a sliding friction coefficient of 0.8. Box parameters `mass_kg` and
-`friction` override those values. Place objects on a surface; unsupported objects
-fall. The ground plane is at base-frame z=0 and gravity points along base -z.
-Keep-out, fragile, and slow boxes remain planning/monitoring rules.
+`friction`, also in workcell `[[box]]` entries, override those values. Place
+objects on a surface; unsupported objects fall. The ground plane is at base-frame
+z=0 and gravity points along base -z. Keep-out, fragile, and slow boxes remain
+planning/monitoring rules.
 
 Changing the physical scene's topology rebuilds its MuJoCo model. Configure it
 before execution. `SimBody.reset(q, gripper)` explicitly resets a scene from its
@@ -71,20 +73,27 @@ EGL. Hosted macOS runs `pytest -m 'not rendering'`; it still tests physics, cont
 record recovery, Rerun export and image transport through file cameras. On a Mac
 with GPU access, run the full suite with `uv run pytest`.
 
-New recordings bundle meshes with their URDF. Replay renders measured joints and
-the recorded **estimated world**, not a second physics rollout or a reconstruction
-of unobserved object motion. Saved camera observations and the demo GIF show the
-original simulation truth.
+Records keep the URDF and copies of a custom robot's meshes. A built-in robot's
+meshes ship with world-use; replay finds them by the recorded URDF's exact
+contents. Replay renders measured joints and the recorded **estimated world**, not
+a second physics rollout or a reconstruction of unobserved object motion. Saved
+camera observations and the demo GIF show the original simulation truth.
 
 ## Other robots
 
 A custom URDF must provide physically valid inertias and collision geometry.
-Visual meshes are optional; all referenced meshes must be available locally.
-The planar adapter example includes inertias and primitive geometry.
+Visual meshes are optional; referenced meshes must be STL or OBJ files available
+locally, relative to the URDF or as `package://` paths inside their package. The
+planar adapter example includes inertias and primitive geometry.
 
-The current gripper mapping supports two opposed prismatic finger joints with a
-calibrated `m_per_unit`, zero travel at closed, and equal outward travel. Other
-mechanisms need an explicit simulation model before they can be rehearsed.
-The runtime arm joints remain rotational, as described in the adapter guide.
-The old simulator's `lag_s` and `stiffness` options were removed; `q`, `gripper`,
-`temp_c`, `ambient_c`, `noise`, and `seed` remain available.
+The simulation drives a gripper's joints outside the arm chain: one joint, revolute
+or prismatic, in its URDF coordinate, or two opposed prismatic fingers that share
+a calibrated opening (`m_per_unit`), zero at closed. A hinged jaw's servo acts
+like a finger's 5 cm from the hinge. An object counts as held when it touches
+both fingers, or the jaw and the link it closes against. Other mechanisms need an
+explicit simulation model. Without a gripper description, joints outside the arm
+chain stay at their URDF zero. The runtime arm joints remain rotational, as
+described in the adapter guide.
+
+A workcell's `[simulation]` table accepts `start_deg` (or `q` in radians),
+`gripper`, `temp_c`, `ambient_c`, `noise`, and `seed`.

@@ -9,7 +9,7 @@ from world_use import Kernel, World, fit, records
 from world_use.bodies import manifests
 from world_use.bodies.sim import SimBody
 from world_use.client import Client
-from world_use.config import load_robot, load_workcell
+from world_use.config import load_robot, load_workcell, manifest_data, manifest_from_data
 from world_use.daemon import Daemon, apply_workcell, make_body, session_identity
 from world_use.robot_assets import archive, resolve
 
@@ -83,6 +83,9 @@ def test_workcell_paths_and_typos_are_not_silently_ignored(tmp_path, monkeypatch
     path.write_text('[[camrea]]\nname = "side"\n')
     with pytest.raises(ValueError, match="unknown fields: camrea"):
         load_workcell(path)
+    path.write_text('[[box]]\nname = "cup"\nkind = "object"\ncenter = [0.3, 0, 0.05]\nsize = [0.05, 0.05, 0.1]\n'
+                    'mass_kg = 0.2\nfriction = 0.5\n')
+    assert load_workcell(path)["box"][0]["mass_kg"] == .2
     cell = load_workcell(EXAMPLE / "workcell.toml")
     cell["simulation"]["lag_seconds"] = .1
     with pytest.raises(ValueError, match="lag_seconds"):
@@ -94,6 +97,7 @@ def test_workcell_paths_and_typos_are_not_silently_ignored(tmp_path, monkeypatch
     ('name = "shoulder"', 'name = "wrong_joint"', "URDF chain order"),
     ("lower = -2.5", "lower = -3.0", "exceed the URDF limits"),
     ("v_max = 0.8", "v_max = nan", "finite number"),
+    ('sensing = ["position"]', 'sensing = ["position"]\nik_weights = [1, 1, 1]', "ik_weights"),
 ])
 def test_invalid_robot_descriptions_fail_before_a_driver_is_loaded(tmp_path, old, new, message):
     shutil.copy(EXAMPLE / "planar.urdf", tmp_path)
@@ -123,6 +127,19 @@ def test_supported_rest_uses_joint_names_and_preserves_release_rules(tmp_path):
     path.write_text(text + '\n[rest]\nq = [0.0, 0.5]\njoints = ["elbow"]\ntol = 0.1\n')
     model = load_robot(path)
     assert model.rest.holds([1, .5]) and not model.rest.holds([0, .7])
+
+
+def test_gripper_limits_scale_with_its_travel_and_the_worker_gets_the_ik_weights():
+    data = manifest_data(load_robot(Path(__file__).with_name("jaw_arm.toml")))
+    data["gripper"] = dict(closed=0.0, open=0.08, unit="m", m_per_unit=1.0, approach=[0, 0, 1], opens_along=[0, 1, 0])
+    data["ik_weights"] = [1, 1, 1, 1, 1, 0]
+    model = manifest_from_data(data)
+    g = model.gripper
+    assert (g.v_max, g.track_tol, g.squeeze) == pytest.approx((.08, .0108, .00088))
+    assert manifest_from_data(manifest_data(model)) == model            # the description a worker builds a twin from
+    del data["gripper"]["opens_along"]
+    with pytest.raises(ValueError, match="opens_along"):
+        manifest_from_data(data)
 
 
 def test_package_mesh_uris_resolve_inside_their_package(tmp_path):

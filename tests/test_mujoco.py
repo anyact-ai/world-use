@@ -1,5 +1,6 @@
 """Physics and rendered pixels must come from MuJoCo, independently of planner beliefs."""
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -8,8 +9,20 @@ from world_use import Kernel, VirtualClock, World, bodies
 from world_use.bodies.mujoco_scene import mj
 from world_use.bodies.rebot import MANIFEST
 from world_use.cameras import View
-from world_use.config import load_workcell
+from world_use.config import load_robot, load_workcell
 from world_use.examples.pick_place import pickup, setup
+
+JAW_ARM = load_robot(Path(__file__).with_name("jaw_arm.toml"))     # five joints and a one-joint revolute jaw
+
+
+def jaw_arm(truth=None, start_deg=(0, 64.8, -56.9, -97.9, 0), **changes):
+    """A kernel on the jaw arm, by default with the tool pointing down 10 cm above the floor."""
+    truth = truth if truth is not None else World()
+    body = bodies.make("sim", truth, manifest=replace(JAW_ARM, **changes), q=np.radians(start_deg), gripper=0.0)
+    k = Kernel(body, World.from_dict(truth.to_dict()), VirtualClock(100))
+    k.connect()
+    k.enable()
+    return k
 
 
 def test_urdf_kinematics_and_gravity_match_mujoco():
@@ -134,6 +147,46 @@ def test_an_incompatible_gripper_mapping_is_rejected():
         assert not body.enabled
     finally:
         body.close()
+
+
+def test_a_one_joint_jaw_is_driven_in_its_own_units_and_holds_what_it_grips():
+    truth = World()
+    truth.add_box("pad", "surface", [.17, 0, .005], [.12, .12, .01])
+    truth.add_box("block", "object", [.17, 0, .025], [.02, .02, .03])
+    k = jaw_arm(truth)
+    try:
+        assert k.run({"do": "gripper", "to": .5}).ok
+        assert k.body.data.joint("jaw").qpos[0] == pytest.approx(.5, abs=.005)
+        out = k.run([{"do": "line", "up": -.065}, {"do": "grip", "expect_mm": [10, 25], "lag": .03, "speed": .2},
+                     {"do": "line", "up": .05}])
+        assert out.ok, out.message
+        assert truth.held is not None and truth.held[0] == "block"
+        assert truth.boxes["block"].pose[2, 3] > .06
+    finally:
+        k.close()
+
+
+def test_without_a_gripper_description_the_jaw_rides_along():
+    body = bodies.make("sim", manifest=replace(JAW_ARM, gripper=None))
+    try:
+        body.read()
+        assert body.model.njnt == JAW_ARM.n
+    finally:
+        body.close()
+
+
+@pytest.mark.parametrize("weights", [None, (1.0,) * 6])
+def test_a_five_joint_arm_moves_sideways_by_letting_its_heading_turn(weights):
+    k = jaw_arm(start_deg=(0, 80.9, -84.4, -41.6, 0), ik_weights=weights)      # pointing 45 deg down
+    try:
+        steps = [{"do": "line", "left": .03}, {"do": "line", "forward": .03}, {"do": "move_to", "to": [.2, -.04, .12]}]
+        results = [k.run(step).status for step in steps]
+        if weights is None:
+            assert results == ["done"] * 3
+        else:                                   # holding the heading as well puts the same line out of reach
+            assert results[0] == "refused"
+    finally:
+        k.close()
 
 
 def test_estimated_parameters_cannot_change_physical_mass_or_friction():
