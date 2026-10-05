@@ -48,10 +48,9 @@ otherwise loading fails and names the path. Joint positions must follow the URDF
 zero and sign. A driver that reports another convention, such as LeRobot's
 normalized -100..100 joints and 0..100 gripper, converts in `read` and `command`.
 
-The runtime supports revolute and continuous arm joints. Prismatic joints are
+The runtime supports revolute and continuous arm joints. Prismatic arm joints are
 rejected before a driver is loaded: joint actions, limits, telemetry and torque
-monitoring use rotational units. `Chain` supports prismatic joints for offline
-kinematics, but that does not provide runtime support for linear actuators.
+monitoring use rotational units.
 
 The fields follow [Manifest](../src/world_use/body.py):
 

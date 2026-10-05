@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from world_use import Kernel, VirtualClock, World, bodies
+from world_use import Kernel, VirtualClock, World, bodies, views
 from world_use.bodies.mujoco_scene import mj
 from world_use.bodies.rebot import MANIFEST
 from world_use.cameras import View
@@ -157,7 +157,7 @@ def test_a_one_joint_jaw_is_driven_in_its_own_units_and_holds_what_it_grips():
     try:
         assert k.run({"do": "gripper", "to": .5}).ok
         assert k.body.data.joint("jaw").qpos[0] == pytest.approx(.5, abs=.005)
-        out = k.run([{"do": "line", "up": -.065}, {"do": "grip", "expect_mm": [10, 25], "lag": .03, "speed": .2},
+        out = k.run([{"do": "line", "up": -.065}, {"do": "grip", "expect_mm": [10, 25]},
                      {"do": "line", "up": .05}])
         assert out.ok, out.message
         assert truth.held is not None and truth.held[0] == "block"
@@ -181,6 +181,7 @@ def test_a_five_joint_arm_moves_sideways_by_letting_its_heading_turn(weights):
     try:
         steps = [{"do": "line", "left": .03}, {"do": "line", "forward": .03}, {"do": "move_to", "to": [.2, -.04, .12]}]
         results = [k.run(step).status for step in steps]
+        assert ("heading turns" in views.tool_line(k)) == (weights is None)       # the card says which
         if weights is None:
             assert results == ["done"] * 3
         else:                                   # holding the heading as well puts the same line out of reach

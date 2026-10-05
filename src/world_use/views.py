@@ -165,9 +165,11 @@ def tool_line(k) -> str | None:
     if g is None:
         return None
     R = k.world.frame("work").T[:3, :3].T @ k.chain.fk(k.cmd.q if k.enabled else k.state.q)[:3, :3]
+    keep = ("line and lines keep its tilt, while its heading turns as the arm moves sideways"
+            if k.ik_weights is not None and k.ik_weights[5] == 0 else "line and lines keep this angle")
     return (f"tool: the gripper points {heading(R @ np.asarray(g.approach))}; its jaws open "
             f"{along(R @ np.asarray(g.opens_along))}; the tool point (the position the state line reports) is "
-            f"{g.tool_point}. line and lines keep this angle; move_to with \"point\" turns it, and so do joints moves.")
+            f"{g.tool_point}. {keep}; move_to with \"point\" turns it, and so do joints moves.")
 
 
 def box_line(k, b, frame: str = "work") -> str:
