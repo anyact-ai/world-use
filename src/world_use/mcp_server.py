@@ -84,8 +84,21 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
     def measured(measurements: list[dict], data: dict):
         return result(data, images=[m["image"] for m in measurements if m.get("image")])
 
-    def job_reply(data):
-        return result(data, views.job_text(data, **HINTS))
+    def job_reply(data, camera=None, depth=False):
+        images = []
+        text = views.job_text(data, **HINTS)
+        if camera is not None and data.get("status") not in ("queued", "running"):
+            try:
+                frame = c.frame(camera, depth=depth)
+                data["frame"] = dict(id=frame.id, camera=frame.camera, size=list(frame.image.size),
+                                     depth=frame.depth is not None, age_s=round(frame.age_s, 2))
+                text += f"\nframe: {json.dumps(data['frame'])}"
+                images.append(frame.image)
+            except Exception as e:
+                # Motion has already been submitted. A camera failure must preserve its job/outcome.
+                data["camera_error"] = str(e)
+                text += f"\ncamera unavailable: {e}; the job above is unchanged"
+        return result(data, text, images)
 
     def call(fn: Callable[[], object]):
         """Preserve the daemon's error as an MCP tool error, with actionable text."""
@@ -113,9 +126,10 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         return policy_resource()
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
-    def job(job: int, wait_s: float = 60.0):
-        """Wait for a run to finish or ask a question; returns its outcome, even after completion."""
-        return call(lambda: job_reply(c.job(job, wait=wait_s)))
+    def job(job: int, wait_s: float = 60.0, camera: str | None = None, depth: bool = False):
+        """Wait for a run to finish or ask a question; returns its outcome, even after completion.
+        camera adds a fresh picture and frame id at a checkpoint or outcome; depth adds simulated metric depth."""
+        return call(lambda: job_reply(c.job(job, wait=wait_s), camera, depth))
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
     def reset() -> str:
@@ -150,13 +164,15 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         return call(describe)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
-    def run(plan: list[dict] | dict, wait_s: float = 60.0, rehearse: bool = True, requires: list[dict] | None = None):
+    def run(plan: list[dict] | dict, wait_s: float = 60.0, rehearse: bool = True, requires: list[dict] | None = None,
+            camera: str | None = None, depth: bool = False):
         """Run a plan: a list of steps, e.g. [{"do": "line", "up": 0.05}, {"do": "grip", "expect_mm": [35, 45]}].
         Rehearsed on a twin first; if any step would break a limit nothing moves and every problem is listed.
         Returns the outcome and the state line, or the question a checkpoint is waiting on.
         requires: [{"evidence": measurement id, "max_age_s": seconds}]; the run is refused, or stops before its
-        next step, once a measurement is older than that or its camera was calibrated again."""
-        return call(lambda: job_reply(c.run(plan, wait=wait_s, check=rehearse, requires=requires)))
+        next step, once a measurement is older than that or its camera was calibrated again.
+        camera adds a fresh picture and frame id at a checkpoint or outcome; depth adds simulated metric depth."""
+        return call(lambda: job_reply(c.run(plan, wait=wait_s, check=rehearse, requires=requires), camera, depth))
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True))
     def check(plan: list[dict] | dict):
@@ -167,9 +183,10 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         return call(rehearse)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
-    def answer(job: int, answer: str, wait_s: float = 60.0):
-        """Answer the question a checkpoint is waiting on; the expected answer (usually "yes") carries on."""
-        return call(lambda: job_reply(c.answer(job, answer, wait=wait_s)))
+    def answer(job: int, answer: str, wait_s: float = 60.0, camera: str | None = None, depth: bool = False):
+        """Answer the question a checkpoint is waiting on; the expected answer (usually "yes") carries on.
+        camera adds a fresh picture and frame id at the next checkpoint or outcome; depth adds simulated depth."""
+        return call(lambda: job_reply(c.answer(job, answer, wait=wait_s), camera, depth))
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
     def look(camera: str | None = None, plan: list[dict] | dict | None = None, grid: bool = False):
@@ -194,14 +211,18 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
     def measure_pixels(frame: str, point: list[float] | None = None, box: list[int] | None = None,
-                       target: str | None = None):
+                       target: str | None = None, plane: dict | None = None):
         """Measure the visible surface under a point [x, y] or a box [left, top, right, bottom] (right and bottom
         exclusive) of a camera_frame, in its native pixels; the frame needs depth. Returns an id, valid and
         reason, and in work-frame metres: surface_center (of what the camera sees, not of a hidden object),
-        visible_bounds and from_tool (surface_center minus the tool point), with the measured pixels drawn on the
-        picture. Pass the id to run(requires=...) so later steps stop once it is too old."""
+        visible_bounds and from_tool (surface_center minus the tool point). in_tool expresses that surface in
+        the captured tool's axes, in metres: compare the same visible feature before/after a lift or rotation.
+        For an edge whose depth sees background, optionally pass plane={"box": [l,t,r,b], "max_error_m": .001}
+        with a point: fit that visible depth patch and project the point onto its plane. You must establish
+        that the feature lies on the patch's plane. The picture marks the point and supporting patch.
+        Pass the id to run(requires=...) for freshness checks."""
         def measure():
-            data = c.measure(frame, point=point, box=box, target=target)
+            data = c.measure(frame, point=point, box=box, target=target, plane=plane)
             return measured([data], data)
         return call(measure)
 

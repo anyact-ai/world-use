@@ -33,6 +33,15 @@ Both runs are simulated. This exercises setup, worker rehearsal, execution and
 portable records without connecting hardware. For an embedded Python example,
 run `uv run python examples/adapters/planar.py`.
 
+## Guarded custom steps
+
+Embedded kernels may extend `Kernel.guarded_steps` with audited behavior types:
+`guarded_steps = Kernel.guarded_steps | {MyMove}` in a kernel subclass. Admission checks exact types, so this
+does not admit subclasses automatically. A custom primitive must start through `kernel.start_behavior`;
+every internal submove, including after waiting or background preparation, must pass `start_behavior` or
+`check_guard` before commanding motion. Ordinary custom steps remain refused when a plan has a guard.
+Keep perception and planning outside the control tick.
+
 ## Describe the robot
 
 Copy [planar.toml](../examples/adapters/planar.toml) and substitute your measured

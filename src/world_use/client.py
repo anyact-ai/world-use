@@ -115,11 +115,14 @@ class Client:
             params = ({} if camera is None else dict(camera=camera)) | (dict(depth="true") if depth else {})
         return Frame.from_dict(self._call("GET", "/frame" + ("?" + urlencode(params) if params else "")))
 
-    def measure(self, frame: Frame | str, *, point=None, box=None, mask=None, target: str | None = None) -> dict:
+    def measure(self, frame: Frame | str, *, point=None, box=None, mask=None, target: str | None = None,
+                plane: dict | None = None) -> dict:
         """Measure the visible surface under a point [x, y], a box [left, top, right, bottom] (right and bottom
         exclusive) or a boolean mask of a frame (or its id), from its depth. Returns the measurement in work-frame
-        metres, with the path of the frame's picture with the measured pixels drawn on it."""
-        body = dict(frame=frame if isinstance(frame, str) else frame.id, point=point, box=box, target=target)
+        metres, with the path of the frame's picture with the measured pixels drawn on it. For a point,
+        plane={"box": [...], "max_error_m": ...} projects onto a plane fitted to that visible depth patch."""
+        body = dict(frame=frame if isinstance(frame, str) else frame.id, point=point, box=box, target=target,
+                    plane=plane)
         if mask is not None:
             import numpy as np
 

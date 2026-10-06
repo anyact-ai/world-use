@@ -91,12 +91,22 @@ parameters. A list runs in order and ends at the first step that does not end "d
   since. `wu calibrate CAMERA` finds a camera's pose from the arm, asking where you see the tool point; it takes
   two or three minutes with torque on, so calibrate early, while the motors are cool.
 - To measure what you see (MCP or Python; simulated cameras give depth): `camera_frame(camera, depth=true)`, then
-  `measure_pixels(frame, point=[x, y], target="block")` in that frame's own pixels, not a scaled `wu look`
-  picture's. It returns, in work-frame metres, `surface_center` of the surface the camera sees (not the object's
-  centre) and `from_tool`, that point minus the tool point.
-- `run(plan, requires=[{"evidence": ID, "max_age_s": 30}])` is refused, or stops before its next step, once that
-  measurement is older than 30 s or its camera was calibrated again. Check a phase by measuring again: a lifted
-  object keeps its `from_tool`.
+  `measure_pixels(frame, point=[x, y], target="block")` in native pixels, not a scaled `wu look` picture.
+  `surface_center` is the visible surface's position in work metres, not the object's centre. `from_tool` is
+  its offset from the tool in work axes; `in_tool` expresses it in the captured tool's axes.
+- `run(plan, requires=[{"evidence": ID, "max_age_s": 30}])` refuses admission or the next step if that
+  measurement is too old, withdrawn or its camera was recalibrated. Choose the age for scene stability,
+  not planning time; freshness alone does not verify a grasp or placement.
+- Check retention with the same features' `in_tool` after a lift or rotation and while holding still.
+  Refresh after extended planning and before transport; drift calls for a different grasp. Occlusion or
+  different features make comparisons inconclusive, and one point cannot establish a complete grasp.
+- For alignment, use a clear close view roughly normal to the surface. An edge pixel may see background:
+  use `plane={"box":[l,t,r,b], "max_error_m":.001}` only if the feature shares the broad visible patch's plane.
+  A small fit residual does not bound placement accuracy; change the view when correspondence is ambiguous.
+- After release, withdraw and check position, depth and stability in a fresh frame. Remeasure from the
+  approach view before regrasping: a piece may have settled correctly. Recover only from a current discrepancy.
+- Batch independent measurements when supported. Repeat checks only for ambiguous or stale evidence or a
+  changed scene. Once the task passes, complete the power handoff below and report.
 
 ## Contact
 

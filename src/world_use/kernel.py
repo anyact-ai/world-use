@@ -159,6 +159,9 @@ class Heat:
 
 
 class Kernel:
+    # Exact behavior types whose internal motion boundaries call start_behavior/check_guard.
+    # An embedded adapter may extend this set after auditing its own steps.
+    guarded_steps = BUILTINS
     state: JointState                                # the latest measurement; set by connect()
     cmd: Command                                     # what the body is told each tick; set by connect()
     q_start: np.ndarray                              # joints at the session start
@@ -383,8 +386,8 @@ class Kernel:
         limits are checked when it starts. A guard is called now and before each step, and refuses the step once
         what the plan relied on is stale. While a thermal return runs, the job ends refused at once."""
         behavior = build(spec if isinstance(spec, Behavior) else deepcopy(spec))
-        if guard is not None and any(type(step) not in BUILTINS for step in walk(behavior)):
-            raise Refused("a guarded plan can use only built-in steps: a custom step starts its own moves unchecked",
+        if guard is not None and any(type(step) not in self.guarded_steps for step in walk(behavior)):
+            raise Refused("a guarded plan needs built-in or explicitly audited steps; this custom step is unchecked",
                           "custom_step")
         with self.lock:
             self._references(behavior)

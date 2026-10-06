@@ -24,6 +24,46 @@ def rot_z(angle: float) -> np.ndarray:
     return axis_angle((0, 0, 1), angle)
 
 
+def align_planar(source, target, tool, *, max_error_m: float) -> dict:
+    """Fit corresponding 3D landmarks with XY translation and yaw, without scale or reflection.
+
+    All inputs use the same coordinate frame. Correspondence and a rigid grasp are the caller's claims.
+    The proposed tool pose preserves its height and accounts for an off-centre grasp. It is geometry,
+    not a motion plan or a grasp/clearance check. Relative landmark heights must also agree, allowing
+    a constant height offset between the two surfaces; vertical placement stays with the caller.
+    """
+    a, b, tcp = (np.asarray(v, dtype=float) for v in (source, target, tool))
+    if (a.ndim != 2 or a.shape[1:] != (3,) or len(a) < 3 or b.shape != a.shape
+            or not np.isfinite(a).all() or not np.isfinite(b).all()):
+        raise ValueError("source and target need at least 3 corresponding finite XYZ landmarks")
+    if (tcp.shape != (4, 4) or not np.isfinite(tcp).all() or not np.allclose(tcp[3], [0, 0, 0, 1])
+            or not np.allclose(tcp[:3, :3].T @ tcp[:3, :3], np.eye(3), atol=1e-5)
+            or not np.isclose(np.linalg.det(tcp[:3, :3]), 1)):
+        raise ValueError("tool must be a rigid 4x4 pose in the landmarks' coordinate frame")
+    if isinstance(max_error_m, bool) or not np.isfinite(max_error_m) or max_error_m <= 0:
+        raise ValueError("max_error_m must be positive and finite")
+    ac, bc = a[:, :2].mean(axis=0), b[:, :2].mean(axis=0)
+    x, y = a[:, :2] - ac, b[:, :2] - bc
+    for points in (x, y):
+        singular = np.linalg.svd(points, compute_uv=False)
+        if singular[0] < 1e-9 or singular[1] < singular[0] * .01:
+            raise ValueError("landmarks must span an area; choose separated, non-collinear features")
+    yaw = float(np.arctan2(np.sum(x[:, 0] * y[:, 1] - x[:, 1] * y[:, 0]), np.sum(x * y)))
+    rotation = rot_z(yaw)
+    shift = bc - rotation[:2, :2] @ ac
+    errors = np.linalg.norm(a[:, :2] @ rotation[:2, :2].T + shift - b[:, :2], axis=1)
+    dz = b[:, 2] - a[:, 2]
+    height_error = float(np.max(np.abs(dz - np.median(dz))))
+    valid = bool(max(float(errors.max()), height_error) <= max_error_m)
+    proposed = tcp.copy()
+    proposed[:3, :3] = rotation @ tcp[:3, :3]
+    proposed[:2, 3] = rotation[:2, :2] @ tcp[:2, 3] + shift
+    return dict(valid=valid, reason=None if valid else "landmarks disagree: recheck correspondence, depth or tilt",
+                yaw_delta_deg=float(np.degrees(yaw)), translation_xy_m=shift.tolist(),
+                errors_m=errors.tolist(), max_error_m=float(errors.max()), height_error_m=height_error,
+                tool_pose=proposed.tolist() if valid else None)
+
+
 def pose_error(T: np.ndarray, T_des: np.ndarray) -> np.ndarray:
     """6-vector (position error, orientation error) that takes T towards T_des, both in the base frame."""
     ep = T_des[:3, 3] - T[:3, 3]

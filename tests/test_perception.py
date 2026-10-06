@@ -14,7 +14,7 @@ from world_use import Refused
 from world_use.behaviors import Behavior, Joints
 from world_use.cameras import Camera, Frame, SimCamera, View, pack, unpack
 from world_use.client import DaemonError
-from world_use.perception import Measurements, measure
+from world_use.perception import Measurements, measure, rectangle
 from world_use.plan import snapshot
 
 
@@ -78,6 +78,83 @@ def test_regions_reject_missing_mixed_or_insufficient_depth():
     depth[:, :] = np.nan
     assert measure(replace(frame, depth=depth), mask=mask).reason == "invalid_depth"
     assert measure(frame, mask=np.zeros_like(mask)).reason == "insufficient_support"
+    assert measure(frame, point=[30, 20]).summary(np.eye(4))["in_tool"] is None
+    assert measure(replace(frame, depth=None, tool=np.eye(4)), point=[30, 20]).summary(np.eye(4))["in_tool"] is None
+
+
+def test_projection_uses_measured_plane_instead_of_background_depth():
+    # A tilted surface and a translated, rotated camera; no world-Z assumption.
+    camera = np.eye(4)
+    camera[:3, :3] = [[0, 0, 1], [1, 0, 0], [0, 1, 0]]
+    camera[:3, 3] = [.3, -.2, .1]
+    view = View(camera, 50, 50, 30, 20, 60, 40)
+    y, x = np.indices((40, 60))
+    depth = .5 / (1 + .2 * (x + .5 - 30) / 50 - .1 * (y + .5 - 20) / 50)
+    expected = view.unproject([[42.5, 22.5]], [depth[22, 42]])
+    depth[22, 42] = .8                         # The edge pixel sees a background surface.
+    frame = source(view=view, depth=depth)
+    plane = dict(box=[8, 8, 27, 32], max_error_m=.0001)
+    raw = measure(frame, point=[42, 22])
+    projected = measure(frame, point=[42, 22], plane=plane)
+    assert np.linalg.norm(raw.points - expected) > .2
+    assert projected.valid
+    np.testing.assert_allclose(projected.points, expected, atol=1e-7)
+    assert projected.frame is frame and projected.diagnostics["method"] == "plane_projection"
+    assert projected.support_points is not None and not projected.support_points.flags.writeable
+    # The selected feature's own depth is not needed, but the support patch is.
+    depth[22, 42] = np.nan
+    np.testing.assert_allclose(measure(replace(frame, depth=depth), point=[42, 22], plane=plane).points,
+                               expected, atol=1e-7)
+
+
+def test_plane_projection_rejects_bad_support_and_unstable_rays():
+    plane = dict(box=[3, 3, 27, 35], max_error_m=.0001)
+    frame = source()
+    assert measure(replace(frame, depth=None), point=[35, 20], plane=plane).reason == "missing_depth"
+    depth = frame.depth.copy()
+    depth[10:25, 10:20] += .02                 # Two nearby surfaces used to pass the 5 cm gap check.
+    assert measure(replace(frame, depth=depth), point=[35, 20], plane=plane).reason == "nonplanar_support"
+    tiny = dict(plane, box=[0, 0, 3, 3])
+    assert measure(frame, point=[35, 20], plane=tiny).reason == "insufficient_support"
+    depth[:] = np.nan
+    depth[4:34, 15] = .5                      # A line cannot establish a plane.
+    assert measure(replace(frame, depth=depth), point=[35, 20], plane=plane).reason == "invalid_depth"
+    narrow = dict(plane, box=[14, 2, 17, 37])
+    assert measure(replace(frame, depth=depth), point=[35, 20], plane=narrow).reason == "degenerate_plane_support"
+    view = replace(frame.view, cx=30.5)
+    _, x = np.indices(frame.depth.shape)
+    depth = np.full_like(frame.depth, np.nan)
+    depth[:, 3:27] = -.1 / ((x[:, 3:27] + .5 - view.cx) / view.fx)  # Plane at camera X=-.1.
+    vertical = replace(frame, view=view, depth=depth)
+    side = dict(plane, box=[3, 3, 12, 35])
+    assert measure(vertical, point=[30, 20], plane=side).reason == "grazing_plane_ray"
+    assert measure(vertical, point=[45, 20], plane=side).reason == "plane_behind_camera"
+    with pytest.raises(ValueError, match="requires a point"):
+        measure(frame, mask=rectangle([5, 5, 25, 25], frame.image.size), plane=plane)
+
+
+def test_tool_coordinates_distinguish_rotation_from_landmark_slip():
+    tool = np.eye(4)
+    tool[:3, 3] = [-.015, .035, .55]
+    first = measure(source(tool=tool), point=[30, 20]).summary(np.eye(4))
+    assert first["in_tool"] == pytest.approx([.02, -.03, -.05])
+    # The same feature after a 90-degree tool turn and translation: [0.16, -0.08, 0.2] in base.
+    tool[:3, :3] = [[0, -1, 0], [1, 0, 0], [0, 0, 1]]
+    tool[:3, 3] = [.13, -.10, .25]
+    camera = np.eye(4)
+    camera[:3, 3] = [.155, -.085, -.30]
+    frame = source(tool=tool, view=View(camera, 50, 50, 30, 20, 60, 40))
+    work = np.eye(4)                         # An independently rotated and translated work frame.
+    work[:3, :3] = [[0, 0, 1], [0, 1, 0], [-1, 0, 0]]
+    work[:3, 3] = [-.1, .2, .35]
+    second = measure(frame, point=[30, 20]).summary(work)
+    assert second["in_tool"] == pytest.approx(first["in_tool"])
+    assert second["from_tool"] != first["from_tool"]
+    assert second["surface_center"] != first["surface_center"]
+    # An 8 mm shift along base X is -8 mm along the turned tool's Y axis.
+    camera[0, 3] += .008
+    slipped = measure(replace(frame, view=View(camera, 50, 50, 30, 20, 60, 40)), point=[30, 20]).summary(work)
+    assert slipped["in_tool"] == pytest.approx([.02, -.038, -.05])
 
 
 @pytest.mark.rendering
@@ -115,6 +192,14 @@ def test_the_daemon_measures_its_own_frame_in_the_work_frame_and_records_it(daem
         np.testing.assert_allclose(arrays["points"], [[.005, .005, .5]])
     with pytest.raises(DaemonError, match="no longer held"):
         c.measure("an old frame", point=[30, 20])
+    projected = c.measure(frame.id, point=[30, 20], plane=dict(box=[5, 5, 25, 30], max_error_m=.001))
+    assert projected["surface_center"] == m["surface_center"]
+    with np.load(Path(projected["image"]).with_suffix(".npz")) as arrays:
+        assert len(arrays["support_points"]) > 16
+    guard = d.measurements.guard([dict(evidence=projected["id"], max_age_s=5)])
+    d.measurements.now = lambda: frame.timestamp + 6
+    with pytest.raises(Refused, match="old"):
+        guard()
 
 
 def test_stale_or_recalibrated_measurements_refuse_admission_and_later_starts(k, required):
@@ -180,6 +265,16 @@ def test_a_guarded_plan_with_a_custom_step_is_refused_before_any_step_starts(k, 
     with pytest.raises(Refused, match="built-in"):
         k.submit([{"do": "gripper", "aperture_mm": 65}, Custom()], guard=guard)
     assert not k.jobs
+    k.guarded_steps = k.guarded_steps | {Custom}
+    job = k.submit(Custom(), guard=guard)
+    advance(k, lambda: job.finished)
+    assert job.status == "done"
+
+    class Unreviewed(Custom):
+        pass
+
+    with pytest.raises(Refused, match="unchecked"):
+        k.submit(Unreviewed(), guard=guard)
 
 
 def test_expiry_during_rehearsal_refuses_before_submission(daemon, monkeypatch):
@@ -248,7 +343,7 @@ def test_the_example_measures_moves_and_measures_again(tmp_path):
     from world_use.examples.perception import run
 
     result = run(tmp_path, speed=4)           # physics at four times real time; a faster clock is not modest
-    assert result["lift"] == result["placement"] == "pass", result.get("reason")
+    assert result["lift"] == result["placement"] == "pass", result
     assert result["evaluation"]["success"] and result["torque_off"]
     assert "block" not in json.loads((tmp_path / "session.json").read_text())["initial"]["world"]["boxes"]
     files = [Path(tmp_path / "perception" / m["id"]) for m in result["measurements"]]

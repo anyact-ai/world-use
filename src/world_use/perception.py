@@ -29,7 +29,7 @@ GREEN, RED = (30, 220, 100), (230, 60, 60)
 
 @dataclass(frozen=True)
 class Measurement:
-    """Surface points under the selected pixels of one frame. An invalid one says why and has no points."""
+    """Measured or plane-projected surface points. An invalid one says why and has no points."""
     frame: Frame = field(repr=False)
     points: np.ndarray = field(repr=False)      # base frame, metres
     pixels: np.ndarray = field(repr=False)      # native pixel cells (x, y) the points come from
@@ -37,6 +37,7 @@ class Measurement:
     diagnostics: dict
     target: str | None = None
     id: str = field(default_factory=lambda: uuid4().hex)
+    support_points: np.ndarray | None = field(default=None, repr=False)
 
     @property
     def valid(self) -> bool:
@@ -48,19 +49,22 @@ class Measurement:
         return np.median(self.points, axis=0) if self.valid else None
 
     def summary(self, work: np.ndarray) -> dict:
-        """What an agent acts on, in metres in the frame plans use; work is that frame's pose in the base frame."""
+        """Surface coordinates in metres; work is the plan frame's pose in base, in_tool uses captured tool axes."""
         def local(p):
             return (np.asarray(p, float) - work[:3, 3]) @ work[:3, :3]
 
         out = dict(id=self.id, camera=self.frame.camera, frame=self.frame.id, target=self.target,
-                   valid=self.valid, reason=self.reason, surface_center=None, visible_bounds=None, from_tool=None,
+                   valid=self.valid, reason=self.reason, surface_center=None, visible_bounds=None,
+                   from_tool=None, in_tool=None,
                    **self.diagnostics)
         if self.valid:
             center = local(self.center)
             out.update(surface_center=_metres(center),
                        visible_bounds=_metres(np.quantile(local(self.points), [.02, .98], axis=0)))
             if self.frame.tool is not None:
-                out["from_tool"] = _metres(center - local(self.frame.tool[:3, 3]))
+                tool = self.frame.tool
+                out["from_tool"] = _metres(center - local(tool[:3, 3]))
+                out["in_tool"] = _metres((self.center - tool[:3, 3]) @ tool[:3, :3])
         return out
 
     def overlay(self) -> Image.Image:
@@ -68,6 +72,9 @@ class Measurement:
         image = self.frame.image.copy()
         draw = ImageDraw.Draw(image, "RGBA")
         colour = GREEN if self.valid else RED
+        if "plane" in self.diagnostics:
+            left, top, right, bottom = self.diagnostics["plane"]["box"]
+            draw.rectangle((left, top, right - 1, bottom - 1), outline=(0, 180, 255, 255), width=2)
         for x, y in self.pixels[::max(1, len(self.pixels) // 400)]:
             draw.rectangle((x - 1, y - 1, x + 1, y + 1), fill=colour + (200,))
         if self.valid and self.frame.view is not None:
@@ -87,12 +94,15 @@ def _metres(value) -> list:
     return np.round(value, 4).tolist()
 
 
-def measure(frame: Frame, *, point=None, mask=None, target: str | None = None) -> Measurement:
+def measure(frame: Frame, *, point=None, mask=None, target: str | None = None,
+            plane: dict | None = None) -> Measurement:
     """Measure native pixels with the frame's optical-z depth and calibration.
 
     A point samples the pixel that contains it. A mask is eroded by one pixel to drop mixed boundary samples, at
     most 2048 of its pixels are sampled, and it needs at least 16 of them and half with valid depth. A depth gap
     over 5 cm inside the middle 80% of the samples means two surfaces were selected, and is refused.
+    With a point, plane={"box": [...], "max_error_m": ...} instead intersects its ray with a plane fitted
+    to that depth patch in the same frame. The caller asserts that the feature lies on that plane.
     """
     if (point is None) == (mask is None):
         raise ValueError("provide exactly one point or mask")
@@ -115,6 +125,10 @@ def measure(frame: Frame, *, point=None, mask=None, target: str | None = None) -
         pixels = np.column_stack([x, y])
         if len(pixels) > 2048:
             pixels = pixels[np.linspace(0, len(pixels) - 1, 2048).astype(int)]
+    if plane is not None:
+        if point is None:
+            raise ValueError("plane projection requires a point")
+        return _project_plane(frame, pixels, plane, target)
     least = 1 if point is not None else 16
     points = np.empty((0, 3))
     diagnostics: dict = dict(samples=len(pixels))
@@ -142,6 +156,44 @@ def measure(frame: Frame, *, point=None, mask=None, target: str | None = None) -
                 diagnostics["depth_spread_m"] = round(float(np.quantile(z, .9) - np.quantile(z, .1)), 4)
     points.flags.writeable = pixels.flags.writeable = False
     return Measurement(frame, points, pixels, reason, diagnostics, target)
+
+
+def _project_plane(frame: Frame, pixels: np.ndarray, plane: dict, target: str | None) -> Measurement:
+    if not isinstance(plane, dict) or set(plane) != {"box", "max_error_m"}:
+        raise ValueError('plane needs "box" and "max_error_m"')
+    tolerance = plane["max_error_m"]
+    if (isinstance(tolerance, bool) or not isinstance(tolerance, (int, float))
+            or not math.isfinite(tolerance) or tolerance <= 0):
+        raise ValueError("plane max_error_m must be positive and finite")
+    support = measure(frame, mask=rectangle(plane["box"], frame.image.size))
+    diagnostics: dict = dict(method="plane_projection", plane=dict(plane), **support.diagnostics)
+    points, reason = np.empty((0, 3)), support.reason
+    if support.valid:
+        center = support.points.mean(axis=0)
+        offsets = support.points - center
+        _, singular, axes = np.linalg.svd(offsets, full_matrices=False)
+        normal = axes[-1]
+        residual = float(np.max(np.abs(offsets @ normal)))
+        diagnostics["plane"].update(center_m=center.tolist(), normal=normal.tolist(), fit_error_m=residual)
+        if singular[1] < max(1e-9, singular[0] * .01):
+            reason = "degenerate_plane_support"
+        elif residual > tolerance:
+            reason = "nonplanar_support"
+        else:
+            assert frame.view is not None
+            origin = frame.view.T[:3, 3]
+            rays = frame.view.unproject(pixels + .5, np.ones(len(pixels))) - origin
+            denominator = rays @ normal
+            if np.any(np.abs(denominator) / np.linalg.norm(rays, axis=1) < .05):
+                reason = "grazing_plane_ray"
+            else:
+                depth = ((center - origin) @ normal) / denominator
+                if not np.isfinite(depth).all() or np.any(depth <= 0):
+                    reason = "plane_behind_camera"
+                else:
+                    points = origin + rays * depth[:, None]
+    points.flags.writeable = pixels.flags.writeable = False
+    return Measurement(frame, points, pixels, reason, diagnostics, target, support_points=support.points)
 
 
 def rectangle(box, size) -> np.ndarray:
@@ -202,7 +254,8 @@ class Measurements:
                           "missing_frame", "capture a new frame")
         return frame
 
-    def measure(self, frame: str, *, point=None, box=None, mask=None, target: str | None = None) -> dict:
+    def measure(self, frame: str, *, point=None, box=None, mask=None, target: str | None = None,
+                plane: dict | None = None) -> dict:
         """Measure, save the overlay and points with the run, and record one event. Returns the summary."""
         source = self.frame(frame)
         if sum(v is not None for v in (point, box, mask)) != 1:
@@ -215,7 +268,7 @@ class Measurements:
                 raise ValueError("mask must be packed: cameras.pack(np.packbits(mask).tobytes())")
             mask = np.unpackbits(np.frombuffer(unpack(mask, (w * h + 7) // 8), np.uint8))[:w * h]
             mask = mask.reshape(h, w).astype(bool)
-        m = measure(source, point=point, mask=mask, target=target)
+        m = measure(source, point=point, mask=mask, target=target, plane=plane)
         k = self.k
         with k.lock:
             work = k.world.frame("work").T.copy()
@@ -224,7 +277,10 @@ class Measurements:
         folder.mkdir(parents=True, exist_ok=True)
         # Written here, before the measurement exists: a full disk fails this request, not a later run.
         m.overlay().save(folder / f"{m.id}.png")
-        save_arrays(folder / f"{m.id}.npz", dict(points=m.points, pixels=m.pixels))
+        arrays = dict(points=m.points, pixels=m.pixels)
+        if m.support_points is not None:
+            arrays["support_points"] = m.support_points
+        save_arrays(folder / f"{m.id}.npz", arrays)
         with self.lock:
             self.sources[m.id] = Source(source.camera, source.calibration, source.timestamp, m.reason)
             while len(self.sources) > self.KEPT:

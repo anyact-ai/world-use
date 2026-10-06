@@ -261,3 +261,40 @@ def test_provider_deadline_terminates_process_and_never_replays_request(monkeypa
             worker.update("target", Frame(Image.new("RGB", (8, 8)), "fixture"))
     finally:
         worker.close()
+
+
+def test_tracking_history_retirement_revokes_an_active_jobs_old_measurement(daemon):
+    d, c = daemon
+    d.cameras["synthetic"] = Synthetic()
+    tracker = Tracker()
+    tracking = Tracking(c, tracker)
+    first = tracking.select(c.frame("synthetic", depth=True).id, "block", box=[30, 30, 70, 70])
+    job = c.run([{"do": "checkpoint", "ask": "Continue?"}, {"do": "hold", "seconds": .01}], check=False,
+                wait=30, requires=[dict(evidence=first["id"], max_age_s=3600)])
+    for _ in range(256):
+        tracking.observe(["block"])
+    tracker.lost = True
+    tracking.observe(["block"])
+    result = c.answer(job["id"], "yes", wait=30)
+    assert result["status"] == "refused" and "withdrawn" in result["outcome"]["message"]
+
+
+def test_selection_provider_failure_withdraws_other_targets(daemon, monkeypatch):
+    d, c = daemon
+    d.cameras["synthetic"] = Synthetic()
+    tracker = Tracker()
+    tracking = Tracking(c, tracker)
+    first = tracking.select(c.frame("synthetic", depth=True).id, "first", box=[30, 30, 70, 70])
+    job = c.run([{"do": "checkpoint", "ask": "Continue?"}, {"do": "hold", "seconds": .01}], check=False,
+                wait=30, requires=[dict(evidence=first["id"], max_age_s=60)])
+
+    def timeout(*args, **kwargs):
+        tracker.ready = False
+        raise Refused("the provider stopped", "provider_timeout")
+
+    monkeypatch.setattr(tracker, "select", timeout)
+    with pytest.raises(Refused, match="provider stopped"):
+        tracking.select(c.frame("synthetic", depth=True).id, "second", point=[40, 40])
+    result = c.answer(job["id"], "yes", wait=30)
+    assert result["status"] == "refused" and "withdrawn" in result["outcome"]["message"]
+    assert not tracking.targets
