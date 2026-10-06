@@ -65,7 +65,8 @@ class BoxParameters(Request):
 
     @model_validator(mode="after")
     def kind_parameters(self):
-        allowed = {"object": {"grip_width", "mass_kg", "friction"}, "fragile": {"dtau"}, "slow": {"speed"}}
+        allowed = {"object": {"grip_width", "mass_kg", "friction"}, "surface": {"mass_kg", "friction"},
+                   "fragile": {"dtau"}, "slow": {"speed"}}
         supplied = self.model_fields_set & {"grip_width", "mass_kg", "friction", "dtau", "speed"}
         if unexpected := supplied - allowed.get(self.kind, set()):
             raise ValueError(f"{self.kind} box: unexpected parameters {', '.join(sorted(unexpected))}")

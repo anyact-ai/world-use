@@ -224,9 +224,10 @@ def test_a_five_joint_arm_moves_sideways_by_letting_its_heading_turn(weights):
         k.close()
 
 
-def test_estimated_parameters_cannot_change_physical_mass_or_friction():
+@pytest.mark.parametrize("kind", ["object", "surface"])
+def test_estimated_parameters_cannot_change_physical_mass_or_friction(kind):
     world = World()
-    world.add_box("block", "object", [.8, 0, .4], [.04] * 3, mass_kg=.05, friction=.8)
+    world.add_box("block", kind, [.8, 0, .4], [.04] * 3, mass_kg=.05, friction=.8)
     body = bodies.make("sim", world)
     k = Kernel(body, world, VirtualClock(100))
     try:
