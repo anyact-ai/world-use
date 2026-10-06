@@ -9,6 +9,8 @@ import time
 import xml.etree.ElementTree as ET
 from collections import deque
 from pathlib import Path
+from typing import TYPE_CHECKING
+from uuid import uuid4
 
 import numpy as np
 
@@ -17,6 +19,9 @@ from .recorder import read_chunks
 from .records import overview, robot_of
 from .robot_assets import resolve
 from .world import World
+
+if TYPE_CHECKING:
+    from .client import Client
 
 TIMELINE = "elapsed"
 COLORS = {"surface": [155, 173, 184], "object": [238, 130, 50], "keep_out": [228, 75, 75],
@@ -154,6 +159,7 @@ class RecordingView:
             media_type="text/markdown"), static=True)
         self.rec.log("about", rr.TextDocument(
             f"# {self.meta['body']}\n\n{self.meta['mode']} · world-use {self.meta['package_version']}\n\n"
+            f"Recording: `{self.folder}`\n\n"
             "The 3D view combines measured joints with the **estimated world**. Objects in that view are beliefs, "
             "not reconstructed physical motion. Camera observations show the captured scene, "
             "with any saved overlays.\n\n"
@@ -318,41 +324,73 @@ class RecordingView:
             self._event(self.pending.popleft())
 
 
-def view(folder: Path | str, *, output: Path | None = None, follow: bool = False) -> Path | None:
+def view(folder: Path | str, *, output: Path | None = None, follow: bool = False,
+         live_client: Client | None = None) -> Path | None:
+    """View one record; a live client also follows replacement sessions at the same daemon URL."""
     rr = _sdk()
     folder = Path(folder).expanduser().resolve()
-    if not (folder / "session.json").is_file():
-        raise ValueError(f"view needs a local run folder containing session.json: {folder}")
-    rec = rr.RecordingStream("world-use")
-    viewer = None
+    if live_client is not None and output is not None:
+        raise ValueError("a portable export follows one recording, not replacement sessions")
+    follow = follow or live_client is not None
+    rec = viewer = None
+    reader = RecordReader(folder)
+    disconnected = False
     try:
-        # Set the sink before loading meshes, so large static assets don't accumulate in the SDK.
-        if output is not None:
-            output = output.expanduser().resolve()
-            output.parent.mkdir(parents=True, exist_ok=True)
-            rec.save(output)
-        else:
-            # A tool install keeps rerun-sdk's viewer app beside this Python, off the PATH; elsewhere, use the PATH.
-            app = shutil.which("rerun", path=str(Path(sys.executable).parent))
-            rr.spawn(recording=rec, memory_limit="1GiB", hide_welcome_screen=True, executable_path=app)
-        viewer = RecordingView(folder, rec, follow=follow, update_layout=output is None)
-        if output is None:
-            rec.send_blueprint(blueprint(viewer.base_frame, follow, viewer.eye))
-        reader = RecordReader(folder)
         while True:
+            if viewer is None or viewer.folder != folder:
+                if not (folder / "session.json").is_file():
+                    raise ValueError(f"view needs a local run folder containing session.json: {folder}")
+                if viewer is not None and rec is not None:
+                    viewer.append(*reader.poll())
+                    viewer.finish_events()
+                    rec.flush()
+                    rec.disconnect()
+                    reader = RecordReader(folder)
+                rec = rr.RecordingStream("world-use", recording_id=uuid4())
+                # Set the sink before loading meshes, so large static assets don't accumulate in the SDK.
+                if output is not None:
+                    output = output.expanduser().resolve()
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    rec.save(output)
+                else:
+                    # Tool installs keep the viewer beside this Python, off the PATH.
+                    app = shutil.which("rerun", path=str(Path(sys.executable).parent))
+                    rr.spawn(recording=rec, memory_limit="1GiB", hide_welcome_screen=True, executable_path=app)
+                rec.send_recording_name(folder.name)
+                viewer = RecordingView(folder, rec, follow=follow, update_layout=output is None)
+                if output is None:
+                    rec.send_blueprint(blueprint(viewer.base_frame, follow, viewer.eye))
+                if live_client is not None:
+                    print(f"wu view: following {folder} (Ctrl+C to stop)", file=sys.stderr)
             samples, events = reader.poll()
             viewer.append(samples, events)
             if not follow or reader.complete:
                 viewer.finish_events()
-                break
-            time.sleep(.25)
+                if live_client is None:
+                    break
+            if live_client is not None:
+                try:
+                    recorded = live_client.status().get("recording", {}).get("path")
+                except OSError:
+                    if not disconnected:
+                        print("wu view: daemon unavailable; waiting to reconnect", file=sys.stderr)
+                    disconnected = True
+                else:
+                    if not recorded:
+                        raise ValueError("the daemon has no run folder; start it with --runs")
+                    folder = Path(recorded).expanduser().resolve()
+                    if disconnected:
+                        print("wu view: daemon reconnected", file=sys.stderr)
+                    disconnected = False
+            time.sleep(1 if live_client is not None else .25)
     except KeyboardInterrupt:
         if viewer is not None:
             viewer.finish_events()
     finally:
-        if output is not None and viewer is not None:
+        if output is not None and viewer is not None and rec is not None:
             # Save one complete layout after all camera names are known, including on Ctrl+C.
             rec.send_blueprint(blueprint(viewer.base_frame, False, viewer.eye, sorted(viewer.camera_names)))
-        rec.flush()
-        rec.disconnect()
+        if rec is not None:
+            rec.flush()
+            rec.disconnect()
     return output

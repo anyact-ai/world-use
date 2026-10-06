@@ -50,11 +50,16 @@ wu up --workcell block
 wu view
 ```
 
-With no folder, `wu view` finds the local daemon's record and follows it, usually about one second behind control.
-To follow a given folder, use `wu view runs/RUN --follow`. Camera pictures arrive when a client calls `wu look` or
-measures; nothing streams video. Following ends once the record is complete, or with Ctrl+C; a record whose process
-was killed never completes, so stop following it with Ctrl+C. The folder must be readable where the viewer runs:
-for a remote daemon, copy or mount its record.
+With no folder, `wu view` follows the local daemon's record, including edits made through `wu box` or other
+world tools, usually one to two seconds behind control. It stays connected across completed sessions,
+waits through daemon restarts and opens the next session as a separate named recording. Ctrl+C stops
+following; the Rerun window stays open. The daemon must be running when you first start `wu view`.
+
+Supplying a folder opens that saved recording. Add `--follow` to follow it until completion; it does not
+switch to other runs. A portable export with `--out` also stays with one recording. Camera pictures arrive
+when a client calls `wu look` or measures; nothing streams video. Scene-file edits take effect when loaded
+by a new daemon, not merely when saved. The folder must be readable where the viewer runs: for a remote
+daemon, copy or mount its record.
 
 ## Headless export
 

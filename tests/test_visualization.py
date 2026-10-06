@@ -248,3 +248,59 @@ def test_missing_extra_gives_installation_hint(run_folder, monkeypatch):
     monkeypatch.setitem(sys.modules, "rerun", None)
     with pytest.raises(ValueError, match=r"world-use\[rerun\]"):
         view(run_folder, output=run_folder / "view.rrd")
+
+
+@pytest.mark.parametrize("clean_close", [False, True])
+def test_live_view_follows_world_edits_and_reconnects_to_a_new_session(run_folder, monkeypatch, clean_close):
+    rr = pytest.importorskip("rerun")
+    from world_use import visualization
+
+    other = run_folder.with_name("next-run")
+    shutil.copytree(run_folder, other)
+    for folder, angle in ((run_folder, 0), (other, 1)):
+        (folder / "tape").mkdir()
+        save_arrays(folder / "tape/000000.npz", samples([0], [angle]))
+    world = World()
+    world.add_box("moved", "object", [.4, .1, .2], [.04] * 3)
+    event = dict(seq=1, t=.1, kind="world_state", level="info", message="operator changed scene",
+                 data=dict(world=world.to_dict()))
+    exported, recording_ids, polls = [], [], 0
+
+    def spawn(*, recording, **_):
+        recording_ids.append(recording.get_recording_id())
+        exported.append(run_folder.parent / f"stream-{len(exported)}.rrd")
+        recording.save(exported[-1])
+
+    class LiveClient:
+        def status(self):
+            nonlocal polls
+            polls += 1
+            if polls == 1:
+                (run_folder / "events.jsonl").write_text(json.dumps(event) + "\n")
+                save_arrays(run_folder / "tape/000001.npz", samples([.1], [.5]))
+                if clean_close:
+                    save_summary(run_folder / "complete.json",
+                                 dict(parts=2, events_bytes=(run_folder / "events.jsonl").stat().st_size))
+                return dict(recording=dict(path=str(run_folder)))
+            if polls == 2:
+                raise ConnectionError("daemon stopped")
+            if polls == 3:
+                # Final samples can commit between detecting the new session and switching streams.
+                if not clean_close:
+                    save_arrays(run_folder / "tape/000002.npz", samples([.2], [.75]))
+                return dict(recording=dict(path=str(other)))
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(rr, "spawn", spawn)
+    monkeypatch.setattr(visualization.time, "sleep", lambda _: None)
+    view(run_folder, live_client=LiveClient())
+    assert len(exported) == 2
+    assert len(set(recording_ids)) == 2
+    rows = component_rows(exported[0], "/scene/world/moved", "Transform3D:translation")
+    assert rows[0][0] == 100_000_000
+    assert rows[0][1][0] == pytest.approx([.4, .1, .2])
+    assert component_rows(exported[0], "/scene/world/block", "Clear:is_recursive") == [(100_000_000, [True])]
+    before = component_rows(exported[0], "/signals/joints/shoulder/measured", "Scalars:scalars")
+    after = component_rows(exported[1], "/signals/joints/shoulder/measured", "Scalars:scalars")
+    assert [t for t, _ in before] == ([0, 100_000_000] if clean_close else [0, 100_000_000, 200_000_000])
+    assert after == [(0, pytest.approx([np.degrees(1)]))]
