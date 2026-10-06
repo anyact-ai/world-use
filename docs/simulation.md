@@ -107,9 +107,15 @@ two friction-held blocks cross a physical divider, low shortcuts fail rehearsal,
 are checked against simulation truth. Both tests check return, torque release and record completion.
 These are scripted integration tests, not model-policy benchmarks.
 
-The variation test keeps the perception procedure unchanged while varying block position, camera placement,
-mass and friction. It checks physical placement in three scenes and requires either verified placement or
-explicit failure with release, withdrawal and torque off in an angled view that can defeat the colour selector.
+The variation test keeps the perception procedure's motions unchanged while varying block position,
+camera placement, mass and the object's friction setting. Two scenes must complete placement. A heavier
+block must pass its lift check but may miss placement; an angled view can defeat the colour selector.
+Any claimed placement must pass independent pose evaluation. Every case requires release, withdrawal,
+torque off and a complete record; incomplete tasks must report a reason.
+
+MuJoCo normally uses the larger friction coefficient of two contacting geoms at equal priority. The fingers
+use 1.0 and the tray 0.8, so lowering only the object's setting to 0.4 does not reduce these contact coefficients.
+That variation checks the configuration path, not robustness to a more slippery grip.
 
 Records keep the URDF and copies of a custom robot's meshes. A built-in robot's
 meshes ship with world-use; replay finds them by the recorded URDF's exact

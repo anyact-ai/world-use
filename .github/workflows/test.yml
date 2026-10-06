@@ -61,12 +61,20 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1-mesa-dri
       - name: Test including MuJoCo rendering
         if: runner.os == 'Linux'
-        run: .venv/bin/pytest
+        run: .venv/bin/pytest --basetemp="${{ runner.temp }}/world-use-tests"
       # Hosted macOS VMs have no accelerated OpenGL for MuJoCo's CGL backend.
       # https://github.com/google-deepmind/mujoco/issues/959
       - name: Test without GPU-dependent rendering
         if: runner.os == 'macOS'
         run: .venv/bin/pytest -m 'not rendering'
+      - name: Preserve failed scene-variation evidence
+        if: failure() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: scene-variations-${{ matrix.os }}-${{ matrix.python }}
+          path: ${{ runner.temp }}/world-use-tests/test_unchanged_perception_proc*/
+          if-no-files-found: ignore
+          retention-days: 7
       - run: .venv/bin/python examples/adapters/planar.py
       - name: Verify the installed wheel and packaged resources
         shell: bash

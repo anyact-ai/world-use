@@ -138,6 +138,9 @@ async def procedure(server, evaluate, *, tracking=False) -> dict:
         final = await measure()
         aperture = (await tool("status"))["gripper"]["aperture_mm"]
         results["placement"] = "pass" if final and placed(final, aperture) else "fail"
+        if results["placement"] != "pass":
+            results["reason"] = ("the released block is outside the placement tolerance" if final
+                                 else "the released block is not measurable")
     except Exception as e:
         results["reason"] = str(e)
         # An open gripper retreats directly. If it may hold the block, set it on the known tray before opening.

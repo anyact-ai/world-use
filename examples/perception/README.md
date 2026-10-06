@@ -67,6 +67,11 @@ depth. The block tilts a few degrees in the pinch grasp and settles 5 to 9 mm sh
 let go, inside the 1 cm tolerance. These runs check that the pieces work together; they are not a
 benchmark of tracking or grasping.
 
+The grasp can settle and tilt during transport. A heavier, 100 g block has both passed and missed the
+1 cm placement tolerance in CI and local runs; this script does not guarantee placement across payloads.
+A missed final check is reported as a failure, followed by homing and torque release. The independent
+evaluator retains the actual position and orientation, even when the procedure cannot confirm success.
+
 The colour selector is deliberately simple and sensitive to camera angle and lighting. An angled view can
 push a visible block outside its colour threshold; the procedure then reports a failed observation,
 returns the block to the tray, and goes home with torque off. The scene-variation test checks this recovery
