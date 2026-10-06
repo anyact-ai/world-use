@@ -65,7 +65,9 @@ OMP_NUM_THREADS=2 uv run --extra vision --extra rerun python scripts/vision_smok
 
 The task assumes a known upright block, a fixed calibrated overhead camera, a clear tray and simulated
 depth. The block tilts a few degrees in the pinch grasp and settles 5 to 9 mm short of the target when
-let go, inside the 1 cm tolerance. These runs check that the pieces work together; they are not a
+let go, inside the 1 cm tolerance. The stricter camera check can reject a physically successful placement
+near that limit: `placement` reports the camera check, while `evaluation.success` reports simulator truth.
+These runs check that the pieces work together; they are not a
 benchmark of tracking or grasping.
 
 The grasp can settle and tilt during transport. A heavier, 100 g block has both passed and missed the

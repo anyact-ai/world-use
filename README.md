@@ -42,9 +42,9 @@ t+9s | idle, holding | tool F+0.302 L+0.092 U+0.270 | grip 0.05rad (0mm) -0.00 |
 uv tool install --with-executables-from rerun-sdk "world-use[mcp,rerun] @ git+https://github.com/anyact-ai/world-use"
 ```
 
-This needs [uv](https://docs.astral.sh/uv/), which finds or installs Python 3.11 or newer. The extras are `mcp`
+This needs [uv](https://docs.astral.sh/uv/), which finds or installs Python 3.13 or newer. The extras are `mcp`
 (the MCP server), `rerun` (the 3D viewer), `vision` (EdgeTAM tracking, with PyTorch) and `rebot` (the physical
-reBot's driver, on Python 3.11 to 3.13).
+reBot's driver, on Python 3.13).
 The install exposes `wu` and the `rerun` viewer command.
 
 ## Try it
