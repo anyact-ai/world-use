@@ -1,6 +1,7 @@
 """Physics and rendered pixels must come from MuJoCo, independently of planner beliefs."""
 from dataclasses import replace
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 import numpy as np
 import pytest
@@ -166,6 +167,39 @@ def test_a_one_joint_jaw_is_driven_in_its_own_units_and_holds_what_it_grips():
         k.close()
 
 
+def test_fixed_child_finger_pads_hold_and_release_by_contact(tmp_path):
+    robot = ET.parse(JAW_ARM.urdf)
+    root = robot.getroot()
+    for name in ("hand", "jaw"):
+        link = root.find(f"link[@name='{name}']")
+        collision = link.find("collision")
+        link.remove(collision)
+        pad = ET.SubElement(root, "link", name=f"{name}_pad")
+        pad.append(collision)
+        joint = ET.SubElement(root, "joint", name=f"{name}_pad", type="fixed")
+        ET.SubElement(joint, "parent", link=name)
+        ET.SubElement(joint, "child", link=f"{name}_pad")
+    urdf = tmp_path / "padded-jaw.urdf"
+    robot.write(urdf)
+    truth = World()
+    truth.add_box("pad", "surface", [.17, 0, .005], [.12, .12, .01])
+    truth.add_box("block", "object", [.17, 0, .025], [.02, .02, .03])
+    k = jaw_arm(truth, urdf=urdf)
+    try:
+        out = k.run([{"do": "gripper", "to": .5}, {"do": "line", "up": -.065},
+                     {"do": "grip", "expect_mm": [10, 25]}, {"do": "line", "up": .05}])
+        assert out.ok, out.message
+        assert truth.held is not None and truth.held[0] == "block"
+        assert truth.boxes["block"].pose[2, 3] > .06
+        assert k.run({"do": "gripper", "to": .8}).ok
+        for _ in range(100):
+            k.tick()
+        assert truth.held is None
+        assert truth.boxes["block"].pose[2, 3] == pytest.approx(.025, abs=.002)
+    finally:
+        k.close()
+
+
 def test_without_a_gripper_description_the_jaw_rides_along():
     body = bodies.make("sim", manifest=replace(JAW_ARM, gripper=None))
     try:
@@ -207,14 +241,14 @@ def test_estimated_parameters_cannot_change_physical_mass_or_friction():
         k.close()
 
 
-def test_restored_worlds_own_nested_parameters_and_fact_values():
+def test_restored_worlds_own_parameters_and_nested_fact_values():
     world = World()
-    world.add_box("block", "object", [.8, 0, .4], [.04] * 3, material={"estimates": [.5, .8]})
+    world.add_box("block", "object", [.8, 0, .4], [.04] * 3, mass_kg=.05)
     world.assert_fact("target", {"position": [.1, .2, .3]}, "test")
     snapshot = world.to_dict()
     estimate, truth = World.from_dict(snapshot), World.from_dict(snapshot)
-    estimate.boxes["block"].params["material"]["estimates"][0] = 9
+    estimate.boxes["block"].params["mass_kg"] = 9
     estimate.facts["target"].value["position"][0] = 9
-    assert truth.boxes["block"].params["material"]["estimates"] == [.5, .8]
+    assert truth.boxes["block"].params["mass_kg"] == .05
     assert truth.facts["target"].value["position"] == [.1, .2, .3]
     assert snapshot == world.to_dict()

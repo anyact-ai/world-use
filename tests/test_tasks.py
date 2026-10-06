@@ -1,10 +1,14 @@
 """Task predicates, not just command completion, decide whether placement worked."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
-from world_use.examples.pick_place import pickup, run, setup, success
+from world_use import World, check
+from world_use.examples.pick_place import TARGET, pickup, placement, run, setup, success
+from world_use.geometry import axis_angle
 
 
 @pytest.mark.parametrize("scenario,expected", [("nominal", True), ("shifted", True),
@@ -25,6 +29,50 @@ def test_a_done_pickup_is_not_a_successful_placement():
     assert truth.held is not None
     assert not success(k, truth)["success"]
     k.close()
+
+
+@pytest.mark.parametrize("axis,degrees,expected", [((1, 0, 0), 0, True), ((1, 0, 0), 4, True),
+                                                 ((1, 0, 0), 6, False), ((1, 0, 0), 180, False),
+                                                 ((0, 0, 1), 90, False)])
+def test_task_requires_the_intended_orientation_in_the_work_frame(axis, degrees, expected):
+    truth = World()
+    frame = np.eye(4)
+    frame[:3, :3] = axis_angle((0, 0, 1), .4)
+    frame[:3, 3] = [.1, .2, .3]
+    truth.add_frame("work", frame)
+    block = truth.add_box("block", "object", TARGET, [.04, .04, .10], frame="work")
+    block.pose[:3, :3] = frame[:3, :3] @ axis_angle(axis, np.radians(degrees))
+    tool = np.eye(4)
+    tool[:3, 3] = truth.to_base("work", TARGET + [0, 0, .10])
+    result = success(SimpleNamespace(tool=tool), truth)
+    assert result["placed"] and result["released"] and result["withdrawn"]
+    assert result["oriented"] is expected and result["success"] is expected
+    assert result["orientation_error_deg"] == pytest.approx(degrees, abs=1e-6)
+
+
+def test_adapting_the_block_workcell_and_destination():
+    k, truth = setup()
+    target = [.33, -.06, .20]
+    try:
+        for world in (k.world, truth):
+            world.add_box("tray", "surface", [.32, 0, .14], [.28, .36, .02], frame="work")
+            world.add_box("block", "object", [.35, .02, .20], [.04, .04, .10], frame="work")
+        k.body.reset(k.state.q, k.state.gripper)
+        k.enable()
+        phase = pickup(k)
+        assert check(phase, k).ok
+        assert k.run(phase).ok
+        phase = placement(k, target)
+        assert check(phase, k).ok
+        assert k.run(phase).ok
+        result = success(k, truth, target)
+        assert result["success"], result
+        k.set_home_route([], "adapted open tray")
+        assert k.run(k.home_plan()).ok
+        k.release()
+        assert not k.enabled
+    finally:
+        k.close()
 
 
 def test_a_new_obstacle_blocks_the_return():

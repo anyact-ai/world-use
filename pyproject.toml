@@ -27,6 +27,7 @@ dependencies = [
     "mujoco>=3.14,<4",
     "numpy>=1.26",
     "pillow>=10.1",
+    "pydantic>=2.11,<3",
 ]
 
 [project.optional-dependencies]

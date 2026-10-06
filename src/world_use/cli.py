@@ -182,7 +182,7 @@ def main(argv=None) -> int:
     p.add_argument("reason", nargs="?", default="stop requested")
     p = sub.add_parser("home", help="go home along the home route, then fold to the rest pose")
     p.add_argument("--wait", type=float, default=60.0, help="seconds to wait for the outcome")
-    p = sub.add_parser("home-route", help="set the way home from here and rehearse it ('[]' folds straight home)")
+    p = sub.add_parser("home-route", help="rehearse and then set the way home ('[]' folds straight home)")
     p.add_argument("steps", help="JSON list of motion and gripper steps, [] or null (clears the route)")
     p.add_argument("--note", default="")
     sub.add_parser("world", help="frames, boxes and facts the kernel knows")

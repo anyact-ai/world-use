@@ -176,6 +176,36 @@ def test_a_home_route_is_rehearsed_when_set_and_must_be_given(client, capsys):
     assert r["text"].splitlines()[0] in capsys.readouterr().out
 
 
+def test_failed_home_candidate_preserves_the_installed_route(daemon):
+    d, c = daemon
+    c.release()                             # a return can be prepared without powering the robot
+    assert c.home_route([])["ok"]
+    before = d.k.home_route
+    candidate = [{"do": "line", "up": 0.02}, {"do": "line", "forward": 0.40}]
+    assert not c.home_route(candidate)["ok"]
+    assert d.k.home_route == before and d.k.home_plan() == d.k.home_plan(steps=[])
+    c.home_route(None)
+    assert not c.home_route(candidate)["ok"]
+    assert d.k.home_route is None
+
+
+def test_home_candidate_must_still_be_current_after_rehearsal(daemon, monkeypatch):
+    d, c = daemon
+    assert c.home_route([])["ok"]
+    before = d.k.home_route
+    check = d.rehearser.check
+
+    def changed(*args, **kwargs):
+        report = check(*args, **kwargs)
+        d.k.stop("scene changed while checking the way home")
+        return report
+
+    monkeypatch.setattr(d.rehearser, "check", changed)
+    with pytest.raises(DaemonError, match="changed during rehearsal"):
+        c.home_route([])
+    assert d.k.home_route == before
+
+
 def test_check_does_not_move_the_robot(daemon):
     d, client = daemon
     before = d.k.cmd.q.copy()
@@ -433,6 +463,61 @@ def test_the_daemon_shuts_down_once(daemon):
     c.shutdown()
     with pytest.raises(Refused, match="already shutting down"):
         d.shutdown()
+
+
+def test_shutdown_refuses_an_enable_already_queued_during_release(daemon, monkeypatch):
+    import queue
+    from concurrent.futures import ThreadPoolExecutor
+
+    d, _ = daemon
+    releasing, finish_release, queued = threading.Event(), threading.Event(), threading.Event()
+    disable = d.k.body.disable
+
+    def blocked_disable():
+        releasing.set()
+        assert finish_release.wait(5)
+        disable()
+
+    class NotifyingQueue(queue.SimpleQueue):
+        def put(self, item):
+            super().put(item)
+            if item[0] == d.k._enable:
+                queued.set()
+
+    monkeypatch.setattr(d.k.body, "disable", blocked_disable)
+    monkeypatch.setattr(d.k, "_posted", NotifyingQueue())
+    with ThreadPoolExecutor(2) as pool:
+        shutdown = pool.submit(d.shutdown)
+        try:
+            assert releasing.wait(5)
+            enable = pool.submit(d.k.enable)
+            assert queued.wait(5)
+        finally:
+            finish_release.set()
+        shutdown.result(5)
+        with pytest.raises((Refused, RuntimeError), match=r"shutting down|control loop.*stopped"):
+            enable.result(5)
+    assert not d.control.is_alive() and not d.k.enabled and not d.k.body.enabled
+
+
+def test_failed_shutdown_keeps_the_session_available_for_power_recovery(daemon, monkeypatch):
+    d, c = daemon
+    disable = d.k.body.disable
+
+    def failed_release():
+        raise OSError("could not confirm power off")
+
+    monkeypatch.setattr(d.k.body, "disable", failed_release)
+    with pytest.raises(DaemonError, match="could not confirm power off"):
+        c.shutdown()
+    assert d.control.is_alive() and c.status()["power_uncertain"]
+    monkeypatch.setattr(d.k.body, "disable", disable)
+    c.release()
+    c.reset()
+    c.enable()
+    assert c.status()["enabled"]
+    c.shutdown()
+    assert not d.control.is_alive() and not d.k.body.enabled
 
 
 

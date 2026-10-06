@@ -22,7 +22,8 @@ from collections.abc import Callable
 from concurrent.futures import CancelledError, Future
 from contextlib import suppress
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from numbers import Real
 from pathlib import Path
 
 import numpy as np
@@ -205,6 +206,7 @@ class Kernel:
         self._ids = itertools.count(1)
         self._stop: str | None = None
         self.enabled = self.faulted = False
+        self._closing = False                   # closes admission even for enable calls already posted to the loop
         self.power_uncertain = False             # an incomplete enable/disable must never look like torque off
         self.feedback_at: float | None = None    # kernel-clock time of the last distinct successful sample
         self.feedback_error: str | None = None
@@ -228,7 +230,7 @@ class Kernel:
 
     # -- lifecycle -------------------------------------------------------------------------------
     def connect(self) -> JointState:
-        st = self.body.connect()
+        st = self._validate_state(self.body.connect())
         self.state, self.q_start = st, np.asarray(st.q, float).copy()
         self.feedback_at, self._feedback_stamp = self.clock.now(), st.t
         self.cmd = Command(self.q_start.copy(), np.zeros(self.manifest.n), st.gripper)
@@ -259,8 +261,26 @@ class Kernel:
         """Torque off. Only where that moves nothing (the manifest's rest pose), and only when idle."""
         self._on_loop(self._release)
 
+    def begin_shutdown(self):
+        """Close admission before releasing power. A failed release leaves the session available for recovery."""
+        with self.lock:
+            self._closing = True
+            self.changed()
+        try:
+            self.release()
+        except BaseException:
+            with self.lock:
+                self._closing = False
+            raise
+
+    def _accept_work(self):
+        if self._closing:
+            raise Refused("the kernel is shutting down; no new work can start", "closing")
+
     def _enable(self):
-        self.changed()
+        with self.lock:
+            self._accept_work()
+            self.changed()
         if self._loop_thread is not None and not self._loop_thread.is_alive():
             raise Refused("the control loop has stopped, so nothing would command the motors", "no_loop",
                           "restart the daemon")
@@ -380,6 +400,38 @@ class Kernel:
         return summary
 
     # -- requests (any thread) ---------------------------------------------------------------------
+    def checked_start(self, *, require_enabled: bool = True):
+        """An idle snapshot and its admission check, also checked when the submitted job starts.
+
+        Rehearsal runs outside the lock. Only the kernel accounts for intervening control changes and the
+        checked job's own submission; observation events and ordinary encoder noise do not invalidate it.
+        """
+        from .plan import same_start, snapshot
+
+        with self.lock:
+            self._accept_work()
+            if (require_enabled and not self.enabled) or self.faulted or self.power_uncertain:
+                raise Refused("checked runs need torque on, confirmed power and a cleared fault", "not_ready",
+                              "inspect status and resolve the power state before running")
+            if self.active is not None or self.queue or self._stop is not None:
+                raise Refused("checked runs need an idle robot; another job is running, queued or stopping",
+                              "busy", "wait for it to finish, then retry")
+            snap, revision, enabled = snapshot(self), self.control_revision, self.enabled
+
+        def admission():
+            gripper = self.state.gripper
+            changed = (not same_start(snap, self)
+                       or ((gripper is None) != (snap.gripper is None))
+                       or (gripper is not None and snap.gripper is not None and abs(gripper - snap.gripper) > 0.01))
+            own_job = self.active is not None and self.active.admission is admission
+            if (changed or self.control_revision != revision + int(own_job)
+                    or self.queue or self._stop is not None or (self.active is not None and not own_job)
+                    or self.enabled != enabled or self.faulted or self.power_uncertain or self._closing):
+                raise Refused("the robot or scene changed during rehearsal; nothing started", "stale_check",
+                              "wait until idle, then retry so the plan is checked from the new state")
+
+        return snap, admission
+
     def submit(self, spec, admission: Callable[[], None] | None = None, *,
                guard: Callable[[], None] | None = None) -> Job:
         """Queue a behavior. A malformed spec, or one naming a frame or joint this robot lacks, is refused here;
@@ -390,6 +442,7 @@ class Kernel:
             raise Refused("a guarded plan needs built-in or explicitly audited steps; this custom step is unchecked",
                           "custom_step")
         with self.lock:
+            self._accept_work()
             self._references(behavior)
             if guard is not None:
                 guard()
@@ -449,25 +502,33 @@ class Kernel:
         self._references(route)
         return deepcopy(route.spec()["steps"])
 
-    def set_home_route(self, specs: list | None, note: str = "") -> None:
-        """The policy's way out from here, checked against the scene it can see now. [] = fold straight home.
-        It stays valid until something is touched. None clears it when the scene changes."""
+    def set_home_route(self, specs: list | None, note: str = "", *,
+                       admission: Callable[[], None] | None = None) -> None:
+        """Store a route, with an optional check that its rehearsal is still current. [] = fold straight home.
+        Embedded callers own the rehearsal; step limits still apply. None clears the route."""
         steps = None if specs is None else self._home_steps(specs)
         with self.lock:
+            if steps is not None:
+                self._accept_work()
+            if admission is not None:
+                admission()
             self.changed()
             self.home_route = None if steps is None else (steps, self.events.seq + 1)
         message = "home route cleared" if steps is None else f"home route set ({len(steps)} moves, then fold)"
         self.emit("home_route", message + (f": {note}" if note else ""), steps=steps, note=note)
 
-    def home_plan(self) -> list:
-        """Route + supported rest pose; free joints return to their session-start positions."""
-        route = self.home_route
-        if route is None:
-            raise Refused("no home route set, so there is no known-clear way back", "no_home_route",
-                          "look at the scene, then set a home route ([] = fold straight home from here)")
-        if self.last_touch >= route[1]:
-            raise Refused("the arm has touched something since the home route was set; the way back may be blocked",
-                          "home_route_stale", "look again, then set the home route again")
+    def home_plan(self, *, steps: list | None = None) -> list:
+        """Route + supported rest pose. Explicit steps prepare a candidate without installing it."""
+        if steps is None:
+            route = self.home_route
+            if route is None:
+                raise Refused("no home route set, so there is no known-clear way back", "no_home_route",
+                              "look at the scene, then set a home route ([] = fold straight home from here)")
+            if self.last_touch >= route[1]:
+                raise Refused("the arm has touched something since the home route was set; the way back may be blocked",
+                              "home_route_stale", "look again, then set the home route again")
+            steps = route[0]
+        steps = self._home_steps(steps)
         q0 = self.q_start.copy()
         rest = self.manifest.rest
         carry = set(rest.joints) if rest else set()
@@ -494,7 +555,7 @@ class Kernel:
         if carry:
             fold.append({"do": "joints", "target_deg": {str(i + 1): float(np.degrees(q0[i])) for i in sorted(carry)},
                          "label": "fold"})
-        plan = self._home_steps(route[0]) + fold
+        plan = steps + fold
         g = self.manifest.gripper       # a gripper left open past pi comes back a turn low on the reBot
         if g is not None and self.grip_start is not None and self.held_at is None:  # never while holding
             lo, hi = sorted((g.closed, g.open))
@@ -665,9 +726,30 @@ class Kernel:
         return self.events.emit(kind, message, level, **data)
 
     # -- the control tick --------------------------------------------------------------------------
+    def _validate_state(self, st: JointState) -> JointState:
+        """Check a sample before trusting it, and own its arrays even if the driver reuses its buffers."""
+        fields = {}
+        for name in ("q", "dq", "tau", "temp"):
+            value = getattr(st, name)
+            if value is None and name != "q":
+                continue
+            array = np.asarray(value)
+            if array.shape != (self.manifest.n,) or array.dtype.kind not in "fiu" or not np.isfinite(array).all():
+                raise ValueError(f"feedback.{name} must contain {self.manifest.n} finite numbers")
+            fields[name] = array.astype(float, copy=True)
+        for name in ("t", "gripper", "gripper_tau"):
+            value = getattr(st, name)
+            if value is None and name != "t":
+                continue
+            if isinstance(value, bool) or not isinstance(value, Real) or not np.isfinite(value):
+                raise ValueError(f"feedback.{name} must be a finite number")
+        return replace(st, **fields)
+
     def _read_state(self) -> JointState:
         try:
-            st = self.body.read()
+            st = self._validate_state(self.body.read())
+            if self._feedback_stamp is not None and st.t < self._feedback_stamp:
+                raise ValueError("feedback.t must not move backwards")
             if st.t != self._feedback_stamp:
                 self.feedback_at, self._feedback_stamp = self.clock.now(), st.t
             if self.feedback_at is None or self.clock.now() - self.feedback_at > 1.0:

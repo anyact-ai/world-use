@@ -16,6 +16,9 @@ wu fit runs/RUN-1 runs/RUN-2                          # link masses and joint fr
 job's outcome. `powered` counts from each attempt to switch torque on to a confirmed switch-off, ramps and
 unconfirmed intervals included. `moving` is the time spent in motion steps, not independently detected movement.
 Both are elapsed time on one monotonic clock that events and telemetry share.
+For current records, "closed normally" means the final completion marker matches the committed chunk and event
+counts. A `closed` event alone means the robot connection closed; its final recording write may still have failed.
+An open or interrupted record reports only the telemetry already committed to disk.
 
 `wu replay` renders the measured joints and the recorded world model with the saved robot geometry, and labels the
 frames as a reconstruction. The original camera pictures stay in `views/`. `wu fit` writes `fit.json`; the
@@ -23,8 +26,9 @@ frames as a reconstruction. The original camera pictures stay in `views/`. `wu f
 
 ## View in Rerun
 
-`wu view` needs the `rerun` extra, and the `rerun` app on your PATH to open a window; the README's install line
-gives both. Rerun runs in its own process and reads the record; closing it never stops a job or changes motor power.
+`wu view` needs the `rerun` extra. The README's install line exposes both `wu` and `rerun`; `wu view` also finds the
+viewer inside its tool environment. Rerun runs in its own process and reads the record; closing it never stops a
+job or changes motor power.
 
 The window has a 3D view of the robot's own geometry, a camera pane, measured and commanded joint plots, torque,
 temperature, gripper, power and the active job, and the events, all on the run's `elapsed` timeline. Drag the

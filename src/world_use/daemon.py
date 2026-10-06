@@ -30,13 +30,14 @@ import numpy as np
 
 from . import bodies, calibrate, cameras, views
 from .behaviors import REGISTRY, build
-from .config import _keys, _vector, load_robot, load_workcell
+from .config import _vector, load_robot, load_workcell
 from .errors import Refused, explain
 from .events import _plain
 from .fit import load as load_fit
 from .kernel import Kernel
 from .perception import Measurements
-from .plan import Report, same_start, snapshot
+from .plan import Report
+from .request_models import WorldChange, http_request
 from .worker import Rehearser
 from .world import World
 
@@ -82,9 +83,11 @@ class Daemon:
             raise Refused("already shutting down", "busy")
         try:
             k = self.k
-            k.release()                       # on the control thread; raises Refused unless idle at rest
+            k.begin_shutdown()                # closes queued admission before releasing on the control thread
             self.stop_loop.set()
             self.control.join(timeout=2.0)
+            if self.control.is_alive():
+                raise RuntimeError("power is off, but the control loop has not stopped; retry shutdown")
             summary = k.close()
             if self._own_rehearser:
                 self.rehearser.close()
@@ -98,7 +101,8 @@ class Daemon:
     def api(self, method: str, path: str, query: dict, body: dict) -> tuple[int, object]:
         k = self.k
         route = path.strip("/").split("/")
-        wait = min(float(body.get("wait", query.get("wait", 0)) or 0), MAX_WAIT_S)
+        query, body = http_request(method, route, query, body)
+        wait = min(body.get("wait", query.get("wait", 0.0)), MAX_WAIT_S)
         if method == "GET" and route == ["status"]:
             with k.lock:
                 status = views.status(k)
@@ -120,10 +124,8 @@ class Daemon:
             return 200, dict(steps={kind: dict(cls.help(), schema=schema(kind) if kind in FIELDS else None)
                                    for kind, cls in REGISTRY.items()})
         if method == "GET" and route == ["events"]:
-            since = int(query.get("since", 0))
-            limit = int(query["limit"]) if "limit" in query else None
-            if limit is not None and limit < 1:
-                raise ValueError("limit must be at least 1")
+            since = query.get("since", 0)
+            limit = query.get("limit")
             events = k.events.wait(since, wait) if wait else k.events.since(since)
             more = limit is not None and len(events) > limit
             events = events[:limit]
@@ -138,10 +140,7 @@ class Daemon:
             if "id" in query:
                 return 200, self.measurements.frame(query["id"]).to_dict()
             _, cam = self._camera(query.get("camera"))
-            depth = str(query.get("depth", "false")).lower()
-            if depth not in ("true", "false", "1", "0"):
-                raise ValueError("depth must be true or false")
-            if depth in ("true", "1"):
+            if query.get("depth", False):
                 if not isinstance(cam, cameras.SimCamera):
                     raise Refused(f"camera {cam.name!r} has no aligned metric depth", "missing_depth",
                                   "depth comes from simulated (MuJoCo) cameras")
@@ -152,17 +151,15 @@ class Daemon:
         if method != "POST":
             return 404, dict(error=f"no route {method} /{path.strip('/')}")
         if route == ["run"]:
-            if body.get("checked"):
-                raise Refused("submit the plan explicitly; checked plans are no longer shared between clients", "spec")
-            return self._run(body["spec"], wait, bool(body.get("check", True)), body.get("requires"))
+            return self._run(body["spec"], wait, body.get("check", True), body.get("requires"))
         if route == ["look"]:
-            return 200, self.look(body.get("camera"), body.get("spec"), bool(body.get("grid")))
+            return 200, self.look(body.get("camera"), body.get("spec"), body.get("grid", False))
         if route == ["check"]:
             report = self.rehearser.check(body["spec"], k)
             return 200, dict(report.to_dict(), text=str(report))
         if route == ["answer"]:
-            k.answer(int(body["job"]), body["answer"])
-            return self._job(int(body["job"]), wait)
+            k.answer(body["job"], body["answer"])
+            return self._job(body["job"], wait)
         if route == ["stop"]:
             k.stop(body.get("reason", "stop requested"))
             self._settle()
@@ -183,23 +180,20 @@ class Daemon:
             if "steps" not in body:
                 raise ValueError("home_route needs steps: a list of moves, [] to fold straight home from here, "
                                  "or null to clear the route")
-            k.set_home_route(body["steps"], body.get("note", ""))
-            rehearsal = {} if body["steps"] is None else self._rehearse_home()
-            with k.lock:
-                return 200, dict(home=views.status(k)["home"], **rehearsal)
+            return 200, self._home_route(body["steps"], body.get("note", ""))
         if route == ["home"]:
             return self._job(k.submit({"do": "seq", "steps": k.home_plan(), "label": "home"}).id, wait)
         if route == ["world"]:
             with k.lock:
                 return self._world(body)
         if route == ["calibrate"]:
-            return self.calibrate(body["camera"], int(body.get("points", 8)), body.get("spread"), wait)
+            return self.calibrate(body["camera"], body.get("points", 8), body.get("spread"), wait)
         if route == ["measure"]:
             return 200, self.measurements.measure(body["frame"], point=body.get("point"), box=body.get("box"),
                                                   mask=body.get("mask"), target=body.get("target"),
                                                   plane=body.get("plane"))
         if route == ["withdraw"]:
-            return 200, dict(withdrawn=self.measurements.withdraw(body["measurements"], str(body.get("reason", ""))))
+            return 200, dict(withdrawn=self.measurements.withdraw(body["measurements"], body.get("reason", "")))
         if route == ["record"]:
             if body.get("context") or body.get("note"):
                 k.emit("annotation", body.get("note", "agent context"), context=body.get("context", {}))
@@ -219,32 +213,7 @@ class Daemon:
         report: Report | None = None
         admission = None
         if rehearse:
-            with k.lock:
-                if not k.enabled or k.faulted or k.power_uncertain:
-                    raise Refused("checked runs need torque on, confirmed power and a cleared fault", "not_ready",
-                                  "inspect status and resolve the power state before running")
-                if k.active is not None or k.queue or k._stop is not None:
-                    raise Refused("checked runs need an idle robot; another job is running, queued or stopping",
-                                  "busy", "wait for it to finish, then retry")
-                snap = snapshot(k)
-                revision = k.control_revision
-                jobs = len(k.jobs)
-
-            def admission():
-                gripper = k.state.gripper
-                # Temperature may drift while holding. Motion, scene/limit changes, lifecycle events and any
-                # intervening submission invalidate the check. Small encoder noise is allowed (0.01 rad/unit).
-                changed = (not same_start(snap, k)
-                           or ((gripper is None) != (snap.gripper is None))
-                           or (gripper is not None and snap.gripper is not None
-                               and abs(gripper - snap.gripper) > 0.01))
-                own_job = k.active is not None and k.active.admission is admission
-                if (changed or k.control_revision != revision + int(own_job) or len(k.jobs) != jobs + int(own_job)
-                        or k.queue or k._stop is not None or (k.active is not None and not own_job)
-                        or not k.enabled or k.faulted or k.power_uncertain):
-                    raise Refused("the robot or scene changed during rehearsal; nothing started", "stale_check",
-                                  "wait until idle, then retry so the plan is checked from the new state")
-
+            snap, admission = k.checked_start()
             report = self.rehearser.check(spec, k, snap=snap)
             if report.refused or report.outcome.status not in ("done", "surprise"):
                 text = ("refused in rehearsal, so nothing moved:\n" + str(report) + "\n"
@@ -307,13 +276,23 @@ class Daemon:
         """Let the control loop read the body once or twice, so the reply shows the new state."""
         time.sleep(3 * getattr(self.k.clock, "dt", 0.01))
 
-    def _rehearse_home(self) -> dict:
-        """The way home as `wu home` and a thermal return would run it, rehearsed from here."""
-        try:
-            report = self.rehearser.check({"do": "seq", "steps": self.k.home_plan(), "label": "home"}, self.k)
-        except Refused as e:
-            return dict(ok=False, problems=[e.to_dict()], text=f"the way home cannot be planned from here: {e}")
-        return dict(ok=report.ok, problems=report.problems, text=str(report))
+    def _home_route(self, steps: list | None, note: str) -> dict:
+        """Rehearse a candidate without replacing the installed route, then atomically check and install it."""
+        k = self.k
+        rehearsal = {}
+        if steps is None:
+            k.set_home_route(None, note)
+        else:
+            steps = deepcopy(steps)
+            with k.lock:
+                snap, admission = k.checked_start(require_enabled=False)
+                spec = {"do": "seq", "steps": k.home_plan(steps=steps), "label": "home"}
+            report = self.rehearser.check(spec, k, snap=snap)
+            if report.ok:
+                k.set_home_route(steps, note, admission=admission)
+            rehearsal = dict(ok=report.ok, problems=report.problems, text=str(report))
+        with k.lock:
+            return dict(home=views.status(k)["home"], **rehearsal)
 
     def calibrate(self, camera: str, points: int = 8, spread: float | None = None, wait: float = 0.0):
         """Start a calibration tour for a camera (see calibrate.py). The reply to its last answer carries the fit."""
@@ -394,25 +373,16 @@ class Daemon:
     def _world(self, body: dict) -> tuple[int, dict]:
         """Change the world model. A request's changes are made on a copy first: all of them apply, or none."""
         k, w = self.k, self.k.world
-        _keys(body, ("frame", "fact", "box", "remove"), "world change")
-        if not body:
-            raise ValueError("world change: give a frame, a fact, a box or a box to remove")
-        for key in body.keys() - {"remove"}:
-            if not isinstance(body[key], dict):
-                raise ValueError(f"{key}: expected a JSON object")
+        body = WorldChange.model_validate(body).model_dump(exclude_unset=True)
         trial, lines = deepcopy(w), []
         if "frame" in body:
             f = body["frame"]
-            _keys(f, ("name", "origin", "rpy_deg", "source"), "frame")
-            if not isinstance(f.get("name"), str) or f["name"] in ("", "base"):
+            if f["name"] == "base":
                 raise ValueError("frame: needs a name other than base")
             trial.add_frame(f["name"], frame_pose(f), f.get("source", "policy"))
             lines.append(views.frame_line(trial.frame(f["name"])))
         if "fact" in body:
             f = body["fact"]
-            _keys(f, ("key", "value", "source", "note"), "fact")
-            if not isinstance(f.get("key"), str) or not f["key"] or "value" not in f:
-                raise ValueError("fact: needs a key and a value")
             fact = trial.assert_fact(f["key"], f["value"], f.get("source", "policy"), f.get("note", ""))
             lines.append(f"fact {fact.key} = {fact.value} (from {fact.source})")
         box = None if "box" not in body else add_box(trial, body["box"], "policy")
@@ -518,8 +488,8 @@ def add_box(world: World, spec: dict, source: str):
     for key in ("name", "kind", "center", "size"):
         if key not in b:
             raise ValueError(f"box: missing {key}")
-    center, size = _vector(b.pop("center"), 3, "box.center"), _vector(b.pop("size"), 3, "box.size")
-    return world.add_box(b.pop("name"), b.pop("kind"), center, size, b.pop("frame", "work"), b.pop("yaw_deg", 0.0),
+    return world.add_box(b.pop("name"), b.pop("kind"), b.pop("center"), b.pop("size"),
+                         b.pop("frame", "work"), b.pop("yaw_deg", 0.0),
                          source=b.pop("source", source), **b)
 
 

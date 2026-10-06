@@ -129,8 +129,9 @@ parameters. A list runs in order and ends at the first step that does not end "d
   you set it, it holds with torque on and calls the operator.
 - Set a home route once you have looked at the scene: `wu home-route '[]'` means "from here, turn back and fold".
   If the way back is not clear (a door you opened, an object in the way), give the motion and gripper steps that
-  get clear first, as in `'[{"do": "line", "up": 0.05}]'`. It is checked from here; exit 4 means the kernel
-  would refuse that way home. Contact makes the route stale: look, then set it again. `null` clears it when the
+  get clear first, as in `'[{"do": "line", "up": 0.05}]'`. Set it while idle; torque may be off. Only a passing
+  rehearsal installs the route. Exit 4 leaves the previous route unchanged, including any staleness.
+  Contact makes the route stale: look, then set it again. `null` clears it when the
   scene changes; a failed thermal return clears it and calls the operator.
 - `wu home` runs the route and folds to rest. `wu release` switches torque off, only at the rest pose. `wu down`
   releases, saves the flight record and stops the daemon.

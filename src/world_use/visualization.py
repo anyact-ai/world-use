@@ -69,8 +69,8 @@ class RecordReader:
                         events[-1]["t"] if events else 0.0)
                 events.append(dict(t=t, kind="recording", level="alarm",
                                    message=f"Incomplete record: {losses}; estimates may span missing observations"))
-        self.complete = (complete is not None and len(self.parts) >= complete["parts"]
-                         and self.offset >= complete["events_bytes"])
+        self.complete = (complete is not None and len(self.parts) == complete["parts"]
+                         and self.offset == complete["events_bytes"])
         return samples, events
 
 
@@ -334,7 +334,7 @@ def view(folder: Path | str, *, output: Path | None = None, follow: bool = False
         else:
             # A tool install keeps rerun-sdk's viewer app beside this Python, off the PATH; elsewhere, use the PATH.
             app = shutil.which("rerun", path=str(Path(sys.executable).parent))
-            rec.spawn(memory_limit="1GiB", hide_welcome_screen=True, executable_path=app)
+            rr.spawn(recording=rec, memory_limit="1GiB", hide_welcome_screen=True, executable_path=app)
         viewer = RecordingView(folder, rec, follow=follow, update_layout=output is None)
         if output is None:
             rec.send_blueprint(blueprint(viewer.base_frame, follow, viewer.eye))

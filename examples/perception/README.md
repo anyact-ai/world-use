@@ -36,7 +36,10 @@ measured and the arm is never powered.
    8 cm clear above the block.
 
 A separate evaluator, the only code that reads simulator truth, judges the result after the gripper lets go
-and before homing. Any failure stops the arm, lowers the block onto the tray, opens and withdraws: safe only
+and before homing. It uses the [block task predicate](../pick-place/README.md): position within 1 cm,
+preserved upright orientation within 5 degrees, release and tool withdrawal. The procedure's top-face
+measurement check does not establish the block's full orientation. Any failure stops the arm, lowers the block
+onto the tray, opens and withdraws: safe only
 over this known clear tray. `result.json` holds the procedure's checks, its measurements, the job
 outcomes and the evaluator's verdict; `perception/` holds each measurement's picture and points.
 

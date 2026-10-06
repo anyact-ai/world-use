@@ -14,10 +14,24 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from io import BytesIO
 
+from pydantic import ValidationError
+
 from . import views
 from .client import DEFAULT_URL, Client, DaemonError
 from .errors import Refused
 from .perception import rectangle
+from .request_models import (
+    BoxKind,
+    Nonnegative,
+    Number,
+    Point,
+    Positive,
+    PositiveVector,
+    Rectangle,
+    Vector,
+    tool_model,
+    validation_error,
+)
 
 INSTRUCTIONS = ("Read the policy tool or world-use://policy resource before operating the robot, then card and status. "
                 "Plans use metres in the work frame. Every powered hold heats the motors. "
@@ -67,7 +81,28 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
             if tracking is not None:
                 await asyncio.to_thread(tracking.close)
 
-    server = MCPServer("world-use", instructions=INSTRUCTIONS, lifespan=lifespan)
+    argument_models = {}
+
+    class ValidatedServer(MCPServer):
+        def add_tool(self, fn, *args, **kwargs):
+            argument_models[kwargs.get("name") or fn.__name__] = tool_model(fn)
+            return super().add_tool(fn, *args, **kwargs)
+
+        async def list_tools(self):
+            tools = await super().list_tools()
+            for tool in tools:
+                tool.input_schema = argument_models[tool.name].model_json_schema()
+            return tools
+
+        async def call_tool(self, name, arguments, context=None):
+            if name in argument_models:
+                try:
+                    argument_models[name].model_validate(arguments)
+                except ValidationError as e:
+                    raise ToolError(f"invalid arguments for {name}: {validation_error(e)}") from e
+            return await super().call_tool(name, arguments, context)
+
+    server = ValidatedServer("world-use", instructions=INSTRUCTIONS, lifespan=lifespan)
 
     def result(data, text=None, images=()):
         """Text, the same data as structured content, and pictures: PIL images or paths of saved ones."""
@@ -126,7 +161,7 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         return policy_resource()
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
-    def job(job: int, wait_s: float = 60.0, camera: str | None = None, depth: bool = False):
+    def job(job: int, wait_s: Nonnegative = 60.0, camera: str | None = None, depth: bool = False):
         """Wait for a run to finish or ask a question; returns its outcome, even after completion.
         camera adds a fresh picture and frame id at a checkpoint or outcome; depth adds simulated metric depth."""
         return call(lambda: job_reply(c.job(job, wait=wait_s), camera, depth))
@@ -164,8 +199,8 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         return call(describe)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
-    def run(plan: list[dict] | dict, wait_s: float = 60.0, rehearse: bool = True, requires: list[dict] | None = None,
-            camera: str | None = None, depth: bool = False):
+    def run(plan: list[dict] | dict, wait_s: Nonnegative = 60.0, rehearse: bool = True,
+            requires: list[dict] | None = None, camera: str | None = None, depth: bool = False):
         """Run a plan: a list of steps, e.g. [{"do": "line", "up": 0.05}, {"do": "grip", "expect_mm": [35, 45]}].
         Rehearsed on a twin first; if any step would break a limit nothing moves and every problem is listed.
         Returns the outcome and the state line, or the question a checkpoint is waiting on.
@@ -183,7 +218,7 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         return call(rehearse)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
-    def answer(job: int, answer: str, wait_s: float = 60.0, camera: str | None = None, depth: bool = False):
+    def answer(job: int, answer: str, wait_s: Nonnegative = 60.0, camera: str | None = None, depth: bool = False):
         """Answer the question a checkpoint is waiting on; the expected answer (usually "yes") carries on.
         camera adds a fresh picture and frame id at the next checkpoint or outcome; depth adds simulated depth."""
         return call(lambda: job_reply(c.answer(job, answer, wait=wait_s), camera, depth))
@@ -210,7 +245,7 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         return call(capture)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
-    def measure_pixels(frame: str, point: list[float] | None = None, box: list[int] | None = None,
+    def measure_pixels(frame: str, point: Point | None = None, box: Rectangle | None = None,
                        target: str | None = None, plane: dict | None = None):
         """Measure the visible surface under a point [x, y] or a box [left, top, right, bottom] (right and bottom
         exclusive) of a camera_frame, in its native pixels; the frame needs depth. Returns an id, valid and
@@ -227,7 +262,7 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         return call(measure)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True))
-    def inspect_image(frame: str, crop: list[int] | None = None, max_side: int = 1024):
+    def inspect_image(frame: str, crop: Rectangle | None = None, max_side: int = 1024):
         """A camera_frame again, optionally cropped to [left, top, right, bottom] native pixels and scaled to
         max_side; native_from_image maps its pixels back to the frame's native pixels for measure_pixels."""
         def inspect():
@@ -239,7 +274,7 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
 
     if tracking is not None:
         @server.tool(annotations=ToolAnnotations(read_only_hint=False))
-        def select_target(frame: str, target: str, point: list[float] | None = None, box: list[int] | None = None):
+        def select_target(frame: str, target: str, point: Point | None = None, box: Rectangle | None = None):
             """Select an object by a point or box in a camera_frame, name it target, and measure it as
             measure_pixels does. observe_targets measures it again later without selecting. A frame older than the
             tracker accepts is followed into a new one first. tracking says tracked or lost."""
@@ -266,9 +301,9 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         return call(describe)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
-    def add_box(name: str, kind: str, center: list[float], size: list[float], yaw_deg: float = 0.0,
-                source: str = "policy", grip_width: float | None = None,
-                speed: float | None = None, dtau: float | None = None, frame: str = "work") -> str:
+    def add_box(name: str, kind: BoxKind, center: Vector, size: PositiveVector, yaw_deg: Number = 0.0,
+                source: str = "policy", grip_width: Positive | None = None,
+                speed: Positive | None = None, dtau: Positive | None = None, frame: str = "work") -> str:
         """Tell the kernel about something you see. kind: surface (a table; plans may not pass through it), object
         (a thing to grip; grip_width in metres), keep_out, fragile or slow. center [forward, left, up] and size
         [forward, left, up] in metres, work frame. slow requires speed (planned tool speed in m/s); fragile
@@ -307,12 +342,12 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
     def home_route(steps: list[dict] | None, note: str = "") -> str:
         """Set the way home from here, checked against what you can see: [] folds straight home; otherwise the
         moves that get clear first. Only motion and gripper steps; no checkpoints or holds. null clears a route
-        when the scene changes. It goes stale when anything is touched. The reply says whether the way home,
-        rehearsed from here, would pass."""
+        when the scene changes. Set it while idle; torque may be off. Only a passing rehearsal installs it;
+        failure preserves the previous route, including any staleness. Contact makes it stale."""
         return call(lambda: views.home_text(c.home_route(steps, note)))
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
-    def home(wait_s: float = 60.0):
+    def home(wait_s: Nonnegative = 60.0):
         """Go home along the home route, then fold to the rest pose."""
         return call(lambda: job_reply(c.home(wait=wait_s)))
 
@@ -338,7 +373,7 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         return call(recent)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
-    def calibrate(camera: str, points: int = 8, wait_s: float = 60.0):
+    def calibrate(camera: str, points: int = 8, wait_s: Nonnegative = 60.0):
         """Find where a camera is from the arm: the tool visits the corners of a box, and at each a question asks
         where the tool point is in `look(camera, grid=True)`; answer x,y pixels (or unseen) with `answer`. The
         reply to the last answer has the fit, installed if it is good, and the workcell lines to keep it."""

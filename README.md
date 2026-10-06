@@ -39,12 +39,13 @@ t+9s | idle, holding | tool F+0.302 L+0.092 U+0.270 | grip 0.05rad (0mm) -0.00 |
 ## Install
 
 ```sh
-uv tool install "world-use[mcp,rerun] @ git+https://github.com/anyact-ai/world-use"
+uv tool install --with-executables-from rerun-sdk "world-use[mcp,rerun] @ git+https://github.com/anyact-ai/world-use"
 ```
 
 This needs [uv](https://docs.astral.sh/uv/), which finds or installs Python 3.11 or newer. The extras are `mcp`
 (the MCP server), `rerun` (the 3D viewer), `vision` (EdgeTAM tracking, with PyTorch) and `rebot` (the physical
 reBot's driver, on Python 3.11 to 3.13).
+The install exposes `wu` and the `rerun` viewer command.
 
 ## Try it
 
@@ -62,7 +63,7 @@ $ wu view runs/block-demo       # open it in Rerun
 
 `wu demo --scenario missing` takes the block away: the grip closes on nothing, so the script forgets the block,
 opens, lifts away and goes home. The [block example](examples/pick-place) explains the scenarios and the task for an
-agent.
+agent, including how to [adapt the block task and workcell](examples/pick-place/README.md#adapt-the-task).
 
 ![The block demo in Rerun: the robot and the estimated world in 3D, a camera frame, joint plots and events](docs/assets/simulation-rerun.png)
 

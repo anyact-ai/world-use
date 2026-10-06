@@ -19,12 +19,15 @@ from uuid import uuid4
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+from pydantic import TypeAdapter
 
 from .cameras import INK, Frame, unpack
 from .errors import Refused
 from .recorder import save_arrays
+from .request_models import Requirements
 
 GREEN, RED = (30, 220, 100), (230, 60, 60)
+_requirements = TypeAdapter(Requirements)
 
 
 @dataclass(frozen=True)
@@ -304,16 +307,11 @@ class Measurements:
     def guard(self, requires) -> Callable[[], None] | None:
         """For a run requiring [{"evidence": measurement ID, "max_age_s": seconds}, ...]: a check that raises
         Refused once one of them is older than its limit, was withdrawn, or its camera was calibrated again."""
-        if not isinstance(requires, list) or len(requires) > 16:
-            raise ValueError("requires is a list of at most 16 measurements")
+        required = _requirements.validate_python(requires, strict=True)
         needs: list[tuple[str, Source, float]] = []
         with self.lock:
-            for item in requires:
-                if not isinstance(item, dict) or set(item) != {"evidence", "max_age_s"}:
-                    raise ValueError('each requirement is {"evidence": a measurement ID, "max_age_s": seconds}')
-                evidence, limit = item["evidence"], item["max_age_s"]
-                if isinstance(limit, bool) or not isinstance(limit, (int, float)) or not 0 < limit < math.inf:
-                    raise ValueError("max_age_s must be a positive number of seconds")
+            for item in required:
+                evidence, limit = item.evidence, item.max_age_s
                 source = self.sources.get(evidence)
                 if source is None:
                     raise Refused(f"no measurement {evidence!r} in this daemon session", "unknown_measurement",

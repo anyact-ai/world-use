@@ -32,16 +32,35 @@ simulation truth. An unknown obstruction or misplaced object can therefore pass
 a rehearsal and still stop execution. The kernel's object attachment is a
 belief used in planning; it never moves the simulated object.
 
-`surface` boxes are static colliders. `object` boxes are rigid bodies, defaulting
+The native workcell supports box geometry: `surface` boxes are static colliders and
+`object` boxes are free rigid bodies, defaulting
 to 50 g and a sliding friction coefficient of 0.8. Box parameters `mass_kg` and
 `friction`, also in workcell `[[box]]` entries, override those values. Place
 objects on a surface; unsupported objects fall. The ground plane is at base-frame
 z=0 and gravity points along base -z. Keep-out, fragile, and slow boxes remain
 planning/monitoring rules.
 
+`known = false` on an `object` or `surface` puts that physical box only in simulation truth. An agent adds
+its own estimate after observing it; that estimate does not change physics.
+Camera images and depth come from truth, while the card, plans and rehearsal use
+the estimate. Task predicates belong in the procedure's evaluator: see the
+[block adaptation recipe](../examples/pick-place/README.md#adapt-the-task) for a
+changed tray, starting pose and destination with a separate outcome check.
+
+Articulated environment objects such as hinged doors, arbitrary scene meshes,
+soft objects and fluids are outside this box workcell. Robot URDF geometry can
+include primitive shapes and meshes, but loading a robot does not add support for
+those environment types. Their dynamics require an external environment/body
+integration; the kernel can still reason about conservative boxes supplied in its
+estimated `World`. The bundled examples demonstrate native boxes and robot
+adapters, not such an environment integration.
+
 Changing the physical scene's topology rebuilds its MuJoCo model. Configure it
-before execution. `SimBody.reset(q, gripper)` explicitly resets a scene from its
-world poses; recorded replay uses this without stepping dynamics.
+before execution. Editing a truth box's pose alone does not teleport the live
+body: call `SimBody.reset(q, gripper)` while idle to reset the scene from its
+current world poses, without stepping dynamics. This does not reset the kernel's
+faults, measurements, clock or record. Recorded replay uses reset without stepping
+dynamics; use a fresh kernel and output folder for an independent task trial.
 
 Actuator gains, joint damping, contact friction, and motor heating are approximate
 model parameters, not validated hardware measurements. Fitted link masses,
@@ -91,7 +110,10 @@ or prismatic, in its URDF coordinate, or two opposed prismatic fingers that shar
 a calibrated opening (`m_per_unit`), zero at closed. A hinged jaw's servo acts
 like a finger's 5 cm from the hinge. An object counts as held when it touches
 both fingers, or the jaw and the link it closes against. Other mechanisms need an
-explicit simulation model. Without a gripper description, joints outside the arm
+explicit simulation model. Fixed child links, such as finger collision pads, are
+part of the same MuJoCo rigid group and contribute to those contact labels. The
+label never attaches an object to the tool; release and motion remain physics.
+Without a gripper description, joints outside the arm
 chain stay at their URDF zero. Arm joints are revolute or continuous; see the
 [adapter guide](adapters.md).
 

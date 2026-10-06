@@ -172,6 +172,18 @@ def test_reader_observes_completion_and_final_chunks_in_one_snapshot(run_folder,
     assert a["t"].tolist() == [.1] and reader.complete
 
 
+@pytest.mark.parametrize("parts_delta, bytes_delta", [(1, 0), (-1, 0), (0, 1), (0, -1)])
+def test_reader_does_not_finish_with_inconsistent_completion_counts(run_folder, parts_delta, bytes_delta):
+    (run_folder / "tape").mkdir()
+    save_arrays(run_folder / "tape/000000.npz", samples([0], [0]))
+    line = json.dumps(dict(seq=1, t=0, kind="closed", level="info", message="closed")) + "\n"
+    (run_folder / "events.jsonl").write_text(line)
+    save_summary(run_folder / "complete.json", dict(parts=1 + parts_delta, events_bytes=len(line) + bytes_delta))
+    reader = RecordReader(run_folder)
+    reader.poll()
+    assert not reader.complete
+
+
 def test_follow_finishes_an_empty_run_only_after_its_final_events(run_folder, monkeypatch):
     pytest.importorskip("rerun")
     from world_use import visualization
@@ -210,6 +222,26 @@ def test_a_gripper_the_viewer_cannot_move_is_drawn_static_with_a_warning(run_fol
     output = view(run_folder, output=run_folder / "jaw.rrd")
     assert [t for t, _ in component_rows(output, "/transforms/jaw", "Transform3D:quaternion")] == [0]
     assert any("jaw" in text[0] for _, text in component_rows(output, "/events", "TextLog:text"))
+
+
+def test_interactive_view_launches_the_sibling_app_and_streams_the_record(run_folder, monkeypatch):
+    pytest.importorskip("rerun")
+    from rerun import sinks
+
+    app = run_folder / "tool-bin/rerun"
+    app.parent.mkdir()
+    app.touch(mode=0o755)
+    monkeypatch.setattr(sys, "executable", str(app.parent / "python"))
+    launched = {}
+    monkeypatch.setattr(sinks, "_spawn_viewer", lambda **options: launched.update(options))
+    output = run_folder / "interactive.rrd"
+    monkeypatch.setattr(sinks, "connect_grpc", lambda _, *, recording, **kw: recording.save(output))
+    (run_folder / "tape").mkdir()
+    save_arrays(run_folder / "tape/000000.npz", samples([0, .1], [0, .5]))
+    view(run_folder)
+    assert launched["executable_path"] == str(app)
+    assert [t for t, _ in component_rows(output, "/signals/joints/shoulder/measured", "Scalars:scalars")] == [
+        0, 100_000_000]
 
 
 def test_missing_extra_gives_installation_hint(run_folder, monkeypatch):

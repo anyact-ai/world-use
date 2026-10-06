@@ -1,5 +1,6 @@
 """The MCP server: the CLI's verbs as tools, answering in the same short text (and pictures)."""
 import asyncio
+import sys
 
 import numpy as np
 import pytest
@@ -9,6 +10,53 @@ pytest.importorskip("mcp")
 from mcp.server.mcpserver.exceptions import ToolError
 
 from world_use.mcp_server import build
+
+
+def test_mcp_rejects_original_arguments_before_the_sdk_can_drop_or_coerce_them(daemon):
+    d, c = daemon
+    server = build(c.url)
+
+    async def session():
+        tools = {tool.name: tool for tool in await server.list_tools()}
+        assert tools["run"].input_schema["additionalProperties"] is False
+        assert "requires" in tools["run"].input_schema["properties"]
+        for extra in ({"require": []}, {"rehearse": "false"}, {"rehearse": None}, {"wait_s": True},
+                      {"wait_s": float("nan")}, {"plan": '[{"do":"hold","seconds":0.01}]'}):
+            with pytest.raises(ToolError, match="invalid arguments"):
+                await server.call_tool("run", {"plan": {"do": "hold", "seconds": 0.01}} | extra)
+        assert not d.k.jobs
+        c.box("glass", "fragile", [0.8, 0, 0.5], [0.1] * 3, dtau=0.1)
+        original = d.k.world.boxes["glass"]
+        for extra in ({"datu": 0.03}, {"dtau": True}):
+            with pytest.raises(ToolError, match="invalid arguments"):
+                await server.call_tool("add_box", dict(name="glass", kind="fragile", center=[0.8, 0, 0.5],
+                                                      size=[0.2] * 3) | extra)
+            assert d.k.world.boxes["glass"] is original
+    asyncio.run(session())
+
+
+def test_mcp_wire_requests_use_the_same_strict_arguments(daemon):
+    from mcp import ClientSession, StdioServerParameters, stdio_client
+
+    d, c = daemon
+    params = StdioServerParameters(command=sys.executable, args=["-c",
+        "import sys; from world_use.mcp_server import build; build(sys.argv[1]).run('stdio')", c.url])
+
+    async def session():
+        async with stdio_client(params) as (read, write), ClientSession(read, write) as client:
+            await client.initialize()
+            tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+            assert tools["run"].input_schema["additionalProperties"] is False
+            for extra, field in (({"require": []}, "require"), ({"rehearse": "false"}, "rehearse"),
+                                 ({"wait_s": True}, "wait_s")):
+                result = await client.call_tool("run", {"plan": {"do": "hold", "seconds": 0.01}} | extra)
+                assert result.is_error and field in result.content[0].text
+            assert not d.k.jobs
+            result = await client.call_tool("run", {"plan": {"do": "hold", "seconds": 0.01},
+                                                    "rehearse": False, "wait_s": 5})
+            assert not result.is_error and result.structured_content["status"] == "done"
+            assert len(d.k.jobs) == 1
+    asyncio.run(session())
 
 
 @pytest.mark.usefixtures("file_camera")

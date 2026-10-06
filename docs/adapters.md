@@ -33,6 +33,16 @@ Both runs are simulated. This exercises setup, worker rehearsal, execution and
 portable records without connecting hardware. For an embedded Python example,
 run `uv run python examples/adapters/planar.py`.
 
+To adapt a complete task before substituting the robot, follow the
+[block workcell recipe](../examples/pick-place/README.md#adapt-the-task): change
+the initial scene and destination, compose phases, then evaluate the released
+object separately from command completion. The planar example has no gripper;
+it demonstrates the adapter path rather than a block-transfer task. A second
+fixture, [jaw_arm.toml](../tests/jaw_arm.toml), supplies five joints and a revolute
+jaw. Its [simulation tests](../tests/test_mujoco.py) exercise grips, fixed child
+finger pads, release and Cartesian motion with free heading. Neither fixture
+establishes the dynamics or safe power behavior of a physical robot.
+
 ## Guarded custom steps
 
 Embedded kernels may extend `Kernel.guarded_steps` with audited behavior types:
@@ -186,6 +196,13 @@ the default height relative to the starting pose.
 see [simulation requirements](simulation.md#other-robots). Driver options stay with
 the driver. The built-in reBot driver uses its own model; a different robot uses its
 own adapter and description.
+
+The native environment is a set of static surface boxes and free object boxes.
+`known = false` on an object or surface puts it in physics while leaving it out of the kernel's
+estimate. Adding a kernel box later changes only that estimate. A different
+robot's URDF can supply shaped collision geometry, but articulated or shaped
+environment objects require their own environment integration; see
+[scene limits](simulation.md#scene-and-model-assumptions).
 
 Unknown fields, duplicate names and conflicting camera sources are rejected.
 `wu up` also checks the robot, URDF and fit contents before reusing a daemon.
