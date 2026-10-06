@@ -8,6 +8,7 @@ from world_use.geometry import align_planar, rpy
 def test_planar_alignment_maps_held_landmarks_with_an_off_centre_rotated_tool():
     # Arbitrary asymmetric landmarks, unrelated to a particular object or task.
     source = np.array([[.23, -.11, .18], [.31, -.10, .18], [.25, -.03, .18], [.28, -.07, .18]])
+    source = np.concatenate([source, source + [.02, .01, 0], source + [-.01, .02, 0]])
     tool = np.eye(4)
     tool[:3, :3] = rpy(np.pi, 0, -.4)
     tool[:3, 3] = [.24, -.08, .20]

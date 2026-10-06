@@ -116,7 +116,7 @@ measured discrepancy. Freshness guards bound evidence age, but cannot verify cor
 ## Aligning measured landmarks
 
 For planar placement, Python integrations can use `world_use.geometry.align_planar(source, target, tool,
-max_error_m=...)`. Supply 3-8 corresponding XYZ landmarks in each list and the captured 4x4 tool pose,
+max_error_m=...)`. Supply at least 3 corresponding XYZ landmarks in each list and the captured 4x4 tool pose,
 all in the same coordinate frame. The caller chooses which visible features correspond; no object
 model or feature matching is supplied. Measure the source after verifying the grasp, while the part
 is held in the same way that the proposed motion assumes.

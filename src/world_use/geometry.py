@@ -33,9 +33,9 @@ def align_planar(source, target, tool, *, max_error_m: float) -> dict:
     a constant height offset between the two surfaces; vertical placement stays with the caller.
     """
     a, b, tcp = (np.asarray(v, dtype=float) for v in (source, target, tool))
-    if (a.ndim != 2 or a.shape[1:] != (3,) or not 3 <= len(a) <= 8 or b.shape != a.shape
+    if (a.ndim != 2 or a.shape[1:] != (3,) or len(a) < 3 or b.shape != a.shape
             or not np.isfinite(a).all() or not np.isfinite(b).all()):
-        raise ValueError("source and target need 3-8 corresponding finite XYZ landmarks")
+        raise ValueError("source and target need at least 3 corresponding finite XYZ landmarks")
     if (tcp.shape != (4, 4) or not np.isfinite(tcp).all() or not np.allclose(tcp[3], [0, 0, 0, 1])
             or not np.allclose(tcp[:3, :3].T @ tcp[:3, :3], np.eye(3), atol=1e-5)
             or not np.isclose(np.linalg.det(tcp[:3, :3]), 1)):
