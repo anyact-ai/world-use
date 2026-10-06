@@ -28,10 +28,12 @@ def test_client_cannot_discard_an_invalid_falsy_requirement(daemon):
     assert error.value.code == 400 and not d.k.jobs
 
 
-def test_unknown_enable_argument_cannot_change_power(client):
+@pytest.mark.parametrize(("path", "body"), [("/enable", {"typo": True}), ("/enable?typo=", {}),
+                                           ("/enable?typo", {})])
+def test_unknown_enable_argument_cannot_change_power(client, path, body):
     client.release()
     with pytest.raises(DaemonError, match="typo") as error:
-        client._call("POST", "/enable", {"typo": True})
+        client._call("POST", path, body)
     assert error.value.code == 400 and not client.status()["enabled"]
 
 

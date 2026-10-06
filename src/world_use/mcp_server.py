@@ -24,10 +24,12 @@ from .request_models import (
     BoxKind,
     Nonnegative,
     Number,
+    Plane,
     Point,
     Positive,
     PositiveVector,
     Rectangle,
+    Requirements,
     Vector,
     tool_model,
     validation_error,
@@ -200,14 +202,15 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
     def run(plan: list[dict] | dict, wait_s: Nonnegative = 60.0, rehearse: bool = True,
-            requires: list[dict] | None = None, camera: str | None = None, depth: bool = False):
+            requires: Requirements | None = None, camera: str | None = None, depth: bool = False):
         """Run a plan: a list of steps, e.g. [{"do": "line", "up": 0.05}, {"do": "grip", "expect_mm": [35, 45]}].
         Rehearsed on a twin first; if any step would break a limit nothing moves and every problem is listed.
         Returns the outcome and the state line, or the question a checkpoint is waiting on.
         requires: [{"evidence": measurement id, "max_age_s": seconds}]; the run is refused, or stops before its
         next step, once a measurement is older than that or its camera was calibrated again.
         camera adds a fresh picture and frame id at a checkpoint or outcome; depth adds simulated metric depth."""
-        return call(lambda: job_reply(c.run(plan, wait=wait_s, check=rehearse, requires=requires), camera, depth))
+        evidence = None if requires is None else [item.model_dump() for item in requires]
+        return call(lambda: job_reply(c.run(plan, wait=wait_s, check=rehearse, requires=evidence), camera, depth))
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True))
     def check(plan: list[dict] | dict):
@@ -246,7 +249,7 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
     def measure_pixels(frame: str, point: Point | None = None, box: Rectangle | None = None,
-                       target: str | None = None, plane: dict | None = None):
+                       target: str | None = None, plane: Plane | None = None):
         """Measure the visible surface under a point [x, y] or a box [left, top, right, bottom] (right and bottom
         exclusive) of a camera_frame, in its native pixels; the frame needs depth. Returns an id, valid and
         reason, and in work-frame metres: surface_center (of what the camera sees, not of a hidden object),
@@ -257,7 +260,8 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         that the feature lies on the patch's plane. The picture marks the point and supporting patch.
         Pass the id to run(requires=...) for freshness checks."""
         def measure():
-            data = c.measure(frame, point=point, box=box, target=target, plane=plane)
+            data = c.measure(frame, point=point, box=box, target=target,
+                             plane=None if plane is None else plane.model_dump())
             return measured([data], data)
         return call(measure)
 

@@ -417,7 +417,7 @@ def _handler(d: Daemon):
             if host not in hosts or self.headers.get("Origin") not in (None, f"http://{host}"):
                 return self._reply(403, dict(error="use the local daemon address and a same-origin client"))
             u = urlparse(self.path)
-            query = {k: v[-1] for k, v in parse_qs(u.query).items()}
+            query = {k: v[-1] for k, v in parse_qs(u.query, keep_blank_values=True).items()}
             body = {}
             if method == "POST":
                 if self.headers.get_content_type() != "application/json":
