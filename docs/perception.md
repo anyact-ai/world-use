@@ -5,6 +5,9 @@ numbers are too old to trust. It learns three things: a camera frame, a measurem
 Checking the result is the same step again: measure again and compare. The
 [perception example](../examples/perception) does all of it on a simulated arm.
 
+The [Sol shape-sorting experiment](shape-sorting.md) records where these measurements
+helped a live policy, where they failed, and the limits of the comparison.
+
 Depth comes only from simulated (MuJoCo) cameras for now. Other cameras give pictures without depth, and
 measuring them reports `missing_depth`.
 
