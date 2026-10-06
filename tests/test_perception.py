@@ -343,8 +343,6 @@ def test_the_example_measures_moves_and_measures_again(tmp_path):
     from world_use.examples.perception import run
 
     result = run(tmp_path, speed=4)           # physics at four times real time; a faster clock is not modest
-    if result["lift"] != "pass" or result["placement"] != "pass":
-        print(json.dumps(result, indent=2))
     assert result["lift"] == result["placement"] == "pass", result
     assert result["evaluation"]["success"] and result["torque_off"]
     assert "block" not in json.loads((tmp_path / "session.json").read_text())["initial"]["world"]["boxes"]
