@@ -140,10 +140,12 @@ async def procedure(server, evaluate, *, tracking=False) -> dict:
         results["placement"] = "pass" if final and placed(final, aperture) else "fail"
     except Exception as e:
         results["reason"] = str(e)
-        # Over this known open tray, put the block down before opening; never release at height.
+        # An open gripper retreats directly. If it may hold the block, set it on the known tray before opening.
         await tool("stop", reason="the procedure's expectation failed")
-        here = (await tool("status"))["tool"]["work"]
-        lower = [dict(do="move_to", to=at(here[0], here[1], TRAY))] if abs(here[2] - TRAY) > .001 else []
+        status = await tool("status")
+        here = status["tool"]["work"]
+        lower = ([dict(do="move_to", to=at(here[0], here[1], TRAY))]
+                 if status["gripper"]["aperture_mm"] < 60 and abs(here[2] - TRAY) > .001 else [])
         await run([*lower, dict(do="gripper", aperture_mm=65), dict(do="line", up=.08)])
     finally:
         evaluate()          # independent, after the release and before homing changes the withdrawal

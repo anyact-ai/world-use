@@ -92,6 +92,20 @@ EGL. Hosted macOS runs `pytest -m 'not rendering'`; it still tests physics, cont
 record recovery, Rerun export and image transport through file cameras. On a Mac
 with GPU access, run the full suite with `uv run pytest`.
 
+Two integration tests exercise longer procedures:
+
+```sh
+uv run pytest tests/test_simulation_recovery.py tests/test_simulation_transfer.py
+```
+
+The recovery test moves an unknown block during a checkpoint, explicitly withdraws its measurement,
+and checks that the old grasp is refused. The perception procedure then observes again and completes
+the task in the same session, at two changed positions. This tests recovery after invalidation, not
+automatic detection of scene changes, and needs camera rendering. The transfer test uses CPU physics:
+two friction-held blocks cross a physical divider, low shortcuts fail rehearsal, and both final poses
+are checked against simulation truth. Both tests check return, torque release and record completion.
+These are scripted integration tests, not model-policy benchmarks.
+
 Records keep the URDF and copies of a custom robot's meshes. A built-in robot's
 meshes ship with world-use; replay finds them by the recorded URDF's exact
 contents. Replay renders measured joints and the recorded **estimated world**, not
