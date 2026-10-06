@@ -58,7 +58,8 @@ def placed(after: dict, aperture_mm: float) -> bool:
     """The block stands at the target, the gripper is open and the tool is clear above the block."""
     top, expected = np.asarray(after["surface_center"]), TARGET + [0, 0, SIZE[2] / 2]
     clearance = SIZE[2] / 2 - after["from_tool"][2]              # tool above the block's centre
-    return bool(np.linalg.norm(top[:2] - expected[:2]) < .01 and abs(top[2] - expected[2]) < .008
+    # Judge full 3D error, reserving 2 mm of the task's 1 cm tolerance for image/depth measurement error.
+    return bool(np.linalg.norm(top - expected) < .008
                 and clearance > .08 and aperture_mm >= 60)
 
 
@@ -139,7 +140,7 @@ async def procedure(server, evaluate, *, tracking=False) -> dict:
         aperture = (await tool("status"))["gripper"]["aperture_mm"]
         results["placement"] = "pass" if final and placed(final, aperture) else "fail"
         if results["placement"] != "pass":
-            results["reason"] = ("the released block is outside the placement tolerance" if final
+            results["reason"] = ("the released block did not pass the camera placement check" if final
                                  else "the released block is not measurable")
     except Exception as e:
         results["reason"] = str(e)

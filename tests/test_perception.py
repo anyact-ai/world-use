@@ -336,6 +336,10 @@ def test_the_example_checks_lift_and_placement_from_measurements():
     assert not placed(dict(surface_center=top, from_tool=[0, 0, -.06]), 40)                # still closed
     assert not placed(dict(surface_center=top, from_tool=[0, 0, -.02]), 65)                # not withdrawn
     assert not placed(dict(surface_center=[top[0] + .02, *top[1:]], from_tool=[0, 0, -.06]), 65)
+    # Separate horizontal/vertical checks used to accept a combined error beyond the 1 cm task tolerance.
+    assert not placed(dict(surface_center=np.array(top) + [.008, 0, .007], from_tool=[0, 0, -.06]), 65)
+    # A pixel-derived centre just inside the boundary cannot certify physical placement inside it.
+    assert not placed(dict(surface_center=[.3303, -.0703, .2499], from_tool=[0, 0, -.06]), 65)
 
 
 @pytest.mark.rendering

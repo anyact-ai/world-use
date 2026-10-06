@@ -32,8 +32,9 @@ measured and the arm is never powered.
 4. Measure again, then descend and grip, requiring the new measurement.
 5. Measure, lift 6 cm, measure: the lift passed if `from_tool` held while the top face rose.
 6. Carry the block above the target, lower to the height calculated from its measured tool offset, open and withdraw.
-7. Measure: placed if the top face is within 1 cm of the target, the gripper is open and the tool is
-   8 cm clear above the block.
+7. Measure: confirmed if the top-face centre is within 8 mm of the target in 3D, the gripper is open and the
+   tool is 8 cm clear above the block. This reserves 2 mm of the task's 1 cm tolerance for measurement error;
+   a point measured just inside the physical limit is not enough to confirm placement.
 
 A separate evaluator, the only code that reads simulator truth, judges the result after the gripper lets go
 and before homing. It uses the [block task predicate](../pick-place/README.md): position within 1 cm,
