@@ -66,3 +66,8 @@ The task assumes a known upright block, a fixed calibrated overhead camera, a cl
 depth. The block tilts a few degrees in the pinch grasp and settles 5 to 9 mm short of the target when
 let go, inside the 1 cm tolerance. These runs check that the pieces work together; they are not a
 benchmark of tracking or grasping.
+
+The colour selector is deliberately simple and sensitive to camera angle and lighting. An angled view can
+push a visible block outside its colour threshold; the procedure then reports a failed observation,
+returns the block to the tray, and goes home with torque off. The scene-variation test checks this recovery
+alongside successful transfers with changed block positions, camera placement, mass and friction.
