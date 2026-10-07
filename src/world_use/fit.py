@@ -23,10 +23,14 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Annotated, TypedDict
 
 import numpy as np
+from pydantic import ConfigDict, Field
+from pydantic.dataclasses import dataclass as validated_dataclass
 
 from .kinematics import Chain
+from .request_models import Name, Nonnegative, Positive, Vector
 
 EVERY = 10                # use every 10th tick: neighbouring ticks say the same thing
 SMOOTH = 5                # ticks either side for velocities and accelerations
@@ -40,19 +44,31 @@ PRIOR_FRICTION = 3.0      # friction: Nm and Nm s/rad, loosely held at zero
 SWITCHING, TOUCH = 1.5, (1.0, 2.0)   # s left out around torque on/off, and before/after a contact, trip or fault
 
 
-@dataclass
+class FitError(TypedDict):
+    urdf: Nonnegative
+    fit: Nonnegative
+
+
+@validated_dataclass(config=ConfigDict(strict=True, extra="forbid", allow_inf_nan=False))
 class Model:
     """A robot model fitted from flight records: links' masses and centres of mass, joints' friction."""
-    body: str                                           # the manifest's name it was fitted for
-    links: dict[str, tuple[float, list[float]]]         # link -> (kg, centre of mass in its own frame, m)
-    friction: list[tuple[float, float]]                 # per joint: Coulomb (Nm), viscous (Nm s/rad)
+    body: Name                                        # the manifest's name it was fitted for
+    # JSON arrays and Python tuples share the same contract; scalar values remain strict.
+    links: dict[Name, Annotated[tuple[Positive, Vector], Field(strict=False)]]
+    friction: list[Annotated[tuple[Nonnegative, Nonnegative], Field(strict=False)]]
     records: list[str] = field(default_factory=list)
-    joints: list[str] = field(default_factory=list)     # the joints' names, in the friction's order
-    samples: int = 0
-    check: dict = field(default_factory=dict)           # joint -> URDF and fitted rms (Nm), each record held out
+    joints: list[Name] = field(default_factory=list)    # empty in legacy fits; otherwise URDF joint order
+    samples: Annotated[int, Field(ge=0)] = 0
+    check: dict[Name, FitError] = field(default_factory=dict)
     made: str = ""
 
     def apply(self, chain: Chain):
+        if len(self.friction) != chain.n:
+            raise ValueError(f"fit friction: expected {chain.n} entries in URDF joint order")
+        if self.joints and self.joints != chain.joint_names:
+            raise ValueError(f"fit joints must follow URDF order: {chain.joint_names}")
+        if unknown := self.links.keys() - chain.links.keys():
+            raise ValueError(f"fit names unknown links: {', '.join(sorted(unknown))}")
         chain.set_links({name: (m, np.asarray(c, float)) for name, (m, c) in self.links.items()})
 
     def friction_torque(self, dq) -> np.ndarray:
@@ -97,9 +113,7 @@ class Model:
 
     @classmethod
     def from_dict(cls, d: dict) -> Model:
-        return cls(d["body"], {k: (float(m), [float(x) for x in c]) for k, (m, c) in d["links"].items()},
-                   [(float(c), float(v)) for c, v in d["friction"]], list(d.get("records", [])),
-                   list(d.get("joints", [])), int(d.get("samples", 0)), dict(d.get("check", {})), d.get("made", ""))
+        return cls(**d)
 
     def save(self, path: Path):
         Path(path).write_text(json.dumps(self.to_dict(), indent=1))
@@ -271,7 +285,7 @@ def fit(run_dirs, manifest) -> Model:
                          "away from their rest stops")
     prior, scale = _prior(chain, links)
     free = 4 * len(links)
-    check: dict[str, dict] = {}
+    check: dict[str, FitError] = {}
     if len(rows) > 1:                                  # each record predicted by a fit made without it
         errs = {i: ([], []) for i in range(chain.n)}
         for name, (A, y, joint) in rows.items():

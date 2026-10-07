@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from .body import GripperSpec, JointSpec, Manifest, Rest
+from .cameras import CameraConfig
 from .kinematics import Chain
 from .request_models import BoxRequest
 
@@ -206,8 +207,7 @@ def load_workcell(path: Path | str | None) -> dict:
     sections = dict(
         frame=("name", "origin", "rpy_deg"),
         box=(set(BoxRequest.model_fields) - {"source"}) | {"known"},
-        camera=("name", "path", "url", "command", "max_age_s", "rotate", "projection", "eye", "look_at", "up",
-                "frame", "fov_deg", "size", "facing", "yaw_deg", "pitch_deg"),
+        camera=CameraConfig.model_fields,
         fact=("key", "value", "source", "note"))
     for section, allowed in sections.items():
         entries = cell.get(section, [])
@@ -221,8 +221,7 @@ def load_workcell(path: Path | str | None) -> dict:
                 raise ValueError(f"{section}: names must be nonempty and unique")
             names.add(name)
     for camera in cell.get("camera", []):
-        if len(camera.keys() & {"path", "url", "command"}) > 1:
-            raise ValueError(f"camera {camera['name']}: choose one of path, url or command")
+        CameraConfig.model_validate(camera)
         if "path" in camera:
             camera["path"] = str(_path(camera["path"], path.parent))
     for frame in cell.get("frame", []):

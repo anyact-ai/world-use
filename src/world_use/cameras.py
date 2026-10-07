@@ -30,10 +30,14 @@ import zlib
 from dataclasses import dataclass, field, replace
 from io import BytesIO
 from pathlib import Path
+from typing import Annotated, Literal
 from uuid import uuid4
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+from pydantic import ConfigDict, Field, TypeAdapter, model_validator
+
+from .request_models import Name, Number, Positive, Request, Vector
 
 MAX_SIDE = 1024                        # pictures are scaled down to this: plenty for a model, cheap in context
 
@@ -42,6 +46,56 @@ MODEL = (22, 140, 80)                  # what the kernel believes: outlines
 TOOL = (200, 30, 160)
 PLAN = (40, 90, 230)
 AXES = {"F": (215, 50, 50), "L": (40, 160, 70), "U": (50, 90, 220)}
+_file_max_age = TypeAdapter(Positive, config=ConfigDict(strict=True))
+
+
+class CameraConfig(Request):
+    """Workcell camera data, checked once when loaded or constructed."""
+    name: Name
+    path: Name | None = None
+    url: Name | None = None
+    command: Name | None = None
+    max_age_s: Positive = 3.0
+    rotate: int = 0
+    projection: Literal["pinhole", "equirect"] = "pinhole"
+    eye: Vector | None = None
+    look_at: Vector | None = None
+    up: Vector | None = None
+    facing: Vector | None = None
+    frame: Name = "work"
+    fov_deg: Annotated[Number, Field(gt=0, lt=180)] | None = None
+    size: Annotated[list[Annotated[int, Field(gt=0)]], Field(min_length=2, max_length=2)] | None = None
+    yaw_deg: Number = 0.0
+    pitch_deg: Annotated[Number, Field(gt=-85, lt=85)] = 0.0
+
+    @model_validator(mode="after")
+    def combinations(self):
+        sources = sum(value is not None for value in (self.path, self.url, self.command))
+        if sources > 1:
+            raise ValueError("choose one of path, url or command")
+        if "max_age_s" in self.model_fields_set and self.path is None:
+            raise ValueError("max_age_s applies only to a file camera (path)")
+        if self.rotate not in (0, 90, 180, 270):
+            raise ValueError("rotate must be 0, 90, 180 or 270")
+        if self.projection == "equirect":
+            if not sources or self.rotate:
+                raise ValueError("equirect needs a source and cannot be rotated; aim the cut instead")
+            if (self.eye is None) != (self.facing is None):
+                raise ValueError("equirect pose needs both eye and facing")
+            if self.look_at is not None and self.eye is None:
+                raise ValueError("equirect look_at needs eye and facing; otherwise use yaw_deg and pitch_deg")
+            if self.look_at is not None and self.model_fields_set & {"yaw_deg", "pitch_deg"}:
+                raise ValueError("aim with look_at or yaw_deg/pitch_deg, not both")
+        else:
+            if self.facing is not None or self.model_fields_set & {"yaw_deg", "pitch_deg"}:
+                raise ValueError("facing, yaw_deg and pitch_deg require projection = equirect")
+            if (self.eye is None) != (self.look_at is None):
+                raise ValueError("pinhole calibration needs both eye and look_at")
+            if not sources and self.eye is None:
+                raise ValueError("give path, url or command, or eye and look_at for a simulated camera")
+            if not sources and self.rotate:
+                raise ValueError("aim a simulated camera with eye, look_at and up instead of rotate")
+        return self
 
 
 @dataclass(frozen=True)
@@ -285,7 +339,7 @@ class FileCamera(Camera):
     def __init__(self, name: str, path: str | Path, view: View | None = None, max_age_s: float = 3.0,
                  rotate: int = 0):
         super().__init__(name, view, rotate)
-        self.path, self.max_age_s = Path(path).expanduser(), float(max_age_s)
+        self.path, self.max_age_s = Path(path).expanduser(), _file_max_age.validate_python(max_age_s)
         # A fixed conversion keeps equal modification times equal across captures.
         self._clock_offset = time.monotonic() - time.time()
 
@@ -455,6 +509,7 @@ def sim_cameras(body, world) -> dict[str, Camera]:
 
 
 def from_config(cfg: dict, world) -> Camera:
+    cfg = CameraConfig.model_validate(cfg).model_dump(exclude_unset=True, exclude_none=True)
     if cfg.get("projection") == "equirect":
         return equirect_from_config(cfg, world)
     view, rotate = view_from_config(cfg, world), int(cfg.get("rotate", 0))
