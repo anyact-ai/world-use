@@ -49,6 +49,10 @@ authorized, supervised session, before relying on what is drawn on them. A 360 c
 equirectangular picture can serve pinhole cuts of it instead: `projection = "equirect"`, aimed with `yaw_deg` and
 `pitch_deg`.
 
+Camera settings are validated at load time: `max_age_s` must be finite and positive and applies only to
+file sources, image dimensions must be positive integers, and `fov_deg` must be between 0 and 180 degrees.
+Partial calibrations, unknown projection names and conflicting source or aiming settings are rejected.
+
 ## Connect and operate
 
 With the arm supported at rest and the motor supply on:

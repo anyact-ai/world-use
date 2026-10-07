@@ -6,7 +6,7 @@ import pytest
 from PIL import Image
 
 from world_use import World
-from world_use.cameras import Camera, CommandCamera, EquirectCut, equirect_dirs, equirect_uv, from_config
+from world_use.cameras import Camera, CommandCamera, EquirectCut, FileCamera, equirect_dirs, equirect_uv, from_config
 from world_use.client import DaemonError
 
 
@@ -97,8 +97,6 @@ def test_file_frames_preserve_identity_age_and_rotation(tmp_path):
 
 
 def test_360_cut_preserves_source_frame_identity_and_age(tmp_path):
-    from world_use.cameras import FileCamera
-
     path = tmp_path / "pano.png"
     Image.new("RGB", (200, 100), "red").save(path)
     source = FileCamera("pano", path)
@@ -107,6 +105,23 @@ def test_360_cut_preserves_source_frame_identity_and_age(tmp_path):
     assert one.id == two.id and one.camera == "front"
     assert one.timestamp == pytest.approx(two.timestamp, abs=.01)
     assert np.array_equal(one.image, cut.picture(None))
+
+
+@pytest.mark.parametrize("age", [float("nan"), float("inf"), True, 0])
+def test_file_camera_cannot_disable_freshness_with_an_invalid_age(tmp_path, age):
+    path = tmp_path / "old.png"
+    with pytest.raises(ValueError):
+        FileCamera("side", path, max_age_s=age)
+    with pytest.raises(ValueError):
+        from_config(dict(name="side", path=str(path), max_age_s=age), World())
+
+
+def test_camera_settings_cannot_be_silently_ignored():
+    for cfg in (dict(name="side", url="http://localhost/image", max_age_s=3),
+                dict(name="side", path="side.png", yaw_deg=30),
+                dict(name="side", path="side.png", projection="equirect", rotate=90)):
+        with pytest.raises(ValueError):
+            from_config(cfg, World())
 
 
 def test_command_camera_timeout_is_reported_to_the_client(monkeypatch, daemon):

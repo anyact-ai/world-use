@@ -17,7 +17,7 @@
 - **Other arms.** A workcell loads a robot from a URDF and a TOML description, with its own driver. Grippers with
   one joint, revolute or prismatic, and five-joint arms (the tool's heading turns; `ik_weights` sets what a move
   holds) work, and `package://` mesh paths resolve. See the [adapter guide](docs/adapters.md).
-- **Python 3.11 or newer** (0.2.0 needed 3.14). The reBot driver extra needs 3.11 to 3.13.
+- **Python 3.13 or newer** (0.2.0 needed 3.14). The reBot driver extra needs 3.13.
 - New commands: `wu policy`, `wu calibrate`, `wu record`, `wu inspect`, `wu replay`, `wu view`, `wu fit`,
   `wu demo`; new MCP tools: `policy`, `job`, `calibrate`, `reset`, `shutdown` and the perception tools.
 
@@ -34,6 +34,8 @@
   still-current candidate; a failed check leaves the previous route unchanged.
 - HTTP and MCP reject unknown fields, nonfinite values and invalid types instead of ignoring or coercing them.
   World boxes reject unsupported parameters through Python and workcells too. Pydantic is a core dependency.
+- Camera configuration and fitted-model files now receive strict validation. Invalid freshness limits cannot
+  disable file-camera age checks, and incompatible fit dimensions or joint/link names fail before changing a chain.
 - MCP `status` returns its one line, with the full state as structured content. `run`, `job`, `answer` and `home`
   return the same short text as the CLI, naming the tool to call next.
 - `grip` and `grasp` no longer take `effort`, `lag`, `speed` or `min`: their thresholds come from the gripper

@@ -95,6 +95,39 @@ def test_a_model_round_trips_and_changes_what_the_chain_weighs(tmp_path):
     assert np.allclose(model.friction_torque([0, 0, 0.2, 0, 0, 0])[2], 0.5 * np.tanh(20) + 1.5 * 0.2)
 
 
+@pytest.mark.parametrize("change", [
+    dict(links={"link3": [float("nan"), [0, 0, 0]]}),
+    dict(links={"link3": [1, [0, 0]]}),
+    dict(links={"link3": ["1", [0, 0, 0]]}),
+    dict(friction=[[0, float("inf")]] * 6),
+    dict(friction=[[-1, 0]] * 6),
+    dict(check={"joint3": {"urdf": .5}}),
+    dict(frictiom=[[0, 0]] * 6),
+])
+def test_invalid_fit_files_are_rejected_at_load(tmp_path, change):
+    path = tmp_path / "fit.json"
+    path.write_text(json.dumps(truth().to_dict() | change))
+    with pytest.raises(ValueError):
+        fit.load(path)
+
+
+@pytest.mark.parametrize("change", [
+    dict(friction=[(1, 2)]),                       # numpy used to broadcast one entry across every joint
+    dict(joints=list(reversed([j.name for j in MANIFEST.joints]))),
+    dict(links={"link3": (2, [0, 0, 0]), "unknown": (1, [0, 0, 0])}),
+])
+def test_incompatible_fit_leaves_the_installed_model_unchanged(k, change):
+    k.use_fit(truth())
+    installed = k.fit
+    before = k.expected_torque(k.state.q).copy()
+    mass = k.body.model.body("link3").mass.copy()
+    with pytest.raises(ValueError):
+        k.use_fit(replace(truth(), **change))
+    assert k.fit is installed
+    np.testing.assert_array_equal(k.expected_torque(k.state.q), before)
+    np.testing.assert_array_equal(k.body.model.body("link3").mass, mass)
+
+
 def test_the_kernel_judges_torque_by_the_fit_and_so_do_its_body_and_twin():
     k = make_kernel()
     with pytest.raises(ValueError, match="another arm"):

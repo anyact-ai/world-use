@@ -186,6 +186,10 @@ Paths for the robot, fit and camera images are relative to the workcell file;
 calibration. `[[box]]` and `[[fact]]` entries describe the scene; the
 [block workcell](../src/world_use/workcells/block.toml) shows boxes.
 
+Fit files reject unknown fields, nonfinite values, nonpositive link masses and negative friction. Applying
+a fit checks its link names and requires one friction pair per robot joint, in URDF order. Older fits without
+joint names still use that positional order; supplied joint names must match it exactly.
+
 `[envelope]` holds operator overrides, applied to execution and rehearsal.
 `max_excursion_deg` with `reason` replaces the manifest's `max_excursion`. For robots
 with a `turn_clearance` rule, `turn_height_m` sets an absolute tool height in the

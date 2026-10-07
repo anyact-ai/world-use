@@ -75,6 +75,35 @@ def test_workcell_paths_and_typos_are_not_silently_ignored(tmp_path, monkeypatch
         make_body("sim", cell)
 
 
+@pytest.mark.parametrize("settings", [
+    "max_age_s = nan",                           # bypassed the stale-frame check
+    'max_age_s = "3"',                           # silently coerced a string
+    "rotate = 90.5",                             # truncated to a valid rotation
+    'projection = "equirec"',                    # silently became a pinhole camera
+    "fov_deg = 180",                             # degenerate pinhole projection
+    "size = [512, 0]",
+    "eye = [0, 0, 1]",                           # ignored an incomplete calibration
+    'projection = "equirect"\nlook_at = [0, 0, 0]',
+])
+def test_invalid_camera_configuration_fails_when_loading_the_workcell(tmp_path, settings):
+    path = tmp_path / "camera.toml"
+    path.write_text('[[camera]]\nname = "side"\npath = "side.png"\n' + settings + "\n")
+    with pytest.raises(ValueError):
+        load_workcell(path)
+
+
+def test_camera_configuration_keeps_simulated_and_uncalibrated_360_views(tmp_path):
+    from world_use.cameras import EquirectCut, from_config, view_from_config
+
+    path = tmp_path / "cameras.toml"
+    path.write_text('[[camera]]\nname="sim"\nframe="base"\neye=[0,0,1]\nlook_at=[0,0,0]\n'
+                    '[[camera]]\nname="panorama"\npath="pano.png"\nprojection="equirect"\nyaw_deg=30\n')
+    simulated, panorama = load_workcell(path)["camera"]
+    assert view_from_config(simulated, World()) is not None
+    cut = from_config(panorama, World())
+    assert isinstance(cut, EquirectCut) and cut.view is None
+
+
 @pytest.mark.parametrize(("old", "new", "message"), [
     ("self_supporting = true", "self_supporting = false", "rest"),
     ('name = "shoulder"', 'name = "wrong_joint"', "URDF chain order"),
