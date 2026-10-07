@@ -6,8 +6,8 @@ raised can make it fall. Keep an operator at its motor-supply switch.
 
 ## Install
 
-Use Python 3.11 to 3.13 for the reBot extra. Its CAN driver, motorbridge 0.5.5, publishes macOS and Linux wheels
-for those versions only, and on macOS only for Apple Silicon.
+Use Python 3.13 for the reBot extra. Its CAN driver, motorbridge 0.5.5, has no wheels for Python 3.14;
+on macOS its wheels support Apple Silicon only.
 
 ```sh
 uv tool install --python 3.13 "world-use[rebot,mcp,rerun] @ git+https://github.com/anyact-ai/world-use"

@@ -32,12 +32,16 @@ measured and the arm is never powered.
 4. Measure again, then descend and grip, requiring the new measurement.
 5. Measure, lift 6 cm, measure: the lift passed if `from_tool` held while the top face rose.
 6. Carry the block above the target, lower to the height calculated from its measured tool offset, open and withdraw.
-7. Measure: placed if the top face is within 1 cm of the target, the gripper is open and the tool is
-   8 cm clear above the block.
+7. Measure: confirmed if the top-face centre is within 8 mm of the target in 3D, the gripper is open and the
+   tool is 8 cm clear above the block. This reserves 2 mm of the task's 1 cm tolerance for measurement error;
+   a point measured just inside the physical limit is not enough to confirm placement.
 
 A separate evaluator, the only code that reads simulator truth, judges the result after the gripper lets go
-and before homing. Any failure stops the arm, lowers the block onto the tray, opens and withdraws: safe only
-over this known clear tray. `result.json` holds the procedure's checks, its measurements, the job
+and before homing. It uses the [block task predicate](../pick-place/README.md): position within 1 cm,
+preserved upright orientation within 5 degrees, release and tool withdrawal. The procedure's top-face
+measurement check does not establish the block's full orientation. On failure, an already-open gripper
+withdraws upward. If it may hold the block, the procedure first lowers it onto the tray and opens:
+safe only over this known clear tray. `result.json` holds the procedure's checks, its measurements, the job
 outcomes and the evaluator's verdict; `perception/` holds each measurement's picture and points.
 
 ## With EdgeTAM
@@ -61,5 +65,17 @@ OMP_NUM_THREADS=2 uv run --extra vision --extra rerun python scripts/vision_smok
 
 The task assumes a known upright block, a fixed calibrated overhead camera, a clear tray and simulated
 depth. The block tilts a few degrees in the pinch grasp and settles 5 to 9 mm short of the target when
-let go, inside the 1 cm tolerance. These runs check that the pieces work together; they are not a
+let go, inside the 1 cm tolerance. The stricter camera check can reject a physically successful placement
+near that limit: `placement` reports the camera check, while `evaluation.success` reports simulator truth.
+These runs check that the pieces work together; they are not a
 benchmark of tracking or grasping.
+
+The grasp can settle and tilt during transport. A heavier, 100 g block has both passed and missed the
+1 cm placement tolerance in CI and local runs; this script does not guarantee placement across payloads.
+A missed final check is reported as a failure, followed by homing and torque release. The independent
+evaluator retains the actual position and orientation, even when the procedure cannot confirm success.
+
+The colour selector is deliberately simple and sensitive to camera angle and lighting. An angled view can
+push a visible block outside its colour threshold; the procedure then reports a failed observation,
+returns the block to the tray, and goes home with torque off. The scene-variation test checks this recovery
+alongside successful transfers with changed block positions, camera placement, mass and friction.

@@ -8,13 +8,15 @@ from __future__ import annotations
 import time
 from copy import deepcopy
 from dataclasses import dataclass, field
+from typing import get_args
 
 import numpy as np
 
 from .errors import Refused
 from .geometry import rot_z
+from .request_models import BoxKind, BoxParameters, BoxRequest
 
-KINDS = ("surface", "object", "keep_out", "fragile", "slow")
+KINDS = get_args(BoxKind)
 DIRECTIONS = dict(up=(0, 0, 1), down=(0, 0, -1), forward=(1, 0, 0), back=(-1, 0, 0), left=(0, 1, 0), right=(0, -1, 0))
 
 
@@ -71,23 +73,14 @@ class Box:
     t: float = field(default_factory=time.time)
 
     def __post_init__(self):
+        validated = BoxParameters.model_validate(dict(kind=self.kind, **self.params))
+        self.params = validated.model_dump(exclude={"kind"}, exclude_unset=True)
         if self.size.shape != (3,) or not np.isfinite(self.size).all() or (self.size <= 0).any():
             raise ValueError("box size must be three finite, positive lengths")
         if self.pose.shape != (4, 4) or not np.isfinite(self.pose).all():
             raise ValueError("box pose must be a finite 4x4 transform")
         if self.kind == "fragile":
-            try:
-                dtau = float(self.params.get("dtau", 0.3))
-            except (TypeError, ValueError):
-                raise ValueError("a fragile zone needs a finite, positive dtau in Nm") from None
-            if not np.isfinite(dtau) or dtau <= 0:
-                raise ValueError("a fragile zone needs a finite, positive dtau in Nm")
-            self.params = dict(self.params, dtau=dtau)
-        if self.kind == "slow":
-            speed = float(self.params.get("speed", float("nan")))
-            if not np.isfinite(speed) or speed <= 0:
-                raise ValueError("a slow zone needs a finite, positive speed in m/s")
-            self.params = dict(self.params, speed=speed)
+            self.params.setdefault("dtau", 0.3)
 
     def local(self, p) -> np.ndarray:
         return self.pose[:3, :3].T @ (np.asarray(p, float) - self.pose[:3, 3])
@@ -171,8 +164,11 @@ class World:
     # -- boxes ------------------------------------------------------------------------------------
     def add_box(self, name: str, kind: str, center, size, frame: str = "base", yaw_deg: float = 0.0,
                 source: str = "config", **params) -> Box:
-        if kind not in KINDS:
-            raise ValueError(f"box kind must be one of {KINDS}")
+        data = BoxRequest.model_validate(dict(name=name, kind=kind, center=list(center), size=list(size),
+                                              frame=frame, yaw_deg=yaw_deg, source=source, **params))
+        params = data.model_dump(include={"grip_width", "mass_kg", "friction", "dtau", "speed"},
+                                 exclude_unset=True)
+        center, size, yaw_deg = data.center, data.size, data.yaw_deg
         F = self.frame(frame).T
         c, s = np.cos(np.radians(yaw_deg)), np.sin(np.radians(yaw_deg))
         pose = np.eye(4)

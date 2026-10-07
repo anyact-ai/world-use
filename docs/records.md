@@ -16,6 +16,9 @@ wu fit runs/RUN-1 runs/RUN-2                          # link masses and joint fr
 job's outcome. `powered` counts from each attempt to switch torque on to a confirmed switch-off, ramps and
 unconfirmed intervals included. `moving` is the time spent in motion steps, not independently detected movement.
 Both are elapsed time on one monotonic clock that events and telemetry share.
+For current records, "closed normally" means the final completion marker matches the committed chunk and event
+counts. A `closed` event alone means the robot connection closed; its final recording write may still have failed.
+An open or interrupted record reports only the telemetry already committed to disk.
 
 `wu replay` renders the measured joints and the recorded world model with the saved robot geometry, and labels the
 frames as a reconstruction. The original camera pictures stay in `views/`. `wu fit` writes `fit.json`; the
@@ -23,8 +26,9 @@ frames as a reconstruction. The original camera pictures stay in `views/`. `wu f
 
 ## View in Rerun
 
-`wu view` needs the `rerun` extra, and the `rerun` app on your PATH to open a window; the README's install line
-gives both. Rerun runs in its own process and reads the record; closing it never stops a job or changes motor power.
+`wu view` needs the `rerun` extra. The README's install line exposes both `wu` and `rerun`; `wu view` also finds the
+viewer inside its tool environment. Rerun runs in its own process and reads the record; closing it never stops a
+job or changes motor power.
 
 The window has a 3D view of the robot's own geometry, a camera pane, measured and commanded joint plots, torque,
 temperature, gripper, power and the active job, and the events, all on the run's `elapsed` timeline. Drag the
@@ -46,11 +50,16 @@ wu up --workcell block
 wu view
 ```
 
-With no folder, `wu view` finds the local daemon's record and follows it, usually about one second behind control.
-To follow a given folder, use `wu view runs/RUN --follow`. Camera pictures arrive when a client calls `wu look` or
-measures; nothing streams video. Following ends once the record is complete, or with Ctrl+C; a record whose process
-was killed never completes, so stop following it with Ctrl+C. The folder must be readable where the viewer runs:
-for a remote daemon, copy or mount its record.
+With no folder, `wu view` follows the local daemon's record, including edits made through `wu box` or other
+world tools, usually one to two seconds behind control. It stays connected across completed sessions,
+waits through daemon restarts and opens the next session as a separate named recording. Ctrl+C stops
+following; the Rerun window stays open. The daemon must be running when you first start `wu view`.
+
+Supplying a folder opens that saved recording. Add `--follow` to follow it until completion; it does not
+switch to other runs. A portable export with `--out` also stays with one recording. Camera pictures arrive
+when a client calls `wu look` or measures; nothing streams video. Scene-file edits take effect when loaded
+by a new daemon, not merely when saved. The folder must be readable where the viewer runs: for a remote
+daemon, copy or mount its record.
 
 ## Headless export
 

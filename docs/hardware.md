@@ -100,7 +100,7 @@ at the start of one session. The X5 serves pinhole cuts of its 360 aimed by yaw 
 control period (`tick_ms`). The heat forecast leaves out the first 20 s after torque-on: the elbow's reading rose 28
 to 37 C in 12 s and then flattened, so the first forecasts read "1 min to 80 C".
 
-**Install.** motorbridge 0.5.5 has no macOS wheel for Python 3.14, so the reBot extra needs Python 3.11 to 3.13
+**Install.** motorbridge 0.5.5 has no macOS wheel for Python 3.14, so use Python 3.13 for the reBot extra
 (see [the setup guide](rebot.md)).
 
 ### Checks after the fixes (23:12 and 23:21)

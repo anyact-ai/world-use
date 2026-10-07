@@ -16,6 +16,8 @@ from ..recorder import save_summary
 
 SCENARIOS = ("nominal", "shifted", "missing", "misplaced")
 TARGET = np.array([.34, -.07, .20])
+TARGET_ORIENTATION = np.eye(3)              # upright and unchanged yaw in the work frame
+ORIENTATION_TOLERANCE_DEG = 5.0
 
 
 def setup(scenario="nominal", output: Path | None = None):
@@ -51,25 +53,32 @@ def pickup(k) -> list[dict]:
             {"do": "grip", "expect_mm": [35, 45]}]
 
 
-def placement(k) -> list[dict]:
+def placement(k, target=TARGET) -> list[dict]:
     tool = k.world.from_base("work", k.tool[:3, 3])
     block = k.world.from_base("work", k.world.boxes["block"].pose[:3, 3])
-    target = TARGET + tool - block
+    target = np.asarray(target) + tool - block
     return [{"do": "line", "up": .08},
             {"do": "move_to", "to": [float(target[0]), float(target[1]), float(tool[2] + .08)]},
             {"do": "line", "up": -.07}, {"do": "gripper", "aperture_mm": 65},
             {"do": "line", "up": .07}]
 
 
-def success(k, truth: World) -> dict:
+def success(k, truth: World, target=TARGET, orientation=TARGET_ORIENTATION,
+            orientation_tolerance_deg=ORIENTATION_TOLERANCE_DEG) -> dict:
     block = truth.boxes.get("block")
     center = None if block is None else truth.from_base("work", block.pose[:3, 3])
     tool = truth.from_base("work", k.tool[:3, 3])
-    placed = center is not None and np.linalg.norm(center - TARGET) < .01
+    placed = center is not None and np.linalg.norm(center - target) < .01
+    rotation = None if block is None else truth.frame("work").T[:3, :3].T @ block.pose[:3, :3]
+    angle = None if rotation is None else float(np.degrees(np.arccos(np.clip(
+        (np.trace(np.asarray(orientation).T @ rotation) - 1) / 2, -1, 1))))
+    oriented = angle is not None and angle <= orientation_tolerance_deg
     released = truth.held is None
     withdrawn = center is not None and tool[2] - center[2] > .08
-    return dict(success=bool(placed and released and withdrawn), placed=bool(placed), released=released,
-                withdrawn=bool(withdrawn), target=TARGET.tolist(),
+    return dict(success=bool(placed and oriented and released and withdrawn), placed=bool(placed),
+                oriented=bool(oriented), orientation_error_deg=angle,
+                orientation_tolerance_deg=orientation_tolerance_deg, released=released,
+                withdrawn=bool(withdrawn), target=np.asarray(target).tolist(),
                 observed=None if center is None else np.round(center, 4).tolist())
 
 

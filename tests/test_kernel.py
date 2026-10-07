@@ -540,11 +540,31 @@ def test_a_failed_thermal_return_is_not_retried_automatically(lifted, monkeypatc
     assert len([j for j in lifted.jobs.values() if j.behavior.label == "home: motor hot"]) == 1
 
 
+def test_failed_thermal_return_clears_its_route_during_shutdown(lifted, monkeypatch):
+    from world_use.envelope import Trip
+
+    k = lifted
+    k.set_home_route([])
+    monkeypatch.setattr(k.envelope, "watch", lambda *args: Trip("hot", "motor too hot"))
+    k.tick()
+    thermal = k.active
+    assert thermal is not None and thermal.behavior.label == "home: motor hot"
+    # Shutdown can close admission while a thermal tick is already in progress, before release runs.
+    k._closing = True
+    monkeypatch.setattr(k.envelope, "watch", lambda *args: Trip("blocked", "thermal return jammed"))
+    k.tick()
+    assert thermal.status == "surprise" and k.active is None and k.home_route is None
+    assert k.enabled and not k.faulted and not k.power_uncertain
+    with pytest.raises(Refused, match="shutting down"):
+        k.submit({"do": "hold", "seconds": .1})
+    assert any("thermal return failed" in e["message"] for e in k.events.since(0))
+
+
 def test_hot_return_still_stops_for_a_jammed_arm(lifted, monkeypatch):
     k = lifted
     k.set_home_route([])
     q, g = k.state.q.copy(), k.state.gripper
-    monkeypatch.setattr(k.body, "read", lambda: JointState(k.clock.now(), q.copy(), tau=k.chain.gravity(q),
+    monkeypatch.setattr(k.body, "read", lambda: JointState(k.state.t + k.clock.dt, q.copy(), tau=k.chain.gravity(q),
                                                         temp=np.full(6, 81.), gripper=g, gripper_tau=0.))
     for _ in range(1000):
         k.tick()
@@ -693,7 +713,7 @@ def test_a_step_refused_midway_leaves_no_feedforward_alone_or_in_a_plan(lifted, 
     assert k.run({"do": "gripper", "to": 3.0}).ok
     read = k.body.read
     monkeypatch.setattr(k.body, "read",
-                        lambda: replace(read(), gripper_tau=float("nan") if k.cmd.gripper < 2.0 else 0.0))
+                        lambda: replace(read(), gripper_tau=None if k.cmd.gripper < 2.0 else 0.0))
     spec = {"do": "grip", "hold_effort": 0.4}
     out = k.run([spec] if nested else spec)
     assert out.status == "refused" and "sensing" in out.message and out.message.startswith("step 1/1") == nested
@@ -829,6 +849,56 @@ def test_cached_feedback_cannot_authorize_a_release(k, monkeypatch):
         k.release()
     assert k.faulted and k.power_uncertain and k.body.enabled
     assert k.feedback_status()["stale"]
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("q", np.full(6, np.nan)), ("q", np.zeros(5)), ("dq", np.zeros((6, 1))),
+    ("tau", np.full(6, np.inf)), ("temp", np.zeros(5)),
+    ("t", np.nan), ("t", -1.0), ("gripper", np.nan), ("gripper_tau", np.inf),
+])
+def test_invalid_feedback_preserves_trusted_state_and_suspends_commands(k, monkeypatch, field, value):
+    from dataclasses import replace
+
+    before, feedback_at = k.state, k.feedback_at
+    bad = replace(before, t=before.t + 1, **{field: value}) if field != "t" else replace(before, t=value)
+    read, commands = k.body.read, []
+    monkeypatch.setattr(k.body, "read", lambda: bad)
+    monkeypatch.setattr(k.body, "command", lambda *args: commands.append(args))
+    with pytest.raises(ValueError, match=rf"feedback\.{field}"):
+        k.tick()
+    assert k.state is before and k.feedback_at == feedback_at
+    assert k.faulted and k.power_uncertain and k.feedback_status()["stale"]
+    assert not commands and np.isfinite(k.cmd.q).all()
+    # Restored communication does not authorize a command until power recovery succeeds.
+    monkeypatch.setattr(k.body, "read", read)
+    k.tick()
+    assert not commands and k.power_uncertain
+    k.release()
+    k.reset()
+    assert not k.enabled and not k.power_uncertain
+
+
+def test_feedback_buffers_are_copied_and_optional_sensing_can_be_absent(k, monkeypatch):
+    sample = JointState(k.state.t + 1, k.state.q.copy())
+    monkeypatch.setattr(k.body, "read", lambda: sample)
+    k.tick()
+    assert k.state.tau is None and k.state.temp is None and k.state.gripper is None
+    sample.q[:] = np.nan
+    assert np.isfinite(k.state.q).all()
+    with pytest.raises(ValueError, match=r"feedback\.q"):
+        k.tick()
+    assert np.isfinite(k.cmd.q).all()
+
+
+def test_invalid_initial_feedback_is_rejected_before_enabling(k, monkeypatch):
+    from dataclasses import replace
+
+    k.release()
+    monkeypatch.setattr(k.body, "connect", lambda: replace(k.state, q=np.full(k.manifest.n, np.nan)))
+    new = Kernel(k.body, World())
+    with pytest.raises(ValueError, match=r"feedback\.q"):
+        new.connect()
+    assert not new.enabled and not k.body.enabled
 
 
 def test_an_embedded_kernel_also_latches_command_failure(k, monkeypatch):
@@ -1163,15 +1233,15 @@ def test_a_gripper_trip_ends_the_grasp_without_retrying(lifted, monkeypatch, pha
     assert sum(e["kind"] == "grasp_retry" for e in k.events.since(0)) == retries
 
 
-@pytest.mark.parametrize(("sensed", "reading"), [(False, None), (True, None), (True, float("nan"))])
-def test_hold_effort_requires_sensing_and_a_finite_reading(lifted, monkeypatch, sensed, reading):
+@pytest.mark.parametrize("sensed", [False, True])
+def test_hold_effort_requires_available_sensing(lifted, monkeypatch, sensed):
     from dataclasses import replace
 
     k = lifted
     if not sensed:
         k.manifest = replace(k.manifest, sensing=k.manifest.sensing - {"gripper_effort"})
     read = k.body.read
-    monkeypatch.setattr(k.body, "read", lambda: replace(read(), gripper_tau=reading))
+    monkeypatch.setattr(k.body, "read", lambda: replace(read(), gripper_tau=None))
     before = k.cmd.gripper
     out = k.run({"do": "grasp", "start": 3.0, "hold_effort": 0.4})
     assert out.status == "refused" and "sensing" in out.message

@@ -80,10 +80,11 @@ class SimBody:
         self._q = np.array([int(j.qposadr[0]) for j in joints])
         self._v = np.array([int(j.dofadr[0]) for j in joints])
         self._grip = [self.model.joint(name) for name in grip]
-        # The bodies an object must touch to count as held: both fingers, or a jaw and what it closes against.
+        # Rigid groups include collision pads on fixed child links of a finger or palm.
         self._jaws = {int(j.bodyid[0]) for j in self._grip}
         if len(self._grip) == 1:
             self._jaws.add(int(self.model.body_parentid[self._grip[0].bodyid[0]]))
+        self._jaws = {int(self.model.body_weldid[index]) for index in self._jaws}
         self._objects = {name: self.model.body(f"box/{name}").id for name, b in self.world.boxes.items()
                          if b.kind == "object"}
         self.data.qpos[self._q] = self.q
@@ -252,7 +253,7 @@ class SimBody:
         for name, index in self._objects.items():
             touching = set()
             for contact in d.contact:
-                a, b = m.geom_bodyid[contact.geom1], m.geom_bodyid[contact.geom2]
+                a, b = m.body_weldid[m.geom_bodyid[contact.geom1]], m.body_weldid[m.geom_bodyid[contact.geom2]]
                 if a == index and b in self._jaws:
                     touching.add(b)
                 if b == index and a in self._jaws:

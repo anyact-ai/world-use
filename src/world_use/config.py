@@ -10,6 +10,7 @@ import numpy as np
 
 from .body import GripperSpec, JointSpec, Manifest, Rest
 from .kinematics import Chain
+from .request_models import BoxRequest
 
 WORKCELLS = Path(__file__).parent / "workcells"
 
@@ -204,8 +205,7 @@ def load_workcell(path: Path | str | None) -> dict:
             raise ValueError(f"{key}: expected a table of constructor options")
     sections = dict(
         frame=("name", "origin", "rpy_deg"),
-        box=("name", "kind", "center", "size", "frame", "yaw_deg", "known", "grip_width", "dtau", "speed",
-             "mass_kg", "friction"),
+        box=(set(BoxRequest.model_fields) - {"source"}) | {"known"},
         camera=("name", "path", "url", "command", "max_age_s", "rotate", "projection", "eye", "look_at", "up",
                 "frame", "fov_deg", "size", "facing", "yaw_deg", "pitch_deg"),
         fact=("key", "value", "source", "note"))
@@ -230,6 +230,11 @@ def load_workcell(path: Path | str | None) -> dict:
             raise ValueError("frame: the URDF base cannot be redefined")
         _vector(frame.get("origin", [0, 0, 0]), 3, "frame.origin")
         _vector(frame.get("rpy_deg", [0, 0, 0]), 3, "frame.rpy_deg")
+    for box in cell.get("box", []):
+        data = dict(box)
+        if type(data.pop("known", True)) is not bool:
+            raise ValueError("box.known: expected a boolean")
+        BoxRequest.model_validate(data)
     env = cell.get("envelope", {})
     _keys(env, ("max_excursion_deg", "reason", "turn_height_m", "turn_reason"), "envelope")
     if "max_excursion_deg" in env:

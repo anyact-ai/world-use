@@ -182,7 +182,7 @@ def main(argv=None) -> int:
     p.add_argument("reason", nargs="?", default="stop requested")
     p = sub.add_parser("home", help="go home along the home route, then fold to the rest pose")
     p.add_argument("--wait", type=float, default=60.0, help="seconds to wait for the outcome")
-    p = sub.add_parser("home-route", help="set the way home from here and rehearse it ('[]' folds straight home)")
+    p = sub.add_parser("home-route", help="rehearse and then set the way home ('[]' folds straight home)")
     p.add_argument("steps", help="JSON list of motion and gripper steps, [] or null (clears the route)")
     p.add_argument("--note", default="")
     sub.add_parser("world", help="frames, boxes and facts the kernel knows")
@@ -217,7 +217,7 @@ def main(argv=None) -> int:
     p.add_argument("--out", type=Path, help="GIF to write (default: replay.gif in the run folder)")
     p.add_argument("--speed", type=float, default=1.0)
     p = sub.add_parser("view", help="open a read-only Rerun viewer for the local daemon or a recorded run")
-    p.add_argument("run", nargs="?", type=Path, help="run folder; defaults to the local daemon's active record")
+    p.add_argument("run", nargs="?", type=Path, help="run folder; omit to follow the daemon across sessions")
     p.add_argument("--follow", action="store_true", help="follow new samples in the supplied run folder")
     p.add_argument("--out", type=Path, help="save a portable .rrd instead of opening a window")
     p = sub.add_parser("calibrate", help="find where a camera is from the arm: answer where it sees the tool point")
@@ -248,6 +248,7 @@ def main(argv=None) -> int:
             from .visualization import view
             folder = a.run
             if folder is None:
+                c = Client(a.url, timeout=2)
                 try:
                     recorded = c.status().get("recording", {}).get("path")
                 except OSError as e:
@@ -255,7 +256,8 @@ def main(argv=None) -> int:
                 if not recorded:
                     raise ValueError("the daemon has no run folder; start it with --runs or supply a saved run")
                 folder = Path(recorded)
-            result = view(folder, output=a.out, follow=a.follow or a.run is None)
+            result = view(folder, output=a.out, follow=a.follow or a.run is None,
+                          live_client=c if a.run is None and a.out is None else None)
             if result is not None:
                 print(json.dumps(dict(path=str(result))) if a.json else result)
             return 0

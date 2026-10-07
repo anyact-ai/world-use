@@ -40,6 +40,80 @@ def test_recording_failure_does_not_interrupt_motion_or_release(tmp_path, monkey
     assert complete["parts"] == len(list((tmp_path / "tape").glob("[0-9]*.npz")))
 
 
+def test_failed_final_telemetry_write_keeps_committed_prefix_open_until_retry(tmp_path, monkeypatch):
+    from world_use import recorder
+    from world_use.records import describe, events, inspect
+
+    world = World()
+    k = Kernel(bodies.make("sim", world), world, VirtualClock(100), run_dir=tmp_path)
+    k.connect()
+    k.enable()
+    assert k.run({"do": "hold", "seconds": .05}).ok
+    prefix = k.save_record()["ticks"]
+    assert prefix > 0
+    assert k.run({"do": "hold", "seconds": .05}).ok
+    k.release()
+    total = k.journal.summary()["ticks"]
+    assert total > prefix
+
+    def full_disk(*args):
+        raise OSError("disk full")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(recorder, "save_arrays", full_disk)
+        assert k.close()["recording_error"] == "disk full"
+    assert events(tmp_path)[-1]["kind"] == "closed"
+    assert not (tmp_path / "complete.json").exists()
+    record = inspect(tmp_path)
+    assert not record["closed"] and record["summary"]["ticks"] == prefix
+    assert "open or interrupted record" in describe(record)
+
+    k.save_record()
+    record = inspect(tmp_path)
+    assert record["closed"] and record["summary"]["ticks"] == total
+    assert load_tape(tmp_path)["sample_index"].tolist() == list(range(total))
+    assert "closed normally" in describe(record)
+
+
+@pytest.mark.parametrize("parts_delta, bytes_delta", [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)])
+def test_current_record_requires_matching_completion_counts(tmp_path, parts_delta, bytes_delta):
+    from world_use.records import inspect
+
+    save_summary(tmp_path / "session.json", dict(format_version=3))
+    (tmp_path / "tape").mkdir()
+    tape = Tape(1)
+    tape.add(0, False, False, 0, [0], [0], None, None, None, None, None)
+    save_arrays(tmp_path / "tape/000000.npz", tape.arrays())
+    line = json.dumps(dict(kind="closed", level="info", t=0, message="closed")) + "\n"
+    (tmp_path / "events.jsonl").write_text(line)
+    assert not inspect(tmp_path)["closed"]
+    save_summary(tmp_path / "complete.json", dict(parts=1 + parts_delta, events_bytes=len(line) + bytes_delta))
+    assert inspect(tmp_path)["closed"] == (parts_delta == bytes_delta == 0)
+
+
+def test_completion_does_not_accept_an_unterminated_event(tmp_path):
+    from world_use.records import inspect
+
+    save_summary(tmp_path / "session.json", dict(format_version=3))
+    line = json.dumps(dict(kind="closed", level="info", t=0, message="closed"))
+    (tmp_path / "events.jsonl").write_text(line)
+    save_summary(tmp_path / "complete.json", dict(parts=0, events_bytes=len(line)))
+    assert not inspect(tmp_path)["closed"]
+
+
+@pytest.mark.parametrize("format_version", [None, 1, 2])
+def test_legacy_record_retains_closed_event_semantics(tmp_path, format_version):
+    from world_use.records import inspect
+
+    if format_version is None:
+        save_arrays(tmp_path / "tape.npz", {})
+    else:
+        save_summary(tmp_path / "session.json", dict(format_version=format_version))
+    line = json.dumps(dict(kind="closed", level="info", t=0, message="closed")) + "\n"
+    (tmp_path / "events.jsonl").write_text(line)
+    assert inspect(tmp_path)["closed"]
+
+
 def test_elapsed_durations_include_slow_control_ticks():
     tape = Tape(1)
     for t, moving in [(0, True), (0.01, True), (0.51, False), (1.01, False)]:

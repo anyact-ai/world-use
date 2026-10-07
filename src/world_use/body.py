@@ -153,7 +153,8 @@ class Body(Protocol):
 
     def read(self) -> JointState:
         """Latest measurement. Called once per control tick. Preserve its timestamp when serving a cached
-        sample; raise on lost or stale feedback rather than presenting cached values as a new measurement."""
+        sample; timestamps must be finite and nondecreasing. Arrays must be finite and match the joint count;
+        optional sensing may be None. Raise on lost or stale feedback rather than inventing a new timestamp."""
 
     def command(self, q: np.ndarray, dq: np.ndarray, gripper: float | None, gripper_v: float = 0.0) -> None:
         """Position setpoint for this tick, with velocity feedforward."""

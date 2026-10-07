@@ -47,32 +47,39 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python: ['3.13']
-        include:
-          - os: ubuntu-latest       # the oldest supported Python
-            python: '3.11'
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
-      - run: uv sync --locked --python ${{ matrix.python }}
+      - run: uv sync --locked --python 3.13
       - name: Install headless rendering libraries
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1-mesa-dri
       - name: Test including MuJoCo rendering
         if: runner.os == 'Linux'
-        run: .venv/bin/pytest
+        run: .venv/bin/pytest --basetemp="${{ runner.temp }}/world-use-tests"
       # Hosted macOS VMs have no accelerated OpenGL for MuJoCo's CGL backend.
       # https://github.com/google-deepmind/mujoco/issues/959
       - name: Test without GPU-dependent rendering
         if: runner.os == 'macOS'
         run: .venv/bin/pytest -m 'not rendering'
+      - name: Preserve failed perception and recovery evidence
+        if: failure() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: perception-${{ matrix.os }}-3.13
+          path: |
+            ${{ runner.temp }}/world-use-tests/test_unchanged_perception_proc*/
+            ${{ runner.temp }}/world-use-tests/test_the_example_measures_move*/
+            ${{ runner.temp }}/world-use-tests/test_changed_scene_refuses_old*/
+          if-no-files-found: ignore
+          retention-days: 7
       - run: .venv/bin/python examples/adapters/planar.py
       - name: Verify the installed wheel and packaged resources
         shell: bash
         run: |
           uv build
-          uv venv --python ${{ matrix.python }} "$RUNNER_TEMP/wheel-test"
+          uv venv --python 3.13 "$RUNNER_TEMP/wheel-test"
           for task_wheel in dist/*.whl; do
             uv pip install --python "$RUNNER_TEMP/wheel-test/bin/python" "${task_wheel}[mcp,rerun]"
           done

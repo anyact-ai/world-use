@@ -30,7 +30,10 @@
   daemon's shared "last checked" plan are gone.
 - `wu events` returns at most `--limit` events (40 by default) and says where to continue.
 - `wu home-route` checks the route from where the arm is and exits 4 if the kernel would refuse it. The HTTP
-  API requires `steps`; `null` clears the route.
+  API requires `steps`; `null` clears the route. It requires an idle session and installs only a passing,
+  still-current candidate; a failed check leaves the previous route unchanged.
+- HTTP and MCP reject unknown fields, nonfinite values and invalid types instead of ignoring or coercing them.
+  World boxes reject unsupported parameters through Python and workcells too. Pydantic is a core dependency.
 - MCP `status` returns its one line, with the full state as structured content. `run`, `job`, `answer` and `home`
   return the same short text as the CLI, naming the tool to call next.
 - `grip` and `grasp` no longer take `effort`, `lag`, `speed` or `min`: their thresholds come from the gripper
@@ -46,6 +49,11 @@
 
 ### Fixes
 
+- Shutdown blocks queued enable calls before releasing power, and a failed release leaves recovery available.
+- Invalid driver feedback cannot replace trusted state or become a command; optional sensing may remain absent.
+- Simulated grasps recognize fixed child finger pads. The block task checks full orientation as well as placement.
+- Recording completion requires the final marker and matching committed counts. `wu view` uses the supported
+  Rerun launch API, and the documented install exposes the standalone viewer command.
 - A thermal return switches torque off at rest even when a job was queued, and refuses new jobs while it runs.
 - Simulated joints hold their pose with torque off (gearbox friction, or brakes on a self-supporting arm).
 - The daemon answers every request, applies a world change completely or not at all, and refuses at startup a

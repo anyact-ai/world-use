@@ -10,21 +10,27 @@ from PIL import ImageDraw, ImageFont
 from . import cameras
 from .config import manifest_from_data
 from .kinematics import Chain
-from .recorder import Tape, load_tape
+from .recorder import Tape, load_tape, read_chunks
 from .world import World
 
 
 def events(folder: Path) -> list[dict]:
+    return _events(folder)[0]
+
+
+def _events(folder: Path) -> tuple[list[dict], int]:
     path = folder / "events.jsonl"
-    lines = path.read_text().splitlines() if path.exists() else []
-    out = []
+    lines = path.read_bytes().splitlines(keepends=True) if path.exists() else []
+    out, committed_bytes = [], 0
     for i, line in enumerate(lines):
         try:
             out.append(json.loads(line))
+            if line.endswith(b"\n"):
+                committed_bytes += len(line)
         except json.JSONDecodeError:
             if i != len(lines) - 1:          # only a final interrupted write can be ignored
                 raise
-    return out
+    return out, committed_bytes
 
 
 def inspect(folder: Path | str) -> dict:
@@ -32,7 +38,10 @@ def inspect(folder: Path | str) -> dict:
     if not folder.is_dir() or not any((folder / name).exists() for name in ("session.json", "tape", "tape.npz")):
         raise ValueError(f"not a flight record: {folder}")
     session = json.loads((folder / "session.json").read_text()) if (folder / "session.json").exists() else {}
-    log = events(folder)
+    # Read the marker first: a close committed during inspection belongs to the next snapshot.
+    marker = folder / "complete.json"
+    complete = json.loads(marker.read_text()) if marker.exists() else None
+    log, events_bytes = _events(folder)
     jobs = {}
     for e in log:
         data = e.get("data", {})
@@ -40,12 +49,16 @@ def inspect(folder: Path | str) -> dict:
             jobs.setdefault(data["job"], {}).update(spec=data["spec"])
         elif e["kind"] == "finished":
             jobs.setdefault(data["job"], {}).update(outcome=data.get("outcome", {"status": data["status"]}))
-    a = load_tape(folder)
+    parts = sorted((folder / "tape").glob("[0-9]*.npz"))
+    a = read_chunks(parts) if parts else load_tape(folder)
     summary = Tape._summary(a, None)
     if (folder / "recording.json").exists():
         summary["recording_lost"] = json.loads((folder / "recording.json").read_text())
-    return dict(run=str(folder.resolve()), session=session,
-                closed=any(e["kind"] == "closed" for e in log),
+    closed = any(e["kind"] == "closed" for e in log)
+    if session.get("format_version", 0) >= 3:
+        closed = (closed and complete is not None and len(parts) == complete["parts"]
+                  and events_bytes == complete["events_bytes"])
+    return dict(run=str(folder.resolve()), session=session, closed=closed,
                 summary=summary, jobs=jobs,
                 incidents=[e for e in log if e["level"] in ("warn", "alarm")],
                 observations=[e for e in log if e["kind"] in ("look", "measurement", "annotation", "answer")])
@@ -57,7 +70,8 @@ def describe(record: dict) -> str:
              f"{meta.get('body', 'unknown body')} | {meta.get('mode', 'unknown mode')} | "
              f"world-use {meta.get('package_version', 'unknown')} | "
              + ("closed normally" if record["closed"] else "open or interrupted record"),
-             f"{s.get('ticks', 0)} samples; powered {s.get('powered_s', 0)} s; moving {s.get('moving_s', 0)} s"]
+             f"{s.get('ticks', 0)} committed samples; powered {s.get('powered_s', 0)} s; "
+             f"moving {s.get('moving_s', 0)} s"]
     if "recording_lost" in s:
         lines.append(f"INCOMPLETE RECORD: {s['recording_lost']}; durations and extrema may be incomplete")
     for job, data in record["jobs"].items():

@@ -42,7 +42,8 @@ methods as if they were the same measurement.
    it on a twin first and on the robot second. By default, `wu run` requires an idle robot and checks the
    whole plan; when the job is accepted, and again at its first tick, the kernel verifies that the state it
    checked from is still current. `--no-check` and embedded `Kernel.run` check each step as it starts, so
-   earlier steps may have moved.
+   earlier steps may have moved. HTTP and MCP reject unknown arguments, invalid types and nonfinite numbers
+   before dispatch; shared Pydantic definitions describe those request contracts.
 3. **Say what would pass.** A refusal names every limit a plan would break, with the number that would pass
    ("lift at least 2 cm more first"). The card says which way the gripper points and opens, where known
    things are in the frame moves use, and which short moves are possible from here. A model should never
@@ -55,7 +56,9 @@ methods as if they were the same measurement.
    kernel is not faulted. Home routes contain only built-in motion and gripper steps, with no waits or contact
    operations. Completion includes torque release; a failed thermal return clears the route. Without a route
    the kernel holds and alarms for immediate operator action. The agent must resolve motor power before
-   handing off asynchronously; software cannot safely release a raised, unsupported arm.
+   handing off asynchronously; software cannot safely release a raised, unsupported arm. The daemon rehearses
+   a candidate home route while idle and installs it only if the check passes and its starting state is current.
+   A failed candidate leaves the installed route unchanged, including any existing staleness.
 6. **Monitor unexpected contact.** Joint torque is compared with what the arm's own weight explains;
    guarded moves use tighter thresholds, fragile zones tighter still. Filtering, sensing, and model error
    determine detection latency. The checks do not replace hardware protection or an operator.
@@ -97,6 +100,11 @@ Faults latch until an operator resets them, and a watchdog trip while idle cance
 power transition, or failed I/O while powered, marks motor power unconfirmed (`power_uncertain`): commands stay
 suspended, even across reconnection, until a release succeeds at a freshly measured rest pose. Status reports
 feedback age and read errors and marks cached values stale.
+
+Feedback is checked before replacing trusted state: joint arrays must have the expected dimensions and finite
+values, and timestamps must be finite and nondecreasing. Optional readings may be absent. Invalid feedback
+suspends commands through the same fault path as a failed read. Shutdown closes admission before releasing
+power, including enable calls already waiting on the control thread; a failed release leaves recovery available.
 
 The control thread never plans. Rehearsals, reach probes and each step's path come from one worker process that
 works from a snapshot of the kernel (robot description, world and state) without importing a hardware driver.

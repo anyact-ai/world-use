@@ -59,14 +59,14 @@ def test_slow_zone_refuses_fast_paths_and_names_a_duration_that_passes(lifted):
     assert k.run({"do": "line", "up": 0.03, "duration": out.data["min_seconds"]}).ok
 
 
-@pytest.mark.parametrize("speed", [None, 0, -1, float("nan"), float("inf")])
+@pytest.mark.parametrize("speed", [None, 0, -1, float("nan"), float("inf"), True, "0.1"])
 def test_slow_zone_requires_a_positive_finite_speed(speed):
     params = {} if speed is None else {"speed": speed}
     with pytest.raises(ValueError, match="speed"):
         World().add_box("careful", "slow", [0, 0, 0], [1, 1, 1], **params)
 
 
-@pytest.mark.parametrize("dtau", [None, 0, -1, float("nan"), float("inf"), "nan", "-inf", "bad", []])
+@pytest.mark.parametrize("dtau", [None, 0, -1, float("nan"), float("inf"), "nan", "-inf", "bad", [], True, "0.3"])
 def test_fragile_zone_rejects_invalid_limits_on_creation_and_restore(dtau):
     world = World()
     original = world.add_box("glass", "fragile", [0, 0, 0], [1, 1, 1])
@@ -78,6 +78,25 @@ def test_fragile_zone_rejects_invalid_limits_on_creation_and_restore(dtau):
     saved["boxes"]["glass"]["params"]["dtau"] = dtau
     with pytest.raises(ValueError, match="dtau"):
         World.from_dict(saved)
+
+
+def test_misspelled_box_parameter_preserves_the_previous_zone():
+    world = World()
+    original = world.add_box("glass", "fragile", [0, 0, 0], [1, 1, 1], dtau=0.1)
+    with pytest.raises(ValueError, match="datu"):
+        world.add_box("glass", "fragile", [0, 0, 0], [2, 2, 2], datu=0.03)
+    assert world.boxes["glass"] is original
+
+
+@pytest.mark.parametrize("change", [dict(center=[True, 0, 0]), dict(size=["1", 1, 1]), dict(yaw_deg=True),
+                                    dict(speed=0.1), dict(grip_width=True)])
+def test_box_geometry_and_kind_parameters_are_checked_before_replacement(change):
+    world = World()
+    original = world.add_box("object", "object", [0, 0, 0], [1, 1, 1])
+    spec = dict(name="object", kind="object", center=[0, 0, 0], size=[1, 1, 1]) | change
+    with pytest.raises(ValueError):
+        world.add_box(**spec)
+    assert world.boxes["object"] is original
 
 
 def test_rejected_fragile_update_cannot_disable_contact_detection(k):

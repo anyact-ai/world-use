@@ -2,7 +2,9 @@
 import shutil
 import socket
 import subprocess
+import sys
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -153,6 +155,80 @@ def test_checkpoint_round_trip(client):
     assert r["status"] == "done"
 
 
+@pytest.mark.parametrize("disconnect_at", ["motion", "checkpoint"])
+def test_client_process_loss_preserves_the_job_without_replaying_it(daemon, disconnect_at):
+    _, observer = daemon
+    before = observer.status()["tool"]["work"]
+    cursor = observer.events()["last"]
+    script = '''
+import sys
+from world_use import Client
+plan = [dict(do="line", up=.03, duration=3)]
+if sys.argv[2] == "checkpoint":
+    plan += [dict(do="checkpoint", ask="continue?"), dict(do="line", up=.02)]
+Client(sys.argv[1]).run(plan, wait=30)
+sys.stdin.read()  # the agent remains alive while deciding how to answer
+'''
+    process = subprocess.Popen([sys.executable, "-c", script, observer.url, disconnect_at],
+                               stdin=subprocess.PIPE)
+    job_id = None
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            assert process.poll() is None, "the client exited before the interruption"
+            batch = observer.events(since=cursor, wait=.05)
+            cursor = batch["last"]
+            for event in batch["events"]:
+                if event["kind"] == "submitted":
+                    job_id = event["data"]["job"]
+            if job_id is None:
+                continue
+            job = observer.job(job_id)
+            position = observer.status()["tool"]["work"]
+            if ((disconnect_at == "motion" and job["status"] == "running"
+                 and .002 < position[2] - before[2] < .025)
+                    or (disconnect_at == "checkpoint" and job["status"] == "waiting")):
+                break
+        else:
+            pytest.fail(f"never reached {disconnect_at}: {observer.status()}")
+        process.kill()
+        process.wait(timeout=5)
+
+        # A new process/client knows the existing job ID; it must query, not resubmit the plan.
+        replacement = Client(observer.url)
+        assert replacement.status()["enabled"]
+        if disconnect_at == "checkpoint":
+            waiting = replacement.job(job_id)
+            assert waiting["status"] == "waiting" and waiting["question"]["ask"] == "continue?"
+            time.sleep(.2)
+            assert replacement.job(job_id)["status"] == "waiting"
+            assert replacement.status()["tool"]["work"] == pytest.approx(position, abs=.002)
+            result = replacement.answer(job_id, "yes", wait=10)
+        else:
+            result = replacement.job(job_id, wait=10)
+        assert result["status"] == "done", result
+        delta = np.subtract(replacement.status()["tool"]["work"], before)
+        assert delta == pytest.approx([0, 0, .05 if disconnect_at == "checkpoint" else .03], abs=.003)
+        log = replacement.events()["events"]
+        for kind in ("submitted", "started", "finished"):
+            assert [e["data"]["job"] for e in log if e["kind"] == kind] == [job_id]
+        assert sum(e["kind"] == "enabled" for e in log) == 1
+        assert not replacement.status()["faulted"]
+        replacement.home_route([])
+        assert replacement.home(wait=15)["status"] == "done"
+        replacement.release()
+        reconnected = Client(observer.url)
+        assert reconnected.job(job_id)["status"] == "done"
+        status = reconnected.status()
+        assert not status["enabled"] and not status["power_uncertain"]
+        assert sum(e["kind"] == "enabled" for e in reconnected.events()["events"]) == 1
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        process.stdin.close()
+
+
 def test_home_routes_reject_checkpoints_and_can_be_cleared_from_the_cli(client):
     from world_use import cli
 
@@ -174,6 +250,36 @@ def test_a_home_route_is_rehearsed_when_set_and_must_be_given(client, capsys):
     capsys.readouterr()
     assert cli.main(["--url", client.url, "home-route", '[{"do": "line", "forward": 0.40}]']) == 4
     assert r["text"].splitlines()[0] in capsys.readouterr().out
+
+
+def test_failed_home_candidate_preserves_the_installed_route(daemon):
+    d, c = daemon
+    c.release()                             # a return can be prepared without powering the robot
+    assert c.home_route([])["ok"]
+    before = d.k.home_route
+    candidate = [{"do": "line", "up": 0.02}, {"do": "line", "forward": 0.40}]
+    assert not c.home_route(candidate)["ok"]
+    assert d.k.home_route == before and d.k.home_plan() == d.k.home_plan(steps=[])
+    c.home_route(None)
+    assert not c.home_route(candidate)["ok"]
+    assert d.k.home_route is None
+
+
+def test_home_candidate_must_still_be_current_after_rehearsal(daemon, monkeypatch):
+    d, c = daemon
+    assert c.home_route([])["ok"]
+    before = d.k.home_route
+    check = d.rehearser.check
+
+    def changed(*args, **kwargs):
+        report = check(*args, **kwargs)
+        d.k.stop("scene changed while checking the way home")
+        return report
+
+    monkeypatch.setattr(d.rehearser, "check", changed)
+    with pytest.raises(DaemonError, match="changed during rehearsal"):
+        c.home_route([])
+    assert d.k.home_route == before
 
 
 def test_check_does_not_move_the_robot(daemon):
@@ -433,6 +539,61 @@ def test_the_daemon_shuts_down_once(daemon):
     c.shutdown()
     with pytest.raises(Refused, match="already shutting down"):
         d.shutdown()
+
+
+def test_shutdown_refuses_an_enable_already_queued_during_release(daemon, monkeypatch):
+    import queue
+    from concurrent.futures import ThreadPoolExecutor
+
+    d, _ = daemon
+    releasing, finish_release, queued = threading.Event(), threading.Event(), threading.Event()
+    disable = d.k.body.disable
+
+    def blocked_disable():
+        releasing.set()
+        assert finish_release.wait(5)
+        disable()
+
+    class NotifyingQueue(queue.SimpleQueue):
+        def put(self, item):
+            super().put(item)
+            if item[0] == d.k._enable:
+                queued.set()
+
+    monkeypatch.setattr(d.k.body, "disable", blocked_disable)
+    monkeypatch.setattr(d.k, "_posted", NotifyingQueue())
+    with ThreadPoolExecutor(2) as pool:
+        shutdown = pool.submit(d.shutdown)
+        try:
+            assert releasing.wait(5)
+            enable = pool.submit(d.k.enable)
+            assert queued.wait(5)
+        finally:
+            finish_release.set()
+        shutdown.result(5)
+        with pytest.raises((Refused, RuntimeError), match=r"shutting down|control loop.*stopped"):
+            enable.result(5)
+    assert not d.control.is_alive() and not d.k.enabled and not d.k.body.enabled
+
+
+def test_failed_shutdown_keeps_the_session_available_for_power_recovery(daemon, monkeypatch):
+    d, c = daemon
+    disable = d.k.body.disable
+
+    def failed_release():
+        raise OSError("could not confirm power off")
+
+    monkeypatch.setattr(d.k.body, "disable", failed_release)
+    with pytest.raises(DaemonError, match="could not confirm power off"):
+        c.shutdown()
+    assert d.control.is_alive() and c.status()["power_uncertain"]
+    monkeypatch.setattr(d.k.body, "disable", disable)
+    c.release()
+    c.reset()
+    c.enable()
+    assert c.status()["enabled"]
+    c.shutdown()
+    assert not d.control.is_alive() and not d.k.body.enabled
 
 
 

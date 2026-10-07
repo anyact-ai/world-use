@@ -55,7 +55,8 @@ class Client:
         """Rehearse (unless check=False), then run. A plan the kernel would refuse comes back refused, unmoved.
         Each submission includes its own plan. requires=[{"evidence": measurement ID, "max_age_s": seconds}]
         refuses the run, or its next step, once a measurement is older than that or its camera was recalibrated."""
-        return self._call("POST", "/run", dict(spec=spec, wait=wait, check=check, requires=requires or []))
+        return self._call("POST", "/run", dict(spec=spec, wait=wait, check=check,
+                                             requires=[] if requires is None else requires))
 
     def job(self, job_id: int, wait: float = 0.0) -> dict:
         return self._call("GET", f"/jobs/{job_id}?wait={wait}")

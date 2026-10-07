@@ -58,7 +58,8 @@ def placed(after: dict, aperture_mm: float) -> bool:
     """The block stands at the target, the gripper is open and the tool is clear above the block."""
     top, expected = np.asarray(after["surface_center"]), TARGET + [0, 0, SIZE[2] / 2]
     clearance = SIZE[2] / 2 - after["from_tool"][2]              # tool above the block's centre
-    return bool(np.linalg.norm(top[:2] - expected[:2]) < .01 and abs(top[2] - expected[2]) < .008
+    # Judge full 3D error, reserving 2 mm of the task's 1 cm tolerance for image/depth measurement error.
+    return bool(np.linalg.norm(top - expected) < .008
                 and clearance > .08 and aperture_mm >= 60)
 
 
@@ -138,12 +139,17 @@ async def procedure(server, evaluate, *, tracking=False) -> dict:
         final = await measure()
         aperture = (await tool("status"))["gripper"]["aperture_mm"]
         results["placement"] = "pass" if final and placed(final, aperture) else "fail"
+        if results["placement"] != "pass":
+            results["reason"] = ("the released block did not pass the camera placement check" if final
+                                 else "the released block is not measurable")
     except Exception as e:
         results["reason"] = str(e)
-        # Over this known open tray, put the block down before opening; never release at height.
+        # An open gripper retreats directly. If it may hold the block, set it on the known tray before opening.
         await tool("stop", reason="the procedure's expectation failed")
-        here = (await tool("status"))["tool"]["work"]
-        lower = [dict(do="move_to", to=at(here[0], here[1], TRAY))] if abs(here[2] - TRAY) > .001 else []
+        status = await tool("status")
+        here = status["tool"]["work"]
+        lower = ([dict(do="move_to", to=at(here[0], here[1], TRAY))]
+                 if status["gripper"]["aperture_mm"] < 60 and abs(here[2] - TRAY) > .001 else [])
         await run([*lower, dict(do="gripper", aperture_mm=65), dict(do="line", up=.08)])
     finally:
         evaluate()          # independent, after the release and before homing changes the withdrawal
