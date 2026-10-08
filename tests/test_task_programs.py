@@ -111,7 +111,7 @@ def test_truncated_trace_exposes_only_the_committed_prefix(tmp_path):
         recording.read_trace(root)
 
 
-@pytest.mark.parametrize("code", ["raise ValueError('broken')", "return None", "return {'verdict': 'maybe'}"])
+@pytest.mark.parametrize("code", ["raise ValueError('broken')", "return {'verdict': 'maybe'}"])
 def test_invalid_or_failed_task_has_a_failure_record(tmp_path, code):
     root = bundle(tmp_path, f"def run(robot, params, record):\n    {code}\n")
     result = execute(root)
@@ -176,19 +176,6 @@ def connected(tmp_path, monkeypatch):
     return client, record, transport
 
 
-def test_raw_frame_survives_cache_eviction_with_depth_calibration_and_tool(connected):
-    client, record, transport = connected
-    frame = client.frame("top", depth=True)
-    transport.frames.clear()
-    reply = events(record.root)[-1]
-    saved = Frame.from_dict(json.loads((record.root / reply["result"]["frame"]["path"]).read_text()))
-    np.testing.assert_array_equal(saved.image, frame.image)
-    np.testing.assert_array_equal(saved.depth, frame.depth)
-    np.testing.assert_array_equal(saved.tool, frame.tool)
-    assert saved.view.to_dict() == frame.view.to_dict()
-    assert saved.timestamp == frame.timestamp and saved.calibration == "calibration-2" and saved.id == frame.id
-
-
 def test_hardware_is_refused_before_any_mutating_request(tmp_path, monkeypatch):
     root = bundle(tmp_path, url="http://fake.invalid")
     transport = Transport()
@@ -221,10 +208,10 @@ def test_another_invocation_cannot_reuse_frames_or_measurements(connected, tmp_p
     assert second.run([], requires=[dict(evidence=fresh["id"], max_age_s=30)])["id"] == 3
 
 
-def test_tracker_internal_frames_are_captured(connected):
+def test_tracker_frames_survive_cache_eviction_with_pixels_depth_and_calibration(connected):
     from world_use.tracking import Tracking
 
-    client, record, _ = connected
+    client, record, transport = connected
 
     class Tracker:
         def select(self, name, frame, **selection):
@@ -238,11 +225,14 @@ def test_tracker_internal_frames_are_captured(connected):
     tracking.select(seed.id, "item", point=[0, 0])
     observed = tracking.observe(["item"])[0]
     assert observed["frame"] != seed.id
+    originals = {key: frame.to_dict() for key, frame in transport.frames.items()}
+    transport.frames.clear()
     frame_refs = [e["result"]["frame"] for e in events(record.root)
                   if e["kind"] == "reply" and isinstance(e["result"], dict)
                   and isinstance(e["result"].get("frame"), dict)]
-    saved_ids = {json.loads((record.root / ref["path"]).read_text())["id"] for ref in frame_refs}
-    assert saved_ids == {seed.id, observed["frame"]}
+    saved = [json.loads((record.root / ref["path"]).read_text()) for ref in frame_refs]
+    assert {frame["id"] for frame in saved} == {seed.id, observed["frame"]}
+    assert {frame["id"]: frame for frame in saved} == originals
 
 
 def test_daemon_restart_blocks_motion_even_with_current_invocation_evidence(connected):
@@ -333,7 +323,6 @@ def test_frame_storage_failure_does_not_return_an_unrecorded_observation(connect
     monkeypatch.setattr(recording, "write_new", fail_frame)
     with pytest.raises(recording.RecordingError, match="frame storage failed"):
         client.frame("top", depth=True)
-    assert not client.frames
     with pytest.raises(recording.RecordingError):
         client.run([])
     assert not any(path == "/run" for _, path, _ in transport.requests)

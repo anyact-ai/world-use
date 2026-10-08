@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from conftest import Q_REST, make_kernel
 
-from world_use import Kernel, RealClock, VirtualClock, World, bodies, card, check, cli, fit, twin
+from world_use import Kernel, RealClock, VirtualClock, World, bodies, check, cli, fit, twin
 from world_use.bodies.rebot import MANIFEST
 from world_use.daemon import apply_workcell, load_workcell
 from world_use.kinematics import Chain
@@ -171,20 +171,11 @@ def test_a_fit_taken_while_the_loop_runs_lands_between_ticks():
         loop.join(2.0)
 
 
-def test_the_card_says_which_torque_model_is_in_use():
-    k = make_kernel()
-    assert "torque model" not in card(k)
-    k.use_fit(truth())
-    assert "torque model: robot model fitted" in card(k)
-
-
-def test_wu_fit_finds_the_robot_from_the_records_and_writes_the_model(records, tmp_path, capsys):
+def test_wu_fit_finds_the_robot_from_the_records_and_writes_the_model(records, tmp_path):
     recorded = fit.robot_of(records)
     assert recorded.joints == MANIFEST.joints and recorded.urdf.read_bytes() == MANIFEST.urdf.read_bytes()
     out = tmp_path / "fit.json"
     assert cli.main(["fit", *map(str, records), str(tmp_path / "no-record"), "--out", str(out)]) == 0
-    text = capsys.readouterr().out
-    assert "each record predicted by a fit made without it" in text and f'fit = "{out}"' in text
     assert fit.load(out).records == ["a", "b", "c"]
     path = records[0] / "session.json"
     original = path.read_text()

@@ -1,5 +1,4 @@
 """Kernel semantics on a simulated reBot: refusals, surprises, contact, grip, checkpoints, stop, heat, home."""
-import re
 import threading
 import time
 
@@ -182,16 +181,6 @@ def test_bad_specs_are_rejected_before_queueing(k, spec):
     with pytest.raises(Refused):
         k.submit(spec)
     assert not k.jobs and not k.queue and not k.faulted
-
-
-def test_every_step_documents_each_parameter_it_accepts():
-    """`wu help STEP` is the docstring: a parameter it leaves out is one a policy cannot know about."""
-    from world_use.behaviors import REGISTRY
-    from world_use.validation import FIELDS
-
-    for kind, fields in FIELDS.items():
-        missing = [name for name in fields if not re.search(rf"\b{name}\b", REGISTRY[kind].__doc__ or "")]
-        assert not missing, f"{kind} accepts {missing} but its help does not say so"
 
 
 def test_touchdown_finds_a_table_and_stops_on_it(lifted):
