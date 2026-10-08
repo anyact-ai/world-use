@@ -1,0 +1,18 @@
+[
+  {
+    "function": "world_use.geometry.align_planar",
+    "source": [[0, 0, 0], [0.1, 0, 0], [0, 0.1, 0]],
+    "target": [[0.2, 0.3, 0], [0.3, 0.3, 0], [0.2, 0.4, 0]],
+    "tool": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+    "max_error_m": 0.001,
+    "result": {
+      "valid": true,
+      "yaw_delta_deg": 0,
+      "translation_xy_m": [0.2, 0.3],
+      "errors_m": [0, 0, 0],
+      "max_error_m": 0,
+      "height_error_m": 0,
+      "tool_pose": [[1, 0, 0, 0.2], [0, 1, 0, 0.3], [0, 0, 1, 0], [0, 0, 0, 1]]
+    }
+  }
+]
