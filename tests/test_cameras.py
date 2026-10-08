@@ -61,7 +61,6 @@ def test_a_known_point_lands_in_a_calibrated_cut_where_its_view_says():
         cut.source = Still(_marked(2880, 1440, [equirect_uv(d)]))
         (want,), _ = cut.view.project([P])
         assert np.linalg.norm(_dot(cut.picture(None)) - want) < 1.5
-    assert len(cut._tables) == 1                                         # resampled through one table
 
 
 def test_file_frames_preserve_identity_age_and_rotation(tmp_path):

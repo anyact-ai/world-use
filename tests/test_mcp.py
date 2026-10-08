@@ -9,39 +9,25 @@ pytest.importorskip("mcp")
 
 from mcp.server.mcpserver.exceptions import ToolError
 
+from world_use.client import Client
 from world_use.mcp_server import build
 
 
-def test_mcp_rejects_original_arguments_before_the_sdk_can_drop_or_coerce_them(daemon):
-    d, c = daemon
-    server = build(c.url)
+def test_mcp_validates_nested_arguments_before_sending_requests(monkeypatch):
+    monkeypatch.setattr(Client, "_call", lambda *a, **kw: pytest.fail("invalid arguments reached the daemon"))
+    server = build("http://fake.invalid")
 
     async def session():
-        tools = {tool.name: tool for tool in await server.list_tools()}
-        assert tools["run"].input_schema["additionalProperties"] is False
-        requirements = tools["run"].input_schema["properties"]["requires"]["anyOf"][0]
-        assert requirements["maxItems"] == 16
-        evidence = tools["run"].input_schema["$defs"]["Requirement"]
-        assert evidence["required"] == ["evidence", "max_age_s"]
-        assert evidence["additionalProperties"] is False
-        plane = tools["measure_pixels"].input_schema["$defs"]["Plane"]
-        assert plane["required"] == ["box"] and plane["additionalProperties"] is False
-        for extra in ({"require": []}, {"rehearse": "false"}, {"rehearse": None}, {"wait_s": True},
-                      {"wait_s": float("nan")}, {"plan": '[{"do":"hold","seconds":0.01}]'},
-                      {"requires": [{"evidence": "missing", "max_age_s": 1, "typo": True}]}):
-            with pytest.raises(ToolError, match="invalid arguments"):
-                await server.call_tool("run", {"plan": {"do": "hold", "seconds": 0.01}} | extra)
+        with pytest.raises(ToolError, match="invalid arguments"):
+            await server.call_tool("run", {"plan": {"do": "hold", "seconds": 0.01},
+                "requires": [{"evidence": "missing", "max_age_s": 1, "typo": True}]})
         with pytest.raises(ToolError, match="invalid arguments"):
             await server.call_tool("measure_pixels", {"frame": "missing", "point": [0, 0],
                 "plane": {"box": [0, 0, 10, 10], "max_error_m": True}})
-        assert not d.k.jobs
-        c.box("glass", "fragile", [0.8, 0, 0.5], [0.1] * 3, dtau=0.1)
-        original = d.k.world.boxes["glass"]
         for extra in ({"datu": 0.03}, {"dtau": True}):
             with pytest.raises(ToolError, match="invalid arguments"):
                 await server.call_tool("add_box", dict(name="glass", kind="fragile", center=[0.8, 0, 0.5],
                                                       size=[0.2] * 3) | extra)
-            assert d.k.world.boxes["glass"] is original
     asyncio.run(session())
 
 
@@ -58,7 +44,8 @@ def test_mcp_wire_requests_use_the_same_strict_arguments(daemon):
             tools = {tool.name: tool for tool in (await client.list_tools()).tools}
             assert tools["run"].input_schema["additionalProperties"] is False
             for extra, field in (({"require": []}, "require"), ({"rehearse": "false"}, "rehearse"),
-                                 ({"wait_s": True}, "wait_s")):
+                                 ({"wait_s": True}, "wait_s"),
+                                 ({"plan": '[{"do":"hold","seconds":0.01}]'}, "plan")):
                 result = await client.call_tool("run", {"plan": {"do": "hold", "seconds": 0.01}} | extra)
                 assert result.is_error and field in result.content[0].text
             assert not d.k.jobs

@@ -119,8 +119,8 @@ def test_invalid_robot_descriptions_fail_before_a_driver_is_loaded(tmp_path, old
         make_body("no_such_driver:Body", {"robot": str(path)})
 
 
-@pytest.mark.parametrize("extra", ["dtau = true", 'dtau = "0.03"', "dtau = nan", "datu = 0.03",
-                                   "known = 1", "speed = 0.01"])
+# Domain validation is covered in test_zones; these check that loading a file applies it.
+@pytest.mark.parametrize("extra", ["dtau = nan", "datu = 0.03"])
 def test_invalid_workcell_boxes_are_rejected_during_loading(tmp_path, extra):
     path = tmp_path / "cell.toml"
     path.write_text('body = "no_such_driver:Body"\n[[box]]\nname = "glass"\nkind = "fragile"\n'

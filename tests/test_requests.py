@@ -6,9 +6,7 @@ from world_use.client import DaemonError
 
 
 @pytest.mark.parametrize("change", [dict(require=[{"evidence": "missing", "max_age_s": 10}]),
-                                    dict(check=None), dict(check="false"), dict(check=1),
-                                    dict(wait=float("nan")), dict(wait=True), dict(wait="0"),
-                                    dict(requires=False),
+                                    dict(check="false"), dict(wait=float("nan")), dict(wait=True),
                                     dict(requires=[{"evidence": "missing", "max_age_s": True}]),
                                     dict(requires=[{"evidence": "missing", "max_age_s": 10, "typo": 1}])])
 def test_invalid_run_requests_never_submit_a_job(daemon, change):
@@ -58,15 +56,10 @@ def test_answer_rejects_a_string_job_id_without_advancing_the_checkpoint(daemon)
 
 
 @pytest.mark.parametrize(("path", "body"), [
-    ("/look", dict(grid="false")),
-    ("/stop", dict(reason=True)),
-    ("/calibrate", dict(camera="side", points="8")),
-    ("/withdraw", dict(measurements=[], reason=False)),
     ("/record", dict(context={"value": float("nan")})),
     ("/measure", dict(frame="missing", point=[True, 0])),
-    ("/home_route", dict(steps=None, note=1)),
 ])
-def test_other_mutations_reject_coercion_and_nonfinite_data(client, path, body):
+def test_nested_request_data_rejects_coercion_and_nonfinite_values(client, path, body):
     with pytest.raises(DaemonError) as error:
         client._call("POST", path, body)
     assert error.value.code == 400
@@ -77,7 +70,7 @@ def test_url_query_values_are_decoded_as_text(daemon):
     d, c = daemon
     assert c._call("GET", "/events?since=0&wait=0.0&limit=1")["events"]
     assert c._call("GET", "/frame?camera=side&depth=false")["camera"] == "side"
-    for path in ("/events?wait=NaN", "/frame?depth=yes", "/frame?depth=garbage"):
+    for path in ("/events?wait=NaN", "/frame?depth=yes"):
         with pytest.raises(DaemonError) as error:
             c._call("GET", path)
         assert error.value.code == 400

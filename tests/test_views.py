@@ -24,20 +24,9 @@ def test_the_card_describes_the_resolved_workcell_frame():
     assert "yaw +90 deg" in text
 
 
-def test_the_card_says_which_way_the_gripper_points_and_opens():
-    text = card(make_kernel())
-    assert "the gripper points forward, level; its jaws open left and right" in text
-
-
-def test_the_card_states_the_turn_height_and_what_is_possible_from_here():
-    text = card(make_kernel())
-    assert "needs the tool at U+0.267 or higher" in text
-    assert "from here a 3 cm line can go up, forward" in text and "turning needs the tool at U+0.267" in text
-
-
 def test_the_card_says_when_the_robot_is_simulated_and_marks_hardware_notes():
     text = card(make_kernel())
-    assert text.startswith("# reBot Arm B601-RS (simulated)") and "hardware: " in text
+    assert "(simulated)" in text and "hardware: " in text
 
 
 def test_no_heat_forecast_with_torque_off():

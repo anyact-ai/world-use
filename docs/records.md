@@ -112,6 +112,10 @@ exact percentiles from the saved chunks.
 
 ## What an agent adds
 
+For saved Python tasks, the [task-program example](../examples/task-programs) records source snapshots,
+parameters, full frames and computations alongside the existing flight record. Each invocation uses fresh
+observations; offline analysis and recorded-motion replay remain separate from new robot execution.
+
 ```python
 robot.record(context={"model": "your-model", "prompt": "move the block", "role": "live policy"})
 robot.record(note="Operator moved an obstacle before answering the checkpoint")
