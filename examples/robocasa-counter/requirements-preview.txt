@@ -1,0 +1,17 @@
+# Isolated Python 3.11 runtime for the upstream RoboCasa 1.0.1 scene builder.
+# Keep these separate from world-use's Python 3.13 / MuJoCo 3.14 environment.
+mujoco==3.3.1
+numpy==2.2.5
+numba==0.61.2
+scipy==1.15.3
+opencv-python==4.11.0.86
+pillow==12.3.0
+pyyaml==6.0.3
+tqdm==4.70.1
+termcolor==3.3.0
+imageio==2.38.0
+h5py==3.16.0
+lxml==6.1.3
+gymnasium==1.4.0
+qpsolvers[quadprog]==4.13.0
+pynput==1.8.2
