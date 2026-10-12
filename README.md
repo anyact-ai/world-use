@@ -14,6 +14,34 @@ Python.
 
 Early software: tested in simulation and on one physical arm, a Seeed reBot ([hardware notes](docs/hardware.md)).
 
+## Demos
+
+Selected simulation runs; the kitchen demos were developed with scene knowledge and human feedback.
+
+### Shape sorting
+
+GPT-6.1 Sol sorts **4/4 pieces with world-use vs 3/4 raw**, with estimated episode costs of **$1.30 vs $2.02**.
+
+[![GPT-6.1 Sol shape sorting: raw interface on the left, world-use on the right](docs/assets/shape-sorting.png)](docs/assets/shape-sorting.mp4)
+
+[Watch · 1:16](docs/assets/shape-sorting.mp4) · [Details](docs/shape-sorting.md)
+
+### Lunchbox packing
+
+An LLM-written program uses EdgeTAM and depth to pack two snacks compactly, then verifies each placement.
+
+[![A Franka Panda packing two snacks into a small container](docs/assets/kitchen-tool-use.png)](docs/assets/kitchen-tool-use.mp4)
+
+[Watch · 1:03](docs/assets/kitchen-tool-use.mp4) · [Details](examples/robocasa-lunchbox/README.md)
+
+### Oven dial
+
+An LLM selects the temperature dial, calculates the turn to **180°C**, and verifies the released pointer.
+
+[![A Franka Panda turning the selected oven dial, with its planned rotation overlaid](docs/assets/kitchen-dial.png)](docs/assets/kitchen-dial.mp4)
+
+[Watch · 0:40](docs/assets/kitchen-dial.mp4) · [Details](examples/robocasa-dial/README.md)
+
 ## Why not a raw robot API?
 
 A model takes seconds to decide; an arm needs a command every 10 ms. Driving a reBot move by move, an agent kept it
@@ -116,6 +144,9 @@ with `uv run --with "world-use @ git+https://github.com/anyact-ai/world-use" pyt
 
 ## More
 
+- [Panda kitchen example](examples/robocasa-counter): an LLM picks up a cup and puts it in a RoboCasa sink,
+  using EdgeTAM, RGB-D measurements and gripper feedback through world-use. Includes the simulation adapter
+  and video renderer; this selected development trial uses a scaled cup and disables full-scene rehearsal.
 - [Records](docs/records.md): every session's plans, outcomes, telemetry and pictures, for `wu inspect`,
   `wu replay`, `wu view` and `wu fit`.
 - [Simulation](docs/simulation.md): MuJoCo with the reBot's meshes, frictional grasps and rendered cameras.
