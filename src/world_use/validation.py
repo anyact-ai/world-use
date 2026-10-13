@@ -24,7 +24,7 @@ def _numbers(v, n: int) -> bool:
 
 @dataclass(frozen=True)
 class Param:
-    """A parameter's type: its JSON Schema, the check validate() applies, and what that check wants, in words."""
+    """A parameter's JSON Schema, validator and error description."""
     schema: dict
     ok: Callable[[Any], bool]
     wants: str
@@ -89,11 +89,15 @@ FIELDS: dict[str, dict[str, Param]] = {
     "checkpoint": dict(ask=TEXT, view=TEXT, roi=array(4).nullable(), expect=TEXT.nullable()),
     "seq": dict(steps=STEPS),
 }
-NEEDS = {"joints": ("target_deg", "delta_deg"), "line": tuple(DIRECTIONS), "lines": ("legs",),
-         "move_to": ("to", "point", "jaws"), "guarded": tuple(DIRECTIONS), "gripper": ("aperture_mm", "to"),
-         "grasp": ("start_mm", "start"), "checkpoint": ("ask",), "seq": ("steps",)}      # at least one of these
-PAIRS = (("target_deg", "delta_deg"), ("aperture_mm", "to"), ("start_mm", "start"), ("expect_mm", "expect"),
-         ("up", "down"), ("forward", "back"), ("left", "right"))                       # never both
+REQUIRED_ANY_OF = {
+    "joints": ("target_deg", "delta_deg"), "line": tuple(DIRECTIONS), "lines": ("legs",),
+    "move_to": ("to", "point", "jaws"), "guarded": tuple(DIRECTIONS), "gripper": ("aperture_mm", "to"),
+    "grasp": ("start_mm", "start"), "checkpoint": ("ask",), "seq": ("steps",),
+}
+MUTUALLY_EXCLUSIVE = (
+    ("target_deg", "delta_deg"), ("aperture_mm", "to"), ("start_mm", "start"), ("expect_mm", "expect"),
+    ("up", "down"), ("forward", "back"), ("left", "right"),
+)
 
 
 def schema(kind: str) -> dict:
@@ -103,12 +107,12 @@ def schema(kind: str) -> dict:
     out: dict = dict(type="object", properties=dict(do=dict(const=kind), label=dict(type="string"),
                                                     **{name: t.schema for name, t in fields.items()}),
                      required=["do"], additionalProperties=False)
-    needs = NEEDS.get(kind, ())
+    needs = REQUIRED_ANY_OF.get(kind, ())
     if len(needs) == 1:
         out["required"].append(needs[0])
     elif needs:
         out["anyOf"] = [dict(required=[name]) for name in needs]
-    pairs = [list(pair) for pair in PAIRS if set(pair) <= fields.keys()]
+    pairs = [list(pair) for pair in MUTUALLY_EXCLUSIVE if set(pair) <= fields.keys()]
     if pairs:
         out["allOf"] = [{"not": dict(required=pair)} for pair in pairs]
     return out
@@ -123,11 +127,11 @@ def validate(kind: str, p: dict):
     for name, value in p.items():
         if not fields[name].ok(value):
             raise Refused(f"{kind}: {name} must be {fields[name].wants}", "spec")
-    needs = NEEDS.get(kind, ())
+    needs = REQUIRED_ANY_OF.get(kind, ())
     if needs and not p.keys() & set(needs):
         names = f"{', '.join(needs[:-1])} or {needs[-1]}" if len(needs) > 1 else needs[0]
         raise Refused(f"{kind} needs {names}", "spec")
-    for a, b in PAIRS:
+    for a, b in MUTUALLY_EXCLUSIVE:
         if a in p and b in p:
             raise Refused(f"{kind}: give {a} or {b}, not both", "spec")
     if kind in ("line", "guarded") and not any(p.get(word) for word in DIRECTIONS):

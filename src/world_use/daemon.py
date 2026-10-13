@@ -1,13 +1,7 @@
-"""The daemon: one process per robot that owns the kernel and outlives every policy session.
+"""One robot daemon: a control thread, cameras and a localhost JSON API for CLI, Python and MCP clients.
 
-A policy's tool calls come and go (and get interrupted); the robot must not. The daemon runs the control loop
-in its own thread and serves a small JSON API on localhost, which the CLI, the Python client and the MCP
-server all use. It also owns the cameras.
-
-    python -m world_use.daemon --body sim --port 7431
-
-With a simulated body the daemon keeps two worlds: the simulator's truth, and the kernel's model of it. A workcell
-box is in both unless it says `known = false`; what a policy adds (`wu box`) goes into the model only.
+Client disconnection does not stop accepted work. The simulator's truth and the kernel's world model stay
+separate: workcell boxes go in both unless `known = false`; boxes added through the API go only in the model.
 """
 from __future__ import annotations
 

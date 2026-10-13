@@ -27,7 +27,7 @@ from .world import DIRECTIONS, along, heading
 if TYPE_CHECKING:
     from .kernel import Kernel
 
-STATUSES = ("done", "refused", "surprise", "stopped", "faulted")    # how a behavior can end
+STATUSES = ("done", "refused", "surprise", "stopped", "faulted")
 
 
 @dataclass
@@ -57,7 +57,7 @@ class Behavior:
     """The docstring is the help a policy reads (`wu help STEP`): a summary sentence, any more it needs, then one line
     per parameter."""
     kind = "behavior"
-    example: dict | None = None       # one spec that shows the typical use
+    example: dict | None = None
     moves = True                      # counts as motion time (holding, waiting and asking do not)
     senses_contact = False            # True: it expects contact and judges it itself (the kernel's check steps aside)
 
@@ -929,7 +929,7 @@ class Sequence(Behavior):
             if "tool" in out.data and "answer" in out.data:
                 self.answers.append(dict(step=self.i, ask=out.data["ask"], answer=out.data["answer"],
                                          tool=out.data["tool"]))
-            self.answers += [{**a, "step": self.i} for a in out.data.get("answers", [])]     # this plan's step
+            self.answers += [{**a, "step": self.i} for a in out.data.get("answers", [])]
             if not out.ok:
                 out.data = {**out.data, "step": self.i, "of": n, **self._answers()}
                 out.message = f"{where}: {out.message}"

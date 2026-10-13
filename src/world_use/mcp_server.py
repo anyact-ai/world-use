@@ -204,10 +204,11 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
     def run(plan: list[dict] | dict, wait_s: Nonnegative = 60.0, rehearse: bool = True,
             requires: Requirements | None = None, camera: str | None = None, depth: bool = False):
         """Run a plan: a list of steps, e.g. [{"do": "line", "up": 0.05}, {"do": "grip", "expect_mm": [35, 45]}].
-        Rehearsed on a twin first; if any step would break a limit nothing moves and every problem is listed.
+        Rehearses on a twin first unless rehearse=false. Rehearsal refusal starts no motion and lists the
+        problems; a refusal during execution may follow partial motion.
         Returns the outcome and the state line, or the question a checkpoint is waiting on.
         requires: [{"evidence": measurement id, "max_age_s": seconds}]; the run is refused, or stops before its
-        next step, once a measurement is older than that or its camera was calibrated again.
+        next step, once a measurement is older than that, withdrawn or its camera was calibrated again.
         camera adds a fresh picture and frame id at a checkpoint or outcome; depth adds simulated metric depth."""
         evidence = None if requires is None else [item.model_dump() for item in requires]
         return call(lambda: job_reply(c.run(plan, wait=wait_s, check=rehearse, requires=evidence), camera, depth))

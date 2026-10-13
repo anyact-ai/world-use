@@ -1,9 +1,9 @@
 # MuJoCo simulation
 
 `--body sim`, `--body sim:rebot`, `wu check` and `wu demo` use MuJoCo, a core
-dependency. The twin that checks and prepares every motion, on hardware as well,
-is this simulation. The kernel owns commands, motion limits, watchdogs, faults and
-recovery.
+dependency. The built-in rehearsal twin uses the same engine, including when
+checking a plan for hardware. The kernel owns commands, motion limits, watchdogs,
+faults and recovery.
 
 The bundled reBot uses Seeed's URDF, link inertias, colored component meshes,
 and convex finger collision segments. Arm collision uses component convex hulls
@@ -52,8 +52,10 @@ soft objects and fluids are outside this box workcell. Robot URDF geometry can
 include primitive shapes and meshes, but loading a robot does not add support for
 those environment types. Their dynamics require an external environment/body
 integration; the kernel can still reason about conservative boxes supplied in its
-estimated `World`. The bundled examples demonstrate native boxes and robot
-adapters, not such an environment integration.
+estimated `World`. The [RoboCasa adapter](../examples/robocasa-counter) integrates
+an external kitchen scene, including the [articulated oven dial](../examples/robocasa-dial).
+It executes in the original scene but disables full-plan rehearsal: the native
+twin does not reproduce that kitchen's contact geometry.
 
 Changing the physical scene's topology rebuilds its MuJoCo model. Configure it
 before execution. Editing a truth box's pose alone does not teleport the live

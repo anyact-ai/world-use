@@ -65,7 +65,7 @@ def test_the_fit_finds_the_heavier_forearm_and_says_how_well_it_predicts(records
     miss_urdf, miss_fit = (abs(c.gravity(q)[2] - real.gravity(q)[2]) for c in (urdf, fitted))
     assert miss_urdf > 0.3 and miss_fit < 0.3 * miss_urdf
     assert abs(model.friction[2][0] - 0.5) < 0.2          # the elbow's Coulomb friction
-    assert all(v >= 0 for _, v in model.friction)          # no viscous friction below zero
+    assert all(v >= 0 for _, v in model.friction)
     assert "joint3" in model.describe(urdf) and "link3" in model.describe(urdf)
 
 

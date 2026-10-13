@@ -45,7 +45,7 @@ def _serve(conn, options):
                         old.close()
                     result = None
                 elif action == "select":
-                    old = targets.pop(identity, None)       # selecting a target again replaces its history
+                    old = targets.pop(identity, None)
                     if old is not None:
                         old.close()
                     if len(targets) >= MAX_TARGETS:

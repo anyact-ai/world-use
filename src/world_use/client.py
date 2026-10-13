@@ -52,9 +52,10 @@ class Client:
         return self._call("GET", "/card")
 
     def run(self, spec, wait: float = 0.0, check: bool = True, *, requires: list[dict] | None = None) -> dict:
-        """Rehearse (unless check=False), then run. A plan the kernel would refuse comes back refused, unmoved.
-        Each submission includes its own plan. requires=[{"evidence": measurement ID, "max_age_s": seconds}]
-        refuses the run, or its next step, once a measurement is older than that or its camera was recalibrated."""
+        """Rehearse unless check=False, then submit this plan. Rehearsal refusal starts no motion;
+        a refusal during execution may follow partial motion. requires=[{"evidence": measurement ID,
+        "max_age_s": seconds}] checks evidence before admission and each step, refusing if it has expired,
+        been withdrawn or its camera was recalibrated."""
         return self._call("POST", "/run", dict(spec=spec, wait=wait, check=check,
                                              requires=[] if requires is None else requires))
 

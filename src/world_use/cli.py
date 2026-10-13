@@ -1,24 +1,6 @@
-"""`wu`: the command line a policy (or a person) drives the robot with. Output is short and plain on purpose:
-every line ends up in a model's context. `wu --help` adds the exit statuses and environment variables.
+"""`wu`: a CLI for the robot daemon. Keep output concise; agents read it as context.
 
-    wu up --body sim            start the daemon (detached: it outlives this shell and any agent session)
-    wu card                     what this robot is and can do
-    wu status                   one line: job, tool position, gripper, torques, heat
-    wu look [CAMERA]            save a picture, with the tool and the known boxes drawn on it; prints its path
-    wu run PLAN                 rehearse, then run; waits up to --wait seconds, then prints the outcome
-    wu check PLAN               rehearse only: the forecast, nothing real moves
-    wu answer JOB yes|no|...    answer a checkpoint question
-    wu world | wu box ...       what the kernel knows about the scene; tell it about a surface or object
-    wu help [STEP]              the steps a plan can use, from the running daemon
-    wu fact KEY VALUE           record a measurement with its source
-    wu home-route STEPS         the way home from here ('[]' = fold straight back); wu home runs it
-    wu record                   write the flight record so far (tape, summary, world), without stopping
-    wu calibrate CAMERA         find where a camera is from the arm: say where you see the tool point, 6-8 times
-    wu fit RUN...               fit the robot's link masses and joint friction from flight records (no daemon)
-    wu stop | events | enable | release | down
-    wu mcp                      the same verbs as MCP tools, over stdio
-
-A plan is JSON (one step or a list of steps) or a file containing it.
+`wu --help` lists commands, exit statuses and environment variables.
 """
 from __future__ import annotations
 

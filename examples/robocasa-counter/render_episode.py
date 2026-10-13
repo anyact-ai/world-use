@@ -104,7 +104,6 @@ def panel(root, calls, beat):
     else:
         im = Image.open(c['images'][0]).convert('RGB').crop(crops[mode])
         canvas.paste(im.resize((352, 270), Image.Resampling.LANCZOS), (1196, 232))
-    # Readable meaning of the actual return, kept beside its camera evidence.
     if mode == 'points':
         xyz = measurement(c)['surface_center']
         d.text((1196, 526), 'Position from the robot base', font=font(18), fill=MUTED)

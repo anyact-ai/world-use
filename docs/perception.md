@@ -1,12 +1,12 @@
 # Measuring from pictures
 
-An agent can turn pixels in a camera picture into numbers a plan can use, and make a plan stop once those
-numbers are too old to trust. It learns three things: a camera frame, a measurement, and `requires`.
-Checking the result is the same step again: measure again and compare. The
-[perception example](../examples/perception) does all of it on a simulated arm.
+world-use turns selected pixels into measured geometry. An agent captures a frame, selects a surface,
+then uses its measurement in a motion plan. `requires` prevents the next step from starting with evidence
+that is too old, withdrawn or invalidated by recalibration. After motion, the agent measures again to
+check the result. The [perception example](../examples/perception) shows the complete loop.
 
-The [Sol shape-sorting experiment](shape-sorting.md) records where these measurements
-helped a live policy, where they failed, and the limits of the comparison.
+The [shape-sorting experiment](shape-sorting.md) uses plane projection and measured alignment;
+the [lunchbox task](../examples/robocasa-lunchbox) uses EdgeTAM, alignment and grasp checks.
 
 Depth comes only from simulated (MuJoCo) cameras for now. Other cameras give pictures without depth, and
 measuring them reports `missing_depth`.
@@ -179,7 +179,13 @@ from when they were measured.
 
 ## Limits
 
-Depth is simulated: physical RGB-D needs a chosen sensor, its calibration and measured timing first. One
-point or box measures one visible surface; there is no object pose, segmentation or grasp planning. The
-calibration's accuracy bounds every number, and `requires` checks age and calibration, not whether the
-scene changed in a way no camera saw. Cameras that move with the arm are not supported.
+Depth is currently supplied by simulated cameras. Physical RGB-D needs a sensor integration with measured
+calibration and timing. A point, box or mask measures a visible surface; EdgeTAM can supply the mask,
+but object pose estimation, feature correspondence and grasp selection remain task responsibilities.
+Calibration accuracy limits every measurement. `requires` checks age, calibration and withdrawal;
+it cannot detect an unobserved scene change.
+
+Workcell camera configuration assumes a fixed camera pose. The kitchen examples provide a custom
+[wrist camera](../examples/robocasa-lunchbox/sensor_views.py) that captures RGB-D, camera pose and tool pose
+from the same simulation state. Its calibration identity describes the mounting and intrinsics;
+each frame carries the current camera transform. Physical wrist-camera calibration is not implemented.

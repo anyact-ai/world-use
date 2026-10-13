@@ -3,26 +3,19 @@
 An LLM-written Python program packs two snacks into a small open container using
 fresh world-use measurements. The program runs without model calls during execution.
 
-[![Compact packing with a Panda and two cameras](../../docs/assets/kitchen-tool-use.png)](../../docs/assets/kitchen-tool-use.mp4)
+https://github.com/user-attachments/assets/f714e092-69e5-40ac-b7f6-bdeac1f4f6b9
 
 ## What world-use adds
 
-- **Geometry from images.** `select_target` uses EdgeTAM and depth to return
-  package and container surfaces. `measure_pixels` supplies floor and counter
-  heights. The task code uses these measurements to calculate compact placement
-  coordinates and release heights.
-- **Grasp-aware alignment.** `align_planar` converts corresponding measured
-  footprints into a tool position and yaw, accounting for an off-center grasp.
-  Its result drives the carry command; the task calculates vertical placement
-  from the measured support heights.
-- **Checks around motion.** `requires` ties moves to evidence-age limits.
-  Gripper feedback and fresh `observe_targets` measurements check pickup and
-  retention; new RGB-D measurements check position, height and containment after
-  release.
+- **Measurement.** EdgeTAM and depth locate package and container surfaces;
+  `measure_pixels` supplies floor and counter heights for compact placement.
+- **Alignment.** `align_planar` converts measured footprints into a tool position
+  and yaw, accounting for an off-center grasp. The task calculates release height.
+- **Verification.** Gripper feedback and `observe_targets` check retention.
+  Fresh RGB-D checks released placements; `requires` limits evidence age for motion.
 
 The [task program](task.py) owns the image regions, packing order, layout and
-clearances. World-use supplies measurements, alignment and execution. Policy
-inputs are RGB-D and robot feedback; simulator poses are reserved for the audit.
+clearances. Inputs are RGB-D and robot feedback; simulator poses are reserved for the audit.
 
 ## Result and scope
 
@@ -44,8 +37,8 @@ geometry and the task's calculations.
 
 ## Run locally
 
-Complete the [upstream kitchen setup](../robocasa-counter/README.md#build-the-upstream-scene),
-then use world-use's Python 3.13 environment with vision extras:
+Complete the [kitchen setup](../robocasa-counter/README.md#build-the-upstream-scene) and
+[runtime install](../robocasa-counter/README.md#prepare-the-runtime), then run from the repository root:
 
 ```sh
 .venv/bin/python examples/robocasa-lunchbox/prepare.py
@@ -55,9 +48,7 @@ then use world-use's Python 3.13 environment with vision extras:
 ```
 
 Use a new output directory for each run. `--measure-only` checks perception and
-layout without powering the simulated robot. EdgeTAM downloads weights on first
-use. Native MuJoCo graphics are required; rendering also uses Pillow, ffmpeg and
-macOS SF fonts.
+layout without powering the simulated robot.
 
 <details>
 <summary>Run the shifted-layout check</summary>

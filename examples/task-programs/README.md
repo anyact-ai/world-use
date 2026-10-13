@@ -23,8 +23,9 @@ The included fixture is a synthetic translation with a known answer, not robot
 execution evidence. The program snapshots itself and the input, recomputes
 `align_planar`, and compares its output within numerical tolerances. It also
 accepts `geometry.json` from the kitchen experiment. That reproduces the recorded
-alignment calculation, not the missing code that selected its landmarks or a new
-packing attempt. Use a new output directory for each invocation.
+alignment calculation only. Landmark selection belongs to the
+[packing task](../robocasa-lunchbox/task.py); rerunning that task requires a live simulation and
+fresh observations. Use a new output directory for each invocation.
 
 ## Save a task
 
