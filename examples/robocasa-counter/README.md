@@ -1,78 +1,18 @@
-# Franka Panda in a RoboCasa kitchen
+# RoboCasa kitchen setup
 
-An LLM uses world-use to pick a cup from the counter and put it in the sink.
-The room, fixtures, object meshes, robot
-and task come from [RoboCasa](https://github.com/robocasa/robocasa)
-and [robosuite](https://github.com/ARISE-Initiative/robosuite).
-The Panda uses its upstream Omron base, parked throughout the episode.
+Shared setup for the [lunchbox](../robocasa-lunchbox) and [oven-dial](../robocasa-dial)
+demos: a Franka Panda from [robosuite](https://github.com/ARISE-Initiative/robosuite)
+in a [RoboCasa](https://github.com/robocasa/robocasa) kitchen, with its Omron base parked.
 
-The selected episode completes pickup, transfer, release and withdrawal. The cup
-settles **on its side** in the sink. Codex chose actual world-use MCP calls
-interactively, using RGB-D images, EdgeTAM selections, measured surface points
-and gripper feedback. A fresh selection after lifting measured a 79 mm rise in
-the visible cup surface. The video shows these actual returns beside the motion.
-
-The target mesh is scaled to 0.75, giving a roughly 60 mm cup body that fits the
-Panda's 80 mm jaw travel. The base is parked 20 cm left of the upstream reset
-position before recording. These are setup changes, not agent-controlled actions.
-Simulator object poses were not supplied as policy observations. The same agent
-built the setup and chose the calls; this is a selected development trial, not a
-blind evaluation or a repeatability result.
-
-`adapter.py` connects the exported scene to world-use's joint I/O contract. It
-uses the original rigid-body contact geometry, a parked mobile base, joint PD
-servos and gravity compensation. The core library handles IK, trajectory limits,
-feedback, evidence freshness and recording. Full kitchen contact rehearsal is
-not implemented; the calls explicitly use `rehearse=False`. No torque sensing or
-hardware transfer is demonstrated.
-
-The selected local recording is `runs/robocasa-agent-06/`: `panda-world-use-clear.mp4`
-is the edited video, `calls.json` contains requests and returns, `replay.npz`
-contains sampled simulator configurations, and `flight/perception/` contains
-the exact measured points and images. The edit retains a gripper command stop
-and a rejected depth measurement followed by reselection. Motion plays at 1x;
-decision pauses from the roughly 11-minute 40-second recording are cut and
-held frames are labelled. The panel links each tool result to the recorded LLM
-action, with labelled positions and a before/after lift check. The main scene
-replays recorded physics with its original warm-white lighting.
-
-`audit_episode.py` checks the final state after recording: the cup contacts the
-sink, moves less than 1 mm over the last ten seconds, and is more than 25 cm from
-the tool, with torque off. The selected run passes. This audit uses simulator
-state after the episode; it was not an input to the agent.
-
-Earlier recordings remain under `runs/`: 01–02 are adapter checks, 03 is an
-approach preview, 04 is an unsuccessful larger-cup trial, and 05 is a setup check.
-Generated recordings and downloaded assets are ignored by Git.
-
-After building the scene, use world-use's Python 3.13 environment with its vision
-dependencies to start the interactive recorder. The output directory must be new:
-
-```sh
-HF_HOME=/private/tmp/world-use-parts-tray-hf .venv/bin/python -i examples/robocasa-counter/agent_episode.py --output runs/robocasa-agent-new
-```
-
-The recorder exposes `act(tool, intent=..., **arguments)` and `finish()`. It
-contains no pickup policy or prewritten action sequence. Read `wu policy`, inspect
-the cameras and choose each call from its returns. Release the robot before
-calling `finish(result="...")`. EdgeTAM weights download on first use; `HF_HOME`
-is optional and can point to any writable model cache.
-
-The renderer's edit is specific to episode 06; a new episode needs its own call
-selection. It uses Pillow, ffmpeg and the macOS SF fonts. Native rendering requires
-local graphics access.
-
-```sh
-.venv/bin/python examples/robocasa-counter/audit_episode.py runs/robocasa-agent-06
-.venv/bin/python examples/robocasa-counter/render_episode.py runs/robocasa-agent-06 --output-name panda-world-use-clear
-```
+[adapter.py](adapter.py) connects the scene to world-use's joint I/O contract
+using upstream contact geometry, PD servos and gravity compensation. It provides
+gripper feedback but no joint torque sensing. Full-scene rehearsal is disabled
+(`rehearse=False`); world-use still supplies IK, trajectory limits, freshness checks and records.
 
 ## Build the upstream scene
 
-The environment requires an older MuJoCo than world-use. Use a separate
-Python 3.11 environment to build and inspect it. These preview dependencies omit
-upstream training, teleoperation and demonstration-generation extras. Do not
-install them into world-use's environment.
+Build the scene in a separate Python 3.11 environment: upstream requires an older
+MuJoCo than world-use. Keep these dependencies out of the runtime environment.
 
 From the world-use repository root:
 
@@ -102,20 +42,73 @@ format; it cannot be loaded by RoboCasa v0.2.
 runs/robocasa-preview/.venv/bin/python examples/robocasa-counter/preview.py
 ```
 
-The script subclasses the existing `PickPlaceCounterToSink` task to scale its
-cup target, using layout 1, Scandinavian style 2 and seed 7. It settles the scene using the upstream
-controller, then saves native MuJoCo overview and camera images, depth, state,
-compiled model, composed MJCF and metadata to `runs/robocasa-small-cup/scene/`. Rendering requires
-local graphics access. No Blender or learned rendering is involved.
+The script exports `PickPlaceCounterToSink` with a scaled cup, layout 1, style 2
+and seed 7 to `runs/robocasa-small-cup/scene/`: images, depth, state, model and
+metadata. Optional decorations are disabled; furniture and contact geometry
+remain upstream. Rendering needs local graphics access. The pinned revisions
+are RoboCasa 1.0.1 and robosuite 1.5.2.
 
-Optional knife-block, scale, paper-towel, oil/soap and glass decorations are
-disabled with RoboCasa's fixture configuration. Task objects and the kitchen's
-furniture, sink, appliances and contact geometry remain upstream assets.
+## Prepare the runtime
 
-Source revisions used:
+After exporting, install world-use with vision in the repository's Python 3.13 environment:
 
-- RoboCasa 1.0.1: `456174f62b89b8fca99eaaf33949c29fec9cfc2a`.
-- robosuite 1.5.2: `5ce6643f3092639d08f7b0f90ed1c6a84f50552c`.
+```sh
+uv sync --locked --python 3.13 --extra vision
+```
+
+Run task scripts with `.venv/bin/python` from the repository root. EdgeTAM
+downloads weights before powering the arm; `HF_HOME` can select another cache.
+Video rendering also requires ffmpeg and macOS SF fonts.
+
+Continue with [lunchbox packing](../robocasa-lunchbox#run-locally) or
+[oven-dial control](../robocasa-dial#run-locally), or try the earlier cup task below.
+
+## Cup-to-sink example
+
+Codex used RGB-D, EdgeTAM and gripper feedback to choose MCP calls that placed
+a cup in the sink, where it settled on its side. This was a development run:
+the same agent built the scene and chose the calls. Simulator poses were audit-only.
+
+Before recording, the cup was scaled to 0.75 (roughly 60 mm wide for 80 mm jaws)
+and the base parked 20 cm left of its upstream reset position.
+
+Start an interactive recorder with a new output directory:
+
+```sh
+.venv/bin/python -i examples/robocasa-counter/agent_episode.py --output runs/robocasa-agent-new
+```
+
+The recorder exposes `act(tool, intent=..., **arguments)` and `finish()`, with no
+prewritten pickup policy. Read `wu policy`, inspect the cameras and choose calls
+from their returns. Release the robot before `finish(result="...")`.
+
+```sh
+.venv/bin/python examples/robocasa-counter/audit_episode.py runs/robocasa-agent-new
+```
+
+The audit checks cup contact with the sink, less than 1 mm of movement in the last
+ten seconds, more than 25 cm of tool clearance and torque off. Command completion
+alone does not establish these results.
+
+<details>
+<summary>Selected recording and earlier trials</summary>
+
+The local archive `runs/robocasa-agent-06/` contains `calls.json` (requests and
+returns), `replay.npz` (sampled simulator states) and `flight/perception/`
+(measured points and images). Its audit passes. A fresh selection after lifting
+measured a 79 mm rise in the visible cup surface.
+
+The archived `panda-world-use-clear.mp4` plays motion at 1×, with decision gaps
+cut from an approximately 11-minute 40-second session and held frames labeled.
+It retains a gripper command stop and a rejected depth measurement followed by
+reselection. The renderer is specific to episode 06; a new episode needs its
+own call selection.
+
+Earlier trials 01–02 are adapter checks, 03 is an approach preview, 04 is an
+unsuccessful larger-cup attempt, and 05 is a setup check. Raw recordings and
+downloaded assets are not included in this repository.
+
+</details>
 
 ## Attribution
 

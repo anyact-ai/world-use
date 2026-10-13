@@ -3,22 +3,18 @@
 A Franka Panda must set the oven to **180°C**, choosing among six controls with
 burner symbols, timer markings and a Fahrenheit temperature scale.
 
-[![A Panda turning the oven dial with the planned rotation overlaid](../../docs/assets/kitchen-dial.png)](../../docs/assets/kitchen-dial.mp4)
+https://github.com/user-attachments/assets/7dfb024d-f794-41f6-bd02-47260d103639
 
 ## What world-use adds
 
-- **Pixels to measured geometry.** `camera_frame` returns calibrated side and
-  wrist RGB-D. The LLM selects the control; `select_target` runs EdgeTAM and
-  `measure_pixels` supplies points on the handle, panel and scale marks.
-- **Geometry to motion.** Task Python estimates the dial axis from the panel
-  and calculates the turn between measured marks. World-use executes the
-  requested approach, grip, rotation and withdrawal, with gripper feedback.
-- **Evidence after release.** A fresh wrist frame and new landmark measurements
-  let the agent compare the released pointer with the requested temperature.
+- **Measurement.** Side/wrist RGB-D, EdgeTAM selection and `measure_pixels`
+  locate the handle, panel and scale marks.
+- **Motion.** Task Python estimates the axis and turn from those points.
+  World-use executes the approach, grip, rotation and withdrawal.
+- **Verification.** New wrist measurements check the pointer after release.
 
-The LLM reads the labels and converts 180°C to 356°F; task Python calculates the
-angle. World-use supplies geometry and execution, without a built-in oven policy.
-Codex chose the MCP calls interactively during development, with scene knowledge.
+The LLM selects the control and converts 180°C to 356°F. Codex chose the MCP calls
+interactively, with scene knowledge; world-use contains no oven policy.
 
 ## Result and scope
 
@@ -35,15 +31,14 @@ push-to-turn interlocks. Joint torque sensing and full-scene rehearsal are
 unavailable (`rehearse=False`). It is a development example, not a hardware or
 repeatability result.
 
-The 40-second video keeps identification on a static side-camera input, then
-shows the saved wrist input and fresh verification. Motion plays at 1× from a
-labeled presentation view; decision gaps are cut. Overlays illustrate recorded
-measurements and calculations, including the planned rotation.
+The 40-second video shows static side-camera identification, wrist observations
+and final verification. Motion plays at 1× from a labeled presentation view;
+decision gaps are cut. Overlays show recorded measurements and calculations.
 
 ## Run locally
 
-Complete the [upstream kitchen setup](../robocasa-counter/README.md#build-the-upstream-scene),
-then use world-use's Python 3.13 environment with vision extras:
+Complete the [kitchen setup](../robocasa-counter/README.md#build-the-upstream-scene) and
+[runtime install](../robocasa-counter/README.md#prepare-the-runtime), then run from the repository root:
 
 ```sh
 .venv/bin/python examples/robocasa-dial/prepare.py
@@ -54,16 +49,15 @@ This starts an interactive recorder, not an automatic task. Read `wu policy`,
 inspect observations and choose calls with `act`; save decisions with `note` and
 end with `finish` after releasing the robot. Use a new output directory each time.
 
-The audit and renderer select calls from the retained trial 03; adapt their call
-indices for a new episode:
+The audit and renderer were written for the archived trial 03, whose raw recording
+is not bundled. For a new episode, adapt their call indices before running:
 
 ```sh
-.venv/bin/python examples/robocasa-dial/audit_episode.py runs/dial-agent-03
-.venv/bin/python examples/robocasa-dial/render_episode.py runs/dial-agent-03
+.venv/bin/python examples/robocasa-dial/audit_episode.py runs/dial-new
+.venv/bin/python examples/robocasa-dial/render_episode.py runs/dial-new
 ```
 
-Native MuJoCo graphics are required; rendering also uses Pillow, ffmpeg and macOS
-SF fonts. `runs/dial-agent-03/` retains calls, decisions, raw RGB-D, calibration,
+`runs/dial-agent-03/` retains calls, decisions, raw RGB-D, calibration,
 replay and audit. Earlier failed trials remain in `dial-agent-01` and
 `dial-agent-02`. Raw recordings and downloaded assets are not bundled. See the
 [asset attribution](../robocasa-counter/README.md#attribution).

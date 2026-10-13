@@ -27,7 +27,7 @@ confirm `enabled: false` and `power_uncertain: false`. A finished or stopped job
 1. **Write a phase as a plan**, a JSON list of steps, with a checkpoint wherever the next step only makes sense if
    something looks right.
 2. **Run it**: `wu run '<plan>'` first checks it in a rehearsal on a twin, from the measured state. If the kernel
-   would refuse any step, nothing moves and you get every problem at once, each with the number that would pass.
+   would refuse any step, nothing moves. The reply describes the problems and, where available, a correction.
    Otherwise it runs, waits up to 60 s and prints the outcome. `wu check '<plan>'` only checks: time, contacts,
    heat.
 3. **At a checkpoint** the arm holds: `wu look` at the camera it names, then `wu answer JOB yes`. An answer other
@@ -44,7 +44,7 @@ in a surprise still runs, with a warning, because the kernel's world may be inco
 | status | meaning | the robot |
 |---|---|---|
 | done | the step did what it said and what you expected | holds where it ended |
-| refused | a limit or check failed | in rehearsal: nothing moved; while running: holds, earlier steps may have run |
+| refused | a limit or check failed | in rehearsal: nothing moved; while running: holds, motion may already have occurred |
 | surprise | contact where none was expected or none where one was, a grip on nothing or the wrong width, an unexpected answer | holds where it really is; anything queued is cancelled |
 | stopped | you or the operator stopped it, or a motor got too hot | holds |
 | faulted | a hardware or software failure; the operator resolves it and resets | holds if it can; new jobs are refused |
@@ -112,8 +112,9 @@ parameters. A list runs in order and ends at the first step that does not end "d
 
 - `touchdown` and `guarded` make intended contact: slow moves that stop when a joint's torque departs from what
   the arm's weight explains by more than `dtau`. Detection takes time: it is not an instant stop.
-- Every other motion also stops on unexpected contact, with a looser threshold: treat that as information. A
-  `fragile` zone lowers both thresholds sharply.
+- These contact checks require joint torque sensing; read the card to confirm it is available.
+  With that sensing, other motions also stop when unexpected contact exceeds a looser threshold.
+  A `fragile` zone lowers both thresholds.
 - Over a surface the kernel knows, a guarded move plans only 2 cm past it: no contact by the end means the world
   model is wrong. Look, then correct it.
 - Guard only the last few centimetres: line to about 2 cm short of the expected contact, then guard. Over a long

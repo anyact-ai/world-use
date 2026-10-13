@@ -40,8 +40,13 @@ uv run pytest
 
 - Update the existing source of truth. Keep the README focused on setup and useful
   examples; link to details. Replace outdated guidance when behavior changes.
-- Write direct, concrete prose. Document public contracts and non-obvious constraints;
-  skip hype, repeated summaries, and comments that narrate code the reader can see.
+- Write direct, concrete prose. Cut repeated explanations and comments that restate
+  the code; prefer clear names and structure.
+- Keep comments for non-obvious constraints, units, coordinate frames, hardware
+  rationale and mathematical assumptions. Fix avoidable workarounds instead of
+  justifying them in comments; preserve the rationale when a constraint remains.
+- Treat MCP tool and behavior docstrings as agent-facing help. Preserve their
+  contracts when shortening them.
 - Keep task diaries and generated review reports out of the repo unless requested.
   Preserve evidence behind published experimental claims; distinguish simulated
   results from hardware measurements.

@@ -1,134 +1,113 @@
 <p align="center">
-  <img src="docs/assets/anyact-arm.svg" width="130" alt="AnyAct robot arm">
+  <img src="docs/assets/anyact-arm.svg" width="90" alt="AnyAct robot arm">
 </p>
 
 # world-use
 
 **Let AI agents operate robot arms.**
 
-An agent writes a few steps of work at a time as a JSON plan. world-use checks each plan in a rehearsal on a
-simulated twin of the robot, and refuses a plan that would break a limit with the number that would pass. Then it
-runs the plan at 100 Hz, stops on unexpected contact and watches motor heat. Between the agent's decisions a daemon
-holds the arm still, and every session leaves a flight record. Agents use it through the `wu` command, MCP or
-Python.
+Camera observations, EdgeTAM tracking, measured geometry and bounded motion through **MCP, Python or the `wu` CLI**.
+The agent chooses the targets and strategy; world-use executes each phase and returns feedback.
 
-Early software: tested in simulation and on one physical arm, a Seeed reBot ([hardware notes](docs/hardware.md)).
+Start in MuJoCo. Early software, tested in simulation and on one Seeed reBot arm under supervision.
+
+[Demos](#demos) · [Quickstart](#quickstart) · [Give it to an agent](#give-it-to-an-agent) · [Documentation](#documentation)
 
 ## Demos
 
-Selected simulation runs; the kitchen demos were developed with scene knowledge and human feedback.
+Selected simulation runs. The kitchen examples were developed with scene knowledge and human feedback.
 
 ### Shape sorting
 
 GPT-6.1 Sol sorts **4/4 pieces with world-use vs 3/4 raw**, with estimated episode costs of **$1.30 vs $2.02**.
 
-[![GPT-6.1 Sol shape sorting: raw interface on the left, world-use on the right](docs/assets/shape-sorting.png)](docs/assets/shape-sorting.mp4)
+https://github.com/user-attachments/assets/43a2caa8-aa29-41d6-84be-64477883f4d9
 
-[Watch · 1:16](docs/assets/shape-sorting.mp4) · [Details](docs/shape-sorting.md)
+[Details](docs/shape-sorting.md)
 
 ### Lunchbox packing
 
-An LLM-written program uses EdgeTAM and depth to pack two snacks compactly, then verifies each placement.
+An LLM-written program uses EdgeTAM, depth and measured alignment to pack two snacks compactly, then verifies each placement.
 
-[![A Franka Panda packing two snacks into a small container](docs/assets/kitchen-tool-use.png)](docs/assets/kitchen-tool-use.mp4)
+https://github.com/user-attachments/assets/f714e092-69e5-40ac-b7f6-bdeac1f4f6b9
 
-[Watch · 1:03](docs/assets/kitchen-tool-use.mp4) · [Details](examples/robocasa-lunchbox/README.md)
+[Details](examples/robocasa-lunchbox/README.md)
 
 ### Oven dial
 
-An LLM selects the temperature dial, calculates the turn to **180°C**, and verifies the released pointer.
+The LLM selects the temperature dial. Measured landmarks guide the turn to **180°C** and the check after release.
 
-[![A Franka Panda turning the selected oven dial, with its planned rotation overlaid](docs/assets/kitchen-dial.png)](docs/assets/kitchen-dial.mp4)
+https://github.com/user-attachments/assets/7dfb024d-f794-41f6-bd02-47260d103639
 
-[Watch · 0:40](docs/assets/kitchen-dial.mp4) · [Details](examples/robocasa-dial/README.md)
+[Details](examples/robocasa-dial/README.md)
 
-## Why not a raw robot API?
+## How it works
 
-A model takes seconds to decide; an arm needs a command every 10 ms. Driving a reBot move by move, an agent kept it
-moving for 11% of its powered time. The rest of the time the arm held still while the model thought, and holding a
-raised pose heated the elbow about 8 C per minute. Planned and checked in phases, the same task kept the arm moving
-for up to 41% of the time ([what we measured](DESIGN.md#what-we-measured)). A plan that would break a limit is
-refused before anything moves:
+Call tools interactively or write a Python task that uses fresh observations on each run.
 
-```console
-$ wu run '[{"do":"line","left":0.08}]'
-refused in rehearsal, so nothing moved:
-check FAILED: 1 limit would be broken, so the kernel would refuse this plan and nothing would move
-  step 1/1: line(left=0.08): this turns j1/j5/j6 with the tool at U+0.220; turning needs U+0.267 or higher (5 cm above the start height) (hint: lift at least 5 cm more first)
-  rehearsed past them: 5.4 s simulated, 5.3 s of it moving
-  ends with the tool at F+0.302 L+0.092 U+0.220 (work)
-  heat: j3 +0.7 C, to about 26 C
-from here a 3 cm line can go up, forward; not down or back (out of reach with the gripper at this angle); left or right (turning needs the tool at U+0.267).
-$ wu run '[{"do":"line","up":0.05},{"do":"line","left":0.08}]'
-job 1 done: 2 steps done
-t+9s | idle, holding | tool F+0.302 L+0.092 U+0.270 | grip 0.05rad (0mm) -0.00 | tau -0.0 +0.7 +6.9 +1.8 +0.0 -0.0 | hottest j3 26C
-```
+| Step | What world-use provides |
+| --- | --- |
+| **Observe** | Camera frames and optional EdgeTAM masks for an agent-selected object. |
+| **Measure** | Depth-based surface coordinates, plane projection and alignment from corresponding landmarks. |
+| **Move** | Bounded plans, rehearsal against the estimated scene, a 100 Hz control loop and execution feedback. |
+| **Verify** | Fresh observations to check the outcome, with plans, measurements and telemetry saved in a flight record. |
 
-## Install
+The agent owns grasps, scene estimates and success checks. Rehearsal depends on that scene estimate;
+sensing depends on the adapter. The kitchen demos disable full-scene rehearsal and provide no joint torque sensing.
+See [design](DESIGN.md) and [perception](docs/perception.md) for the contracts.
+
+## Quickstart
+
+Install from the current source with [uv](https://docs.astral.sh/uv/):
 
 ```sh
-uv tool install --with-executables-from rerun-sdk "world-use[mcp,rerun] @ git+https://github.com/anyact-ai/world-use"
+uv tool install --python 3.13 --with-executables-from rerun-sdk \
+  "world-use[mcp,rerun] @ git+https://github.com/anyact-ai/world-use"
 ```
 
-This needs [uv](https://docs.astral.sh/uv/), which finds or installs Python 3.13 or newer. The extras are `mcp`
-(the MCP server), `rerun` (the 3D viewer), `vision` (EdgeTAM tracking, with PyTorch) and `rebot` (the physical
-reBot's driver, on Python 3.13).
-The install exposes `wu` and the `rerun` viewer command.
+This installs Python 3.13, `wu` and the Rerun viewer as needed. Add `vision` for EdgeTAM or
+`rebot` for the hardware driver.
 
-## Try it
-
-`wu demo` runs a scripted pick-and-place on a simulated reBot, checks the result against the simulator and saves a
-flight record in a new folder under `./runs`:
-
-```console
-$ wu demo
-nominal: the block was placed at the target; jobs done, done, done; torque off
-record: runs/block-demo
-animation: runs/block-demo/demo.gif
-$ wu inspect runs/block-demo    # summarize the record
-$ wu view runs/block-demo       # open it in Rerun
-```
-
-`wu demo --scenario missing` takes the block away: the grip closes on nothing, so the script forgets the block,
-opens, lifts away and goes home. The [block example](examples/pick-place) explains the scenarios and the task for an
-agent, including how to [adapt the block task and workcell](examples/pick-place/README.md#adapt-the-task).
-
-![The block demo in Rerun: the robot and the estimated world in 3D, a camera frame, joint plots and events](docs/assets/simulation-rerun.png)
-
-Then drive the arm yourself. These commands produce the transcript above:
+Run a complete scripted task in simulation, without an LLM or robot:
 
 ```sh
-wu up --workcell block    # the daemon, with a simulated reBot, a tray and a block; torque off
-wu card                   # what this robot is and can do
-wu look side              # saves a picture with the known boxes drawn on it and prints its path
-wu enable
-wu run '[{"do":"line","left":0.08}]'
-wu run '[{"do":"line","up":0.05},{"do":"line","left":0.08}]'
-wu home-route '[]' && wu home && wu down
+wu demo
+wu inspect runs/block-demo
+wu view runs/block-demo
 ```
 
-The last line sets the home route, folds the arm home, switches torque off and stops the daemon. `wu check`
-checks a plan without running it, and `wu help` lists the steps a plan can use.
+The demo verifies placement, releases torque and saves a record and animation. Later runs use numbered folders;
+use the path printed by your run. Cameras need [OpenGL](docs/simulation.md#cameras-and-replay).
+Try `wu demo --scenario missing` for a missed grasp and recovery. See the [block example](examples/pick-place)
+to adapt the task.
 
 ## Give it to an agent
 
-Start the simulation (`wu up --workcell block`), then paste this into a shell agent such as Claude Code, Codex or
-Gemini CLI:
+Start the simulation with `wu up --workcell block`, then give a shell-based agent this task:
 
 ```text
-Run `wu policy` and follow it. A simulated robot arm is running. Move the orange block to F=0.34, L=-0.07 in the
-work frame, standing on the tray. Then go home, switch torque off, and report what you did and what you saw.
+Run `wu policy` and follow it. A simulated robot arm is running. Move the orange
+block to F=0.34, L=-0.07 in the work frame, standing on the tray. Verify placement,
+then go home, switch torque off and report what you did and observed.
 ```
 
-`wu policy` prints [the brief](src/world_use/POLICY.md) every agent reads first. Over MCP the same commands are
-tools; the server talks to the daemon, so start that first. Add it to Claude Code with
-`claude mcp add world-use -- wu mcp`, or give other MCP clients this entry:
+`wu policy` prints the [operating brief](src/world_use/POLICY.md). For MCP, keep the daemon running and
+configure your client to launch `wu mcp`:
 
 ```json
-{"mcpServers": {"world-use": {"command": "wu", "args": ["mcp"]}}}
+{
+  "mcpServers": {
+    "world-use": {"command": "wu", "args": ["mcp"]}
+  }
+}
 ```
 
+For EdgeTAM, include `vision` in the install extras and use `"args": ["mcp", "--vision"]`.
+The [tracking guide](examples/tracking) covers model weights and device selection.
+
 ## Python
+
+With the simulated daemon running and torque enabled, submit a phase:
 
 ```python
 from world_use import Client, Plan
@@ -139,26 +118,32 @@ result = robot.run(phase.spec(), wait=60)
 print(result["status"])
 ```
 
-With the daemon up and torque on, this prints `done`. The tool install keeps its own environment, so run scripts
-with `uv run --with "world-use @ git+https://github.com/anyact-ai/world-use" python task.py`.
+Save as `task.py`. The tool install is isolated, so run it with:
 
-## More
+```sh
+uv run --with "world-use @ git+https://github.com/anyact-ai/world-use" python task.py
+```
 
-- [Panda kitchen example](examples/robocasa-counter): an LLM picks up a cup and puts it in a RoboCasa sink,
-  using EdgeTAM, RGB-D measurements and gripper feedback through world-use. Includes the simulation adapter
-  and video renderer; this selected development trial uses a scaled cup and disables full-scene rehearsal.
-- [Records](docs/records.md): every session's plans, outcomes, telemetry and pictures, for `wu inspect`,
-  `wu replay`, `wu view` and `wu fit`.
-- [Simulation](docs/simulation.md): MuJoCo with the reBot's meshes, frictional grasps and rendered cameras.
-- [Measuring from pictures](docs/perception.md): positions in work-frame metres from a camera, and plans that stop
-  once a measurement is too old. Depth comes from simulated cameras for now.
-- [The reBot](docs/rebot.md): CAN, cameras and operation. The arm has no brakes: keep an operator at its
-  motor-supply switch.
-- [Other arms](docs/adapters.md): a URDF, a TOML description and a small driver. Supported: arms with revolute
-  joints, five-joint arms included, and grippers with one joint (revolute or prismatic) or two prismatic fingers.
-- [DESIGN.md](DESIGN.md): the rules and the measurements behind them. [CHANGELOG.md](CHANGELOG.md): what changed.
+Return home and release torque afterward. See the [perception example](examples/perception) for a complete task,
+or [task programs](examples/task-programs) to record code and inputs for repeated runs.
 
-## Develop
+## Documentation
+
+| Guide | Use it to |
+| --- | --- |
+| [Perception](docs/perception.md) | Measure camera pixels, align landmarks and require fresh evidence. |
+| [Records and replay](docs/records.md) | Inspect a run, view it in Rerun or fit the robot model. |
+| [Simulation](docs/simulation.md) | Configure MuJoCo scenes, cameras and rendering. |
+| [RoboCasa setup](examples/robocasa-counter) | Build the shared Panda kitchen used by the packing and dial demos. |
+| [Robot adapters](docs/adapters.md) | Connect another arm through a URDF, a description and a driver. |
+| [reBot setup](docs/rebot.md) | Configure CAN, cameras and supervised hardware operation. |
+| [Hardware records](docs/hardware.md) | Read what worked, what failed and what changed on the physical arm. |
+| [Design](DESIGN.md) · [Changelog](CHANGELOG.md) | Understand the architecture and follow changes. |
+
+## Contributing
+
+Bug reports, examples and tested adapters are welcome. Include reproduction steps and relevant records,
+with credentials and private images removed.
 
 ```sh
 git clone https://github.com/anyact-ai/world-use.git
@@ -169,7 +154,10 @@ uv run ruff check .
 uv run ty check src
 ```
 
+See [AGENTS.md](AGENTS.md) for conventions and [simulation](docs/simulation.md#cameras-and-replay) for test setup.
+
 ## License
 
-Apache-2.0. The bundled reBot model (URDF and meshes) is Seeed Studio's, under CERN-OHL-W-2.0; see its
-[notice](src/world_use/bodies/rebot/NOTICE.md).
+Code: [Apache-2.0](LICENSE). The bundled Seeed reBot model is CERN-OHL-W-2.0; see its
+[notice](src/world_use/bodies/rebot/NOTICE.md). The kitchen demos use upstream assets with
+[separate attribution](examples/robocasa-counter/README.md#attribution).

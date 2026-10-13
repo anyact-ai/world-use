@@ -3,7 +3,7 @@
 GPT-6.1 Sol inserts four pieces into a matching board. The video compares a raw
 move interface with world-use, labeled **custom harness**.
 
-[Watch · 1:16](assets/shape-sorting.mp4)
+https://github.com/user-attachments/assets/43a2caa8-aa29-41d6-84be-64477883f4d9
 
 ## What world-use adds
 

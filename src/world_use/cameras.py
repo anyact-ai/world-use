@@ -1,21 +1,7 @@
-"""Cameras: what a policy looks at. `wu look` saves one picture per call, with what the kernel knows drawn on it.
+"""Camera acquisition, calibration and overlays. Workcell setup is documented in docs/rebot.md.
 
-A camera is a name, a way to get a picture and, optionally, a calibration: where it is and how it projects. With a
-calibration the kernel draws the tool point, the work axes, the boxes it knows about and a planned path onto the
-picture, so a model can see at a glance whether its world model matches the scene. A simulated robot gets
-simulated cameras that render the scene the simulator is running (its truth, which the kernel may not fully know).
-
-Workcell entry (positions in the work frame, metres):
-
-    [[camera]]
-    name = "side"
-    path = "~/frames/side.jpg"                     # the newest frame a capture app keeps writing (refused when
-    max_age_s = 3                                  # older than this); or url = "http://.../snapshot.jpg", or a
-                                                   # command that prints one image to stdout (see docs/rebot.md)
-    rotate = 180                                   # optional: 90, 180 or 270 clockwise, for a camera mounted turned
-    eye = [0.35, -0.60, 0.40]                      # calibration, optional: where the camera is,
-    look_at = [0.30, 0.0, 0.15]                    # what the image centre shows,
-    fov_deg = 55                                   # and its horizontal field of view
+`wu look` saves an image with the tool, work axes, estimated boxes and optional planned path drawn on it.
+Overlays use the estimated calibration; simulated images render the separate physical scene.
 """
 from __future__ import annotations
 
@@ -39,7 +25,7 @@ from pydantic import ConfigDict, Field, TypeAdapter, model_validator
 
 from .request_models import Name, Number, Positive, Request, Vector
 
-MAX_SIDE = 1024                        # pictures are scaled down to this: plenty for a model, cheap in context
+MAX_SIDE = 1024                        # bound image size in the model's context
 
 INK = (32, 36, 42)
 MODEL = (22, 140, 80)                  # what the kernel believes: outlines
@@ -232,9 +218,8 @@ class View:
         return cls(T, f, f, w / 2, h / 2, int(w), int(h))
 
     def scaled(self, width: int, height: int) -> View:
-        """The same camera on a picture of another size. Pixels stay square and the horizontal field of view (what
-        fov_deg means) is kept, with the optical centre as far from the middle as it was: a 16:9 camera described
-        at the default 800x600 used to come out squashed, with fx and fy different."""
+        """Scale focal lengths and offsets from the image centre uniformly by width.
+        This preserves horizontal field of view and pixel aspect ratio when the image shape changes."""
         s = width / self.width
         return View(self.T, self.fx * s, self.fy * s, width / 2 + (self.cx - self.width / 2) * s,
                     height / 2 + (self.cy - self.height / 2) * s, width, height)

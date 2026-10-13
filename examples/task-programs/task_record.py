@@ -71,7 +71,7 @@ def prepare(output: Path, sources: Mapping[str, Path], *, entrypoint: str, param
         if relative.is_absolute() or ".." in relative.parts:
             raise ValueError("source names must stay inside the bundle")
         payloads[name] = Path(path).read_bytes()
-    # Validate parameters before creating the output folder.
+    # Invalid parameters must leave no run directory.
     parameters = json.loads(json_bytes(parameters))
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)

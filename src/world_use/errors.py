@@ -1,9 +1,9 @@
-"""A refused step: it starts no motion; earlier steps in a running plan may have moved."""
+"""Structured refusals and operator-facing error messages."""
 from __future__ import annotations
 
 
 class Refused(ValueError):
-    """A step was refused before it moved; preceding steps may have completed.
+    """An operation could not start or continue. A refusal during execution may follow partial motion.
 
     rule      which check refused it (e.g. "joint_limit", "speed", "reach", "keep_out")
     hint      the nearest thing that would pass, when there is one

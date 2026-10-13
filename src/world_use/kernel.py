@@ -1,12 +1,10 @@
 """Kernel: the only code that talks to the body.
 
 Each control tick: read the body, run the watchdog, advance the active behavior, send the command, record.
-Its rules are the lessons of running a slow policy on real hardware:
-
 - Idle means holding still. The kernel never moves on its own, except along a home route the policy set and
   that nothing has touched since (a heat emergency may use it).
 - A surprise holds where the arm really is, cancels anything queued behind it, and waits for the policy.
-- A refused command moves nothing.
+- A refusal during execution holds at the measured pose; motion may already have occurred.
 - The policy may be slow, crash or restart: the kernel keeps holding until it is told something new.
 - Once the control loop runs, only its thread talks to the body. Requests from other threads (switching torque
   on or off) are handed to it and waited for, so a driver is never called from two threads at once.

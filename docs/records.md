@@ -26,6 +26,8 @@ frames as a reconstruction. The original camera pictures stay in `views/`. `wu f
 
 ## View in Rerun
 
+![A recorded block task in Rerun: robot geometry, camera observations, joint plots and events](assets/simulation-rerun.png)
+
 `wu view` needs the `rerun` extra. The README's install line exposes both `wu` and `rerun`; `wu view` also finds the
 viewer inside its tool environment. Rerun runs in its own process and reads the record; closing it never stops a
 job or changes motor power.

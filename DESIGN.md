@@ -6,8 +6,8 @@ to make those phases useful while spending less powered time waiting for the nex
 
 ## What we measured
 
-The design comes from running Claude Opus 5.5 and GPT-6 Astra as policies on a Seeed reBot arm (six joints,
-no brakes) and in MuJoCo workcells, not from first principles. One day of a real task (open a 3D printer's
+The initial design came from running Claude Opus 5.5 and GPT-6 Astra as policies on a Seeed reBot arm (six joints,
+no brakes) and in MuJoCo workcells. One day of a real task (open a 3D printer's
 glass door, take the print out, show it to a camera; 20 powered runs, 2 h 10 min with torque on) gave the
 numbers that shaped it:
 
@@ -44,7 +44,7 @@ methods as if they were the same measurement.
    checked from is still current. `--no-check` and embedded `Kernel.run` check each step as it starts, so
    earlier steps may have moved. HTTP and MCP reject unknown arguments, invalid types and nonfinite numbers
    before dispatch; shared Pydantic definitions describe those request contracts.
-3. **Say what would pass.** A refusal names every limit a plan would break, with the number that would pass
+3. **Make refusals useful.** A refusal names the violated limit and, where available, a correction
    ("lift at least 2 cm more first"). The card says which way the gripper points and opens, where known
    things are in the frame moves use, and which short moves are possible from here. A model should never
    have to find the limits one refusal at a time.
@@ -59,7 +59,7 @@ methods as if they were the same measurement.
    handing off asynchronously; software cannot safely release a raised, unsupported arm. The daemon rehearses
    a candidate home route while idle and installs it only if the check passes and its starting state is current.
    A failed candidate leaves the installed route unchanged, including any existing staleness.
-6. **Monitor unexpected contact.** Joint torque is compared with what the arm's own weight explains;
+6. **Monitor unexpected contact.** On adapters with joint torque sensing, readings are compared with what the arm's own weight explains;
    guarded moves use tighter thresholds, fragile zones tighter still. Filtering, sensing, and model error
    determine detection latency. The checks do not replace hardware protection or an operator.
 7. **Facts remember their source.** A door angle, a table height, a camera pose: recorded with where they
@@ -77,8 +77,8 @@ methods as if they were the same measurement.
 
 The core has six concepts:
 
-| | |
-|---|---|
+| Concept | Responsibility |
+| --- | --- |
 | **Body** | A manifest (joints, limits, gripper, rest pose, sensing, notes) and six adapter methods: connect, enable, read, command, disable, close. |
 | **World** | Frames, boxes (surfaces, objects, keep-out, fragile and slow zones) and facts with their sources. |
 | **Behavior** | Anything that moves the robot, under one contract: `start` prepares and may refuse; `tick` runs one control step and returns an outcome when done. A line, a guarded touchdown, a grip, a checkpoint and a whole plan are all behaviors. |
@@ -126,6 +126,10 @@ behaviors and records:
 - **Between them**: online runs leave flight records; those records tune the twin and become test cases for the
   next offline iteration.
 
+The [task-program example](examples/task-programs) records Python source, inputs and calculations alongside
+the flight record. A repeated task runs the program again with fresh observations; replaying a recording
+only visualizes the earlier motion.
+
 The core uses MuJoCo for simulation, numpy for planning and Pillow for image overlays. MuJoCo renders the same scene
 it simulates, with the robot's meshes, and grasps use frictional contacts. Rehearsals run on the kernel's estimated
 world, never on the simulation's truth; servo parameters and motor heating are approximate. Physics, planning and
@@ -145,9 +149,11 @@ EdgeTAM tracking runs in its own process, never in the control loop, and returns
 
 ## Where it goes
 
-Start with repeatable tasks on one arm. The [block example](examples/pick-place) gives new users a complete run, a
-separate success check, controlled scene variations, and a recovery to inspect. More useful tasks and a second
-concrete adapter will test the design better than a larger abstraction layer.
+The [block example](examples/pick-place) provides a complete run, a separate success check, scene variations
+and a recovery to inspect. The [Panda kitchen adapter](examples/robocasa-counter) extends this to an external
+environment, while [shape sorting](docs/shape-sorting.md) tests a live model using measured alignment.
+The next useful evidence is repeated performance across changed scenes and measured behavior on another
+physical arm.
 
 Near-term work should follow experiments:
 

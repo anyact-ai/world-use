@@ -4,6 +4,11 @@ A robot needs a URDF, a TOML description, and a driver with six methods. Keep th
 in your own project or Python package. The daemon loads the driver by its import
 path; the planning worker uses the description, without loading hardware code.
 
+For an external simulation, the [Panda kitchen adapter](../examples/robocasa-counter/adapter.py)
+shows the same I/O contract connected to a RoboCasa scene. Its
+[setup guide](../examples/robocasa-counter) explains what the integration supports and where
+it disables rehearsal.
+
 ## Try the complete path
 
 The [planar example](../examples/adapters) is a two-joint arm with an in-memory

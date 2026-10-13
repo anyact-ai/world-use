@@ -1,9 +1,10 @@
 # Measure, move, measure again
 
-A simulated reBot moves a block nobody told it about. The procedure uses only the MCP tools an agent has:
-it takes pictures, measures the block, runs each phase requiring a fresh measurement, and checks the lift
-and the placement by measuring again. The robot's world model starts without the block, and the procedure
-reads no simulator data. See [measuring from pictures](../../docs/perception.md) for the tools.
+A scripted procedure locates and moves a block that is absent from the robot's initial world model.
+It uses the same MCP tools available to an agent: camera frames, depth measurements, motion plans and
+freshness checks. New measurements verify the lift and released placement. The procedure knows the
+block's color and dimensions; only the evaluator reads its simulator pose. See
+[measuring from pictures](../../docs/perception.md) for the tools.
 
 ## Run it
 

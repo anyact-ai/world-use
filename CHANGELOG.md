@@ -4,7 +4,7 @@
 
 ### Highlights
 
-- **MuJoCo simulation.** The twin that checks every plan, on hardware too, is a MuJoCo model with the robot's
+- **MuJoCo simulation.** The built-in rehearsal twin is a MuJoCo model with the robot's
   meshes, frictional grasps and rendered cameras; objects can slip, tip and fall. `wu demo` runs a scripted block
   task in it, with a success check and failure scenarios.
 - **Flight records and replay.** Every session records plans, outcomes, telemetry and pictures in chunks that
@@ -14,6 +14,12 @@
   `Client.measure`, turn pixels into work-frame metres, and `run(requires=...)` stops a plan once a measurement is
   too old or its camera was calibrated again. `wu mcp --vision` adds EdgeTAM tracking. Depth comes from simulated
   cameras. See [measuring from pictures](docs/perception.md).
+- **Measured alignment.** Project edge pixels onto a fitted depth plane and use `align_planar` to fit
+  translation and yaw from corresponding landmarks. Tool-relative measurements support grasp checks;
+  the agent remains responsible for feature selection and outcome verification.
+- **Task programs and demos.** Examples record Python source, inputs and calculations for repeated tasks.
+  New walkthroughs cover shape sorting, compact lunchbox packing and oven-dial control, with videos and
+  explicit descriptions of the model's role and each run's limits. See the [demos](README.md#demos).
 - **Other arms.** A workcell loads a robot from a URDF and a TOML description, with its own driver. Grippers with
   one joint, revolute or prismatic, and five-joint arms (the tool's heading turns; `ik_weights` sets what a move
   holds) work, and `package://` mesh paths resolve. See the [adapter guide](docs/adapters.md).

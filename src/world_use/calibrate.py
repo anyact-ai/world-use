@@ -78,7 +78,7 @@ class Fit:
     C: np.ndarray                      # camera centre, base frame
     f: float
     rms: float                         # px, over the points used
-    loo_rms: float                     # px, each point predicted from the others: the honest accuracy
+    loo_rms: float                     # px, each point predicted from a fit to the others
     f_sd: float                        # relative uncertainty of the focal length
     from_prior: bool                   # whether the focal length came mostly from the stated field of view
     used: list[int]

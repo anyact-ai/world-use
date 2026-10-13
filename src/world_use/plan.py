@@ -51,7 +51,7 @@ class Plan:
 
 @dataclass
 class Report:
-    outcome: Outcome                  # how the rehearsal ended
+    outcome: Outcome
     seconds: float                    # simulated time from start to finish
     moving_s: float
     steps: list[str] = field(default_factory=list)

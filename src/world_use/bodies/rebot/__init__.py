@@ -3,8 +3,7 @@
 The manifest is what the kernel needs to know. ReBotBody is the hardware adapter: it talks MIT-mode position
 control to the motors through Seeed's motorbridge driver (the `rebot` extra).
 
-Everything here was learned on the arm: the soft engage, the refusal to switch on or off away from the folded
-rest pose, never sending a disable frame from a read-only connection, and the numbers in the notes.
+Enable requires the folded rest pose; the kernel permits disable only there. Closing sends no disable frames.
 """
 from __future__ import annotations
 
@@ -188,9 +187,8 @@ class ReBotBody:
         return self._last
 
     def enable(self):
-        """Torque on at the measured pose: gains and gravity support ramp in over a second, no jump. If anything
-        fails on the way, every motor is switched off again before the error goes up: the arm is at rest, so that
-        moves nothing, while a motor left on with nothing commanding it holds its last frame indefinitely."""
+        """Ramp gains and gravity support in at the measured rest pose. On failure, attempt to disable every
+        motor and report any unconfirmed torque-off in the error. A powered motor holds its last command."""
         q0 = self._params_positions()
         if not REST.holds(q0[:6]):
             raise Refused(f"the arm is not folded at rest (joints deg {np.round(np.degrees(q0[:6]), 1).tolist()}); "
@@ -223,7 +221,7 @@ class ReBotBody:
         n = int(ENGAGE_S * MANIFEST.rate_hz)
         for k in range(n):
             self._send_all(q, np.zeros(6), grip, 0.0, scale=(k + 1) / n)
-            if k in (n // 10, n - 1):        # at 10% gain, before there is torque to do harm, and at the end
+            if k in (n // 10, n - 1):        # check early in the gain ramp and again at full gain
                 pos, _ = self._feedback()
                 ref = np.append(q, grip)
                 if np.any(np.isnan(pos)) or np.abs(pos - ref).max() > START_POSE_TOL:

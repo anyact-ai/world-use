@@ -47,8 +47,9 @@ request thread while the control thread kept reading the body. motorbridge is a 
 start pose misread during an engage is a jump. Once the control loop runs, only its thread calls the body: `enable`
 and `release` from other threads are posted to it and awaited, a body exception does not kill the loop, and after a
 loop has died enable is refused while release still runs. A second hole: an engage that failed after the motors
-were switched on left them on with nothing commanding them. The adapter switches every motor off again before the
-error goes up. On the arm, `wu status` answered throughout the engage, and a `kill -TERM` at rest released through
+were switched on left them on with nothing commanding them. The adapter attempts to switch every motor off before
+propagating the error, reporting any unconfirmed torque-off. On the arm, `wu status` answered throughout the engage,
+and a `kill -TERM` at rest released through
 the control thread and wrote the record.
 
 **Contact sensing stopped on nothing.** All four contact stops in the 18:51 run touched nothing:

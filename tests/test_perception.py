@@ -346,7 +346,7 @@ def test_the_example_checks_lift_and_placement_from_measurements():
 def test_the_example_measures_moves_and_measures_again(tmp_path):
     from world_use.examples.perception import run
 
-    result = run(tmp_path, speed=4)           # physics at four times real time; a faster clock is not modest
+    result = run(tmp_path, speed=4)           # physics at four times real time
     details = json.dumps(result, indent=2)
     assert result["lift"] == "pass", details
     assert result["evaluation"]["success"] and result["torque_off"], details

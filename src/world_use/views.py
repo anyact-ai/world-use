@@ -1,7 +1,4 @@
-"""Views: the kernel's state rendered for a policy. Short by default; details on request.
-
-The state line is what a policy reads after every step, so every character in it has to earn its place.
-"""
+"""The kernel's state rendered for a policy. Short by default; details on request."""
 from __future__ import annotations
 
 import time
