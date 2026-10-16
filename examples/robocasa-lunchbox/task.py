@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
-import shutil
 import sys
 import time
 from pathlib import Path
@@ -74,7 +73,7 @@ class PackingTask:
     def measure(self):
         self.call('card', 'card', 'Read robot limits and sensors')
         status = self.call('status', 'status', 'Confirm the simulated robot starts disabled')
-        assert 'simulation' in status['session']['adapter'] and not status['enabled']
+        assert status['session']['mode'] == 'simulation' and not status['enabled']
         self.call('side', 'camera_frame', 'Introduce the fixed side camera', camera='side', depth=True)
         wrist = self.call('wrist', 'camera_frame', 'Inspect the snacks and smaller lunchbox',
                           camera='wrist', depth=True)
@@ -271,31 +270,31 @@ def main():
     args = parser.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with (args.output.parent/(args.output.name+'.log')).open('w') as log, contextlib.redirect_stdout(log):
-        episode = LunchboxEpisode(args.output, args.scene)
-        shutil.copyfile(__file__, episode.out/'task-source.py')
-        provenance = dict(execution_mode='Agent-authored Python with fresh RGB-D; no model calls during execution',
-                          policy_inputs=['RGB-D measurements', 'robot and gripper feedback'],
-                          evaluator_only=['simulator object poses', 'contact audit'], scene=str(args.scene),
-                          prior_context='Task developed in this conversation with user feedback')
-        (episode.out/'provenance.json').write_text(json.dumps(provenance, indent=2)+'\n')
-        episode.client.record(context=provenance)
-        task = PackingTask(episode)
-        try:
-            result = task.run(measure_only=args.measure_only)
-        except Exception as error:
-            task.report['error'] = repr(error)
-            task.save()
-            # Simulation-only passive brake: preserve the failed state without dropping a held object.
-            episode.act('stop', intent='Stop this failed simulated task')
-            episode.act('release', intent='Engage the simulated Panda brake')
-            episode.finish(result='FAILED: '+repr(error))
-            raise
-        episode.finish(result=result)
-        if not args.measure_only:
-            summary = json.loads((episode.out/'final.json').read_text())
-            summary['object_phases'] = {obj: dict(grip=task.stages[n+'_grip'], place=task.stages[n+'_place'])
-                                       for n, obj in [('blue', 'long_snack'), ('red', 'cracker_box')]}
-            (episode.out/'final.json').write_text(json.dumps(summary, indent=2)+'\n')
+        episode = LunchboxEpisode(args.output, args.scene, entrypoint="lunchbox/task.py")
+        with contextlib.closing(episode.tracker), episode.session:
+            provenance = dict(execution_mode='Agent-authored Python with fresh RGB-D; no model calls during execution',
+                              policy_inputs=['RGB-D measurements', 'robot and gripper feedback'],
+                              evaluator_only=['simulator object poses', 'contact audit'], scene=str(args.scene),
+                              prior_context='Task developed in this conversation with user feedback')
+            (episode.out/'provenance.json').write_text(json.dumps(provenance, indent=2)+'\n')
+            episode.client.record(context=provenance)
+            task = PackingTask(episode)
+            try:
+                result = task.run(measure_only=args.measure_only)
+            except BaseException as error:
+                task.report['error'] = repr(error)
+                task.save()
+                # Simulation-only passive brake: preserve the failed state without dropping a held object.
+                episode.act('stop', intent='Stop this failed simulated task')
+                episode.act('release', intent='Engage the simulated Panda brake')
+                episode.finish(result='FAILED: '+repr(error))
+                raise
+            episode.finish(result=result)
+            if not args.measure_only:
+                summary = json.loads((episode.out/'final.json').read_text())
+                summary['object_phases'] = {obj: dict(grip=task.stages[n+'_grip'], place=task.stages[n+'_place'])
+                                           for n, obj in [('blue', 'long_snack'), ('red', 'cracker_box')]}
+                (episode.out/'final.json').write_text(json.dumps(summary, indent=2)+'\n')
     print('SAVED', args.output, flush=True)
 
 

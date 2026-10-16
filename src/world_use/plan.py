@@ -26,6 +26,21 @@ from .kernel import Kernel, VirtualClock
 from .world import DIRECTIONS, World, along, heading
 
 
+def rehearsal_coverage(manifest: Manifest | None = None) -> dict:
+    """What the built-in twin can establish, independently of the execution backend."""
+    return dict(world="estimated", geometry="boxes", dynamics="approximate MuJoCo model", simulation_truth=False,
+                collision=dict(arm="padded joint segments against keep-out boxes",
+                               tool_boxes=[] if manifest is None else [dict(name=b.name, role=b.role, source=b.source)
+                                                                      for b in manifest.tool_boxes],
+                               tool_box_scope="declared bounds over whole finger travel; keep-out and surface checks",
+                               payload="estimated held-object box; keep-out and surface checks",
+                               support_contact="bounded normal approach on one part/support pair, then withdrawal"),
+                omitted=["external_scene_geometry_and_dynamics", "unobserved_objects",
+                         "validated_contact_or_material_parameters", "undeclared_tool_and_finger_geometry",
+                         "self_collision", "base_pedestal", "arm_link_surface_collision",
+                         "unattached_objects_as_obstacles"])
+
+
 class Plan:
     def __init__(self, label: str | None = None, steps=None):
         self.label, self.steps = label, list(steps or [])
@@ -62,6 +77,7 @@ class Report:
     problems: list[dict] = field(default_factory=list)   # every limit the plan would break: step, message, hint, rule
     tool_path: list | None = None     # tool positions along the rehearsal (base frame), for drawing on images
     gripper_end: dict | None = None   # where the gripper ends pointing, when the plan turned it more than 2 deg
+    coverage: dict = field(default_factory=rehearsal_coverage)
 
     @property
     def ok(self) -> bool:
@@ -76,7 +92,7 @@ class Report:
         return dict(ok=self.ok, refused=self.refused, outcome=self.outcome.to_dict(), problems=self.problems,
                     seconds=self.seconds, moving_s=self.moving_s, steps=self.steps, contacts=self.contacts,
                     assumed=self.assumed, tool_end=self.tool_end, temp_rise=self.temp_rise,
-                    gripper_end=self.gripper_end)
+                    gripper_end=self.gripper_end, coverage=self.coverage)
 
     def __str__(self) -> str:
         n = len(self.problems)
@@ -243,7 +259,7 @@ def _rehearse(spec, t: Kernel, timeout_s: float) -> Report:
     return Report(out, round(float(t.clock.now() - t.t0), 2), summary.get("moving_s", 0.0), steps,
                   [e["message"] for e in events if e["kind"] in ("contact", "grip")],
                   [e["message"] for e in events if e["kind"] == "assumed"],
-                  np.round(tool, 3).tolist(), rise, problems, path, turned)
+                  np.round(tool, 3).tolist(), rise, problems, path, turned, rehearsal_coverage(t.manifest))
 
 
 def reach(k: Kernel, step: float = 0.03) -> dict[str, Refused | None]:

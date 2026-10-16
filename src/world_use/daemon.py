@@ -30,7 +30,7 @@ from .events import _plain
 from .fit import load as load_fit
 from .kernel import Kernel
 from .perception import Measurements
-from .plan import Report
+from .plan import Report, rehearsal_coverage
 from .request_models import WorldChange, http_request
 from .worker import Rehearser
 from .world import World
@@ -107,12 +107,20 @@ class Daemon:
             reach = self.rehearser.reach_line(k) if k.enabled and k.active is None else ""
             with k.lock:
                 card = views.card(k, reach=lambda _: reach)
-            return 200, dict(card=card, session=self.session,
+            coverage = rehearsal_coverage(k.manifest)
+            card += "\nrehearsal: estimated boxes and approximate dynamics; external scene contacts are not reproduced."
+            card += (f"\ncollision bounds: {len(k.manifest.tool_boxes)} declared tool/finger boxes and the estimated "
+                     "held-object box; self-collision and undeclared geometry are not checked.")
+            return 200, dict(card=card, session=self.session, rehearsal_coverage=coverage,
                              cameras={name: dict(depth=isinstance(cam, cameras.SimCamera),
                                                  calibrated=cam.view is not None)
                                       for name, cam in self.cameras.items()},
-                             collision_coverage=dict(checked=["padded_link_segments", "tool_point_surfaces"],
-                                 unchecked=["fingers", "payload", "pedestal", "self_collision"]))
+                             collision_coverage=dict(
+                                 checked=["padded_link_segments", "tool_point_surfaces", "estimated_held_object_box"]
+                                     + (["declared_tool_and_finger_boxes"] if k.manifest.tool_boxes else []),
+                                 unchecked=["undeclared_tool_and_finger_geometry", "pedestal", "self_collision",
+                                            "arm_link_surface_collision", "unattached_objects_as_obstacles"],
+                                 tool_boxes=coverage["collision"]["tool_boxes"]))
         if method == "GET" and route == ["help"]:
             from .validation import FIELDS, schema
             return 200, dict(steps={kind: dict(cls.help(), schema=schema(kind) if kind in FIELDS else None)
@@ -150,7 +158,8 @@ class Daemon:
             return 200, self.look(body.get("camera"), body.get("spec"), body.get("grid", False))
         if route == ["check"]:
             report = self.rehearser.check(body["spec"], k)
-            return 200, dict(report.to_dict(), text=str(report))
+            text = str(report) + "\nCoverage: estimated boxes and approximate dynamics; external scene omitted."
+            return 200, dict(report.to_dict(), text=text)
         if route == ["answer"]:
             k.answer(body["job"], body["answer"])
             return self._job(body["job"], wait)
@@ -217,7 +226,8 @@ class Daemon:
         job = k.submit(spec, admission=admission, guard=guard)
         code, d = self._job(job.id, wait)
         if report is not None:
-            d["rehearsal"] = dict(seconds=report.seconds, moving_s=report.moving_s, ok=report.ok)
+            d["rehearsal"] = dict(seconds=report.seconds, moving_s=report.moving_s, ok=report.ok,
+                                  coverage=rehearsal_coverage(k.manifest))
             if not report.ok:
                 d["warning"] = (f"in rehearsal this ended {report.outcome.status}: {report.outcome.message} "
                                 "(the world model may be incomplete; running it anyway)")

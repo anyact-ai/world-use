@@ -11,12 +11,14 @@ import numpy as np
 
 from .body import JointState, Manifest
 from .errors import Refused
+from .geometry import rpy
 from .kinematics import Chain
 from .world import World
 
 MARGIN = 0.02                         # rad kept clear of the URDF limits
 TURN_EPS = np.radians(2.0)            # a turn-clearance joint moving less than this in a path is not a turn
 POINT_EVERY = 40                      # sample gravity loads and surface clearance; zones check every tick
+SURFACE_TOL = 0.001                  # geometry/contact uncertainty allowed below a support top (metres)
 
 
 @dataclass
@@ -40,6 +42,93 @@ class Envelope:
         self.context = ""                                                  # the step being planned, for that record
         if not np.isfinite(manifest.link_radius_m) or manifest.link_radius_m < 0:
             raise ValueError("link_radius_m must be finite and nonnegative")
+        if len({b.name for b in manifest.tool_boxes}) != len(manifest.tool_boxes):
+            raise ValueError("tool box names must be unique")
+        self._tool_boxes = []
+        for box in manifest.tool_boxes:
+            pose = np.eye(4)
+            pose[:3, :3], pose[:3, 3] = rpy(*box.rpy), box.center
+            self._tool_boxes.append((f"{box.role}:{box.name}", pose, np.asarray(box.size)))
+        self.hold_geometry(q_start)
+
+    def _parts(self):
+        parts = list(self._tool_boxes)
+        if self.world.held is not None:
+            name, relative = self.world.held
+            if name in self.world.boxes:
+                parts.append((f"payload:{name}", relative, self.world.boxes[name].size))
+        return parts
+
+    @property
+    def has_tool_geometry(self):
+        return bool(self._parts())
+
+    @staticmethod
+    def _geometry_key(box, relative, size):
+        # A changed support, attachment or payload size must not inherit an earlier contact allowance.
+        return box.pose.tobytes(), box.size.tobytes(), relative.tobytes(), size.tobytes()
+
+    def _initial_surfaces(self, q):
+        tool = self.chain.fk(q)
+        return {(name, box.name): (max(0.0, box.box_depth(tool @ relative, size)) + SURFACE_TOL,
+                                  self._geometry_key(box, relative, size))
+                for name, relative, size in self._parts() for box in self.world.solids()}
+
+    def hold_geometry(self, q):
+        """End a contact phase. Only withdrawal from measured existing contact remains allowed."""
+        self._surface_limits = self._initial_surfaces(q)
+        self._contact_pair = None
+
+    def begin_geometry(self, q, contact=None):
+        """Anchor allowances once, before playback; they never grow with each control sample."""
+        self._surface_limits = self._initial_surfaces(q)
+        self._contact_pair = None
+        if contact is not None:
+            part, surface, depth = contact
+            key = (part, surface)
+            if key in self._surface_limits:
+                initial, signature = self._surface_limits[key]
+                self._surface_limits[key] = max(initial, depth), signature
+                self._contact_pair = key
+
+    @staticmethod
+    def _supported(box, pose, size):
+        low, high = box.box_bounds(pose, size)
+        return bool(np.all(low[:2] >= -box.size[:2] / 2) and np.all(high[:2] <= box.size[:2] / 2))
+
+    def contact_target(self, q, delta, overshoot):
+        """First support approached along its normal, with the contacting part wholly above its footprint.
+
+        Only this part/support pair may use the bounded guarded overshoot. Other geometry keeps its
+        ordinary clearance. A side approach gets no support-contact exemption.
+        """
+        tool = self.chain.fk(q)
+        parts = [("tool point", np.eye(4), np.zeros(3)), *self._parts()]
+        best = None
+        length = float(np.linalg.norm(delta))
+        for name, relative, size in parts:
+            pose = tool @ relative
+            for box in self.world.solids():
+                normal = box.pose[:3, 2]
+                down = -float(normal @ delta)
+                if down <= 0 or np.linalg.norm(delta + down * normal) > 0.05 * down:
+                    continue
+                depth = box.box_depth(pose, size)
+                if not np.isfinite(depth) or depth > SURFACE_TOL:
+                    continue
+                fraction = max(0.0, -depth / down)
+                at = pose.copy()
+                at[:3, 3] += fraction * delta
+                if fraction > 1 or not self._supported(box, at, size):
+                    continue
+                if best is None or fraction < best[0]:
+                    best = fraction, name, box.name, down
+        if best is None:
+            return delta, None
+        fraction, name, surface, down = best
+        # Leave a small amount for sample padding; the actual commanded penetration stays bounded.
+        stop = min(1.0, fraction + max(0.0, overshoot - SURFACE_TOL) / down)
+        return delta * stop if length else delta, (name, surface, overshoot)
 
     @property
     def max_excursion(self) -> float | None:
@@ -68,7 +157,7 @@ class Envelope:
         hi = np.maximum(self.m.upper - MARGIN, np.maximum(q_from, self.q_start))
         return lo, hi
 
-    def check_path(self, path, q_from, allow_contact=False) -> dict:
+    def check_path(self, path, q_from, allow_contact=False, contact=None) -> dict:
         """Check the whole path against every limit before anything moves. Raises one Refused that names every
         limit it would break, with the numbers; in a rehearsal (a twin), records them and lets it run on, so one
         check finds every problem in a plan. Returns a few plain numbers."""
@@ -128,6 +217,7 @@ class Envelope:
         for name, depth in deepest.items():
             problems.append(Refused(f"the tool would go {1000 * depth:.0f} mm into {name!r}", "surface",
                                     "stop above it, or use a guarded move (touchdown) to make contact", box=name))
+        problems.extend(self._check_parts(full, q_from, contact))
         keep_out, slow = self.world.of_kind("keep_out"), self.world.of_kind("slow")
         entered, peak = set(), {}
         previous, previous_tool = q_from, tool0
@@ -163,6 +253,51 @@ class Envelope:
         return dict(seconds=round(len(path) / rate, 2), peak_speed=round(float(np.max(v)), 3),
                     peak_accel=round(float(np.max(a)), 2), lowest_tool_z=round(float(min(tool_z)), 4),
                     surface_clearance=None if not np.isfinite(clearance) else round(float(clearance), 4))
+
+    def _check_parts(self, full, q_from, contact):
+        parts = self._parts()
+        if not parts:
+            return []
+        allowed = self._initial_surfaces(q_from)
+        if contact is not None and contact[:2] in allowed:
+            old, signature = allowed[contact[:2]]
+            allowed[contact[:2]] = max(old, contact[2]), signature
+        found = {}
+        previous = q_from
+        reach = max(np.linalg.norm(relative[:3, 3]) + np.linalg.norm(size) / 2 for _, relative, size in parts)
+        for q in full:
+            tool = self.chain.fk(q)
+            # TCP translation alone misses a long payload rotating about it. Bound every corner's
+            # travel under linear joint interpolation, including its distance beyond the tool link.
+            margin = self.chain.motion_bound(previous, q) + reach * np.abs(q - previous).sum()
+            for name, relative, size in parts:
+                pose = tool @ relative
+                for box in self.world.of_kind("keep_out"):
+                    key = name, box.name
+                    if key not in found and box.intersects_box(pose, size, margin):
+                        found[key] = Refused(f"{name} would enter keep-out zone {box.name!r}", "keep_out",
+                                             "lift or go around it", box=box.name, geometry=name)
+                for box in self.world.solids():
+                    key = name, box.name
+                    if (contact is not None and key == contact[:2] and box.box_depth(pose, size) > SURFACE_TOL
+                            and not self._supported(box, pose, size)):
+                        found[key] = Refused(f"{name} would leave the footprint of support {box.name!r}", "surface",
+                                             "lift clear before moving off the support", box=box.name, geometry=name)
+                    if key in found or box.box_depth(pose, size, margin) <= allowed[key][0]:
+                        continue
+                    # Close to a support, subdivide the joint segment until conservative swept padding
+                    # is below the contact tolerance. This permits withdrawal without ignoring the sweep.
+                    steps = max(1, int(np.ceil(margin / (SURFACE_TOL / 4))))
+                    for fraction in np.linspace(1 / steps, 1, steps):
+                        sample = previous + fraction * (q - previous)
+                        depth = box.box_depth(self.chain.fk(sample) @ relative, size, margin / steps)
+                        if depth > allowed[key][0]:
+                            found[key] = Refused(f"{name} would go {1000 * depth:.0f} mm into {box.name!r}", "surface",
+                                                 "lift clear, or approach the support with a guarded move",
+                                                 box=box.name, geometry=name)
+                            break
+            previous = q
+        return list(found.values())
 
     def turn_height(self) -> float | None:
         """Lowest tool height (work frame) at which the turn-clearance joints may turn, if the robot has the rule."""
@@ -224,6 +359,20 @@ class Envelope:
             for box in zones:
                 if self._intersects(box, pts, self.m.link_radius_m):
                     return Trip("keep_out", f"the arm entered keep-out zone {box.name!r}")
+        tool = self.chain.fk(st.q)
+        for name, relative, size in self._parts():
+            pose = tool @ relative
+            for box in zones:
+                if box.intersects_box(pose, size):
+                    return Trip("keep_out", f"{name} entered keep-out zone {box.name!r}")
+            for box in self.world.solids():
+                allowed, signature = self._surface_limits.get((name, box.name), (SURFACE_TOL, None))
+                if signature != self._geometry_key(box, relative, size):
+                    allowed = SURFACE_TOL
+                depth = box.box_depth(pose, size)
+                if (depth > allowed or ((name, box.name) == self._contact_pair and depth > SURFACE_TOL
+                                         and not self._supported(box, pose, size))):
+                    return Trip("surface", f"{name} entered support surface {box.name!r}")
         g = self.m.gripper
         if g is not None and grip_cmd is not None and st.gripper is not None:
             pushing = st.gripper_tau is None or abs(st.gripper_tau) > 0.5 * g.tau_max
