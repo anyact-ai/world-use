@@ -65,6 +65,36 @@ class GripperSpec:
 
 
 @dataclass(frozen=True)
+class ToolBox:
+    """Conservative tool-frame box, including the whole travel of any moving finger it bounds.
+
+    This is declared geometry, not geometry extracted from a simulator. Multiple boxes can leave the
+    space between fingers free. Dimensions and centre are metres; rpy uses radians.
+    """
+    name: str
+    center: tuple[float, float, float]
+    size: tuple[float, float, float]
+    source: str
+    role: str = "tool"                 # tool or finger, for the coverage report
+    rpy: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+    def __post_init__(self):
+        if not isinstance(self.name, str) or not self.name or not isinstance(self.source, str) or not self.source:
+            raise ValueError("tool box needs a name and geometry source")
+        if self.role not in ("tool", "finger"):
+            raise ValueError("tool box role must be tool or finger")
+        for key in ("center", "size", "rpy"):
+            values = getattr(self, key)
+            if (not isinstance(values, (tuple, list)) or len(values) != 3
+                    or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+                           for v in values)):
+                raise ValueError(f"tool box {key} must contain three finite numbers")
+            object.__setattr__(self, key, tuple(float(v) for v in values))
+        if min(self.size) <= 0:
+            raise ValueError("tool box size must be positive")
+
+
+@dataclass(frozen=True)
 class Rest:
     """The pose where switching torque off moves nothing (arms without brakes fall anywhere else)."""
     q: tuple[float, ...]
@@ -107,6 +137,7 @@ class Manifest:
     hardware_notes: tuple[str, ...] = ()  # quirks of the physical robot that a simulation does not reproduce
     frames: Callable | None = None    # (chain, q at session start) -> {name: 4x4}, e.g. a "work" frame
     thermal: dict = field(default_factory=dict)   # optional per-joint heating model for the simulator
+    tool_boxes: tuple[ToolBox, ...] = ()   # declared bounds covering tools and the full travel of fingers
 
     @property
     def n(self) -> int:

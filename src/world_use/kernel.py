@@ -582,6 +582,7 @@ class Kernel:
         starts steps here, so each passes the job's guard, re-zeroes the contact check and names its place in the
         plan for rehearsals."""
         self.check_guard()
+        self.envelope.hold_geometry(self.state.q)
         self.rebias()
         step, where = self._step()
         self.envelope.context = ": ".join([*where, (step or behavior).describe()])
@@ -612,6 +613,7 @@ class Kernel:
         The gripper keeps its command, so whatever it holds stays held."""
         self.set(np.asarray(self.state.q, float))
         self.cmd.gripper_v = 0.0
+        self.envelope.hold_geometry(self.state.q)
 
     def ask(self, question: dict):
         job = self.active
@@ -697,6 +699,7 @@ class Kernel:
             return held[0]
         box = self.world.grab(self.tool) if attach else None
         if box is not None:
+            self.envelope.hold_geometry(self.state.q)
             self.emit("attached", f"gripped {box.name}", world=self.world.to_dict())
         return None if box is None else box.name
 
@@ -851,6 +854,7 @@ class Kernel:
         if self.active is job:
             self.active = None
             self.cmd.dq, self.cmd.gripper_v = np.zeros(self.manifest.n), 0.0      # no feedforward between jobs
+            self.envelope.hold_geometry(self.state.q)
         if thermal and out.ok:
             self._cancel_queue("the thermal return ends with torque off")
             try:

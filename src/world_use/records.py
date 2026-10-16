@@ -99,10 +99,17 @@ def overview(chain: Chain) -> tuple[np.ndarray, np.ndarray]:
 
 
 def replay(folder: Path | str, output: Path | str, fps: int = 12, speed: float = 1.0) -> Path:
-    """Render measured joints and the recorded world model to a GIF, at an explicit playback speed."""
+    """Replay a saved external scene, or measured joints and the estimated world, at an explicit speed."""
     folder, output = Path(folder), Path(output)
     if not 1 <= fps <= 60 or not 0 < speed <= 100:
         raise ValueError("fps must be 1..60 and speed must be greater than 0 and at most 100")
+    reference = folder / "external-scene.json"
+    if reference.exists():
+        source = json.loads(reference.read_text())
+        if source != {"path": "..", "format": "mujoco-v1"}:
+            raise ValueError("unsupported external scene reference")
+        from .simulation import replay_scene
+        return replay_scene(folder.parent, output, fps=fps, speed=speed)
     manifest = robot_of(folder)
     meta = json.loads((folder / "session.json").read_text())
     a = load_tape(folder)

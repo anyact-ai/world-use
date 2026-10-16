@@ -70,8 +70,10 @@ centers of mass, and joint friction apply to dynamics as well as the kernel's
 torque prediction. Heating remains a separate approximate thermal model.
 
 MuJoCo contacts improve rehearsal fidelity; they do not replace conservative
-planning. Path checks still use padded link segments and the tool point. A
-passing rehearsal depends on geometry, physical parameters, and scene estimates.
+planning. Path and measured-state checks use padded link segments, the tool point,
+[declared tool/finger bounds](adapters.md#collision-bounds) and the estimated held
+object. A passing rehearsal depends on geometry, physical parameters and scene
+estimates; it does not cover undeclared geometry or self-collision.
 
 ## Cameras and replay
 
@@ -121,9 +123,93 @@ That variation checks the configuration path, not robustness to a more slippery 
 
 Records keep the URDF and copies of a custom robot's meshes. A built-in robot's
 meshes ship with world-use; replay finds them by the recorded URDF's exact
-contents. Replay renders measured joints and the recorded **estimated world**, not
+contents. Native workcell replay renders measured joints and the recorded **estimated world**, not
 a second physics rollout or a reconstruction of unobserved object motion. Saved
 camera observations and the demo GIF show the original simulation truth.
+
+## External simulation sessions
+
+[`SimulationSession`](../src/world_use/simulation.py) starts a fresh kernel,
+measurement store, clock, daemon and record for a caller-built MuJoCo scene.
+The [pushing](../examples/push-letters) and [kitchen packing](../examples/robocasa-lunchbox)
+examples share this path. Scene construction, policy and physical success checks
+stay with each task. The six-method `Body` contract is unchanged; this MuJoCo
+integration additionally needs the body's `model`, `data` and reentrant `lock`.
+
+```python
+from pathlib import Path
+from world_use.simulation import SimulationSession
+
+with SimulationSession(body, Path("runs/new-episode"), cameras=cameras,
+                       sources={"task.py": Path(__file__)}, entrypoint="task.py") as session:
+    robot = session.client
+    frame = robot.frame("overview", depth=True)
+    # Measure, plan and evaluate using current observations.
+    robot.enable()
+    robot.run(plan, check=False, wait=120)
+    # Poll an unfinished job before proceeding; withdraw as the task requires.
+    robot.release()
+    session.close({"verdict": "inconclusive", "reason": "physical audit pending"})
+```
+
+The normal `Client` API records calls and exact RGB-D frame transport. Pass this
+client to `Tracking` or `mcp_server.build(client=...)` to include their internal
+observations. A source snapshot documents the live caller; it does not execute
+that snapshot. Use [`world_use.tasks`](../examples/task-programs) when a task
+must execute its frozen source in a fresh Python process.
+
+Sessions use wall-clock control by default. Closing requires idle, confirmed
+power-off state. Exiting the context stops work and requests release, including
+after a task exception; it never chooses a retreat motion. A refused release
+leaves the daemon available for explicit recovery. Use a new output folder for
+each trial, even after a simulator reset.
+
+The output keeps the ordinary `flight/` record, `task/` source and observation
+trace, a compiled `scene.mjb`, and bounded `physics/` chunks written off the
+control thread. Successful finalization also produces `replay.npz` with full
+MuJoCo integration state, wall time and simulation time. Recording errors remain
+distinct from task outcomes; interrupted records retain their committed chunks.
+The compiled model records the MuJoCo version in `physics/format.json` and needs
+a compatible MuJoCo runtime to load.
+
+```sh
+wu replay runs/new-episode/flight --out scene.gif --speed 3
+```
+
+For these sessions, replay restores the original external scene without stepping
+physics. It uses the first camera's initial pose as a fixed viewpoint and labels
+both clocks. Actual policy observations remain in `task/artifacts/`; replay is
+not a substitute for them. Keep the whole episode folder together. `wu view`
+still displays measured joints and the estimated world in Rerun.
+
+The card and rehearsal reports expose `rehearsal_coverage`: estimated boxes and
+approximate dynamics, with external scene geometry and contact dynamics omitted.
+Recording a detailed scene does not extend the planning twin's coverage.
+
+## Reference checks and repeated evaluation
+
+The [scene-validation example](../examples/scene-validation) records reference
+provenance, alignment, fixed tolerances and reserved observations against a hashed
+scene revision. Appearance/camera, metric geometry and physical response have
+separate results. Synthetic examples exercise the checks; the measured MIT pushing
+example currently fails the physical-response tolerance and has no camera evidence.
+Neither establishes a validated real-to-sim twin.
+
+[`world_use.evaluation`](../src/world_use/evaluation.py) executes named seeded
+cases from frozen policy/evaluator sources and declared input snapshots. It keeps
+task outcome, scene validity, recording integrity and power cleanup separate.
+Every declared case remains in the summary, including invalid or interrupted runs.
+`held_for` evaluates sustained conditions on simulation time with a bounded sample
+gap; wall time is recorded independently. See the
+[pushing evaluation](../examples/push-letters/README.md#compare-policy-revisions-on-fixed-cases) for a
+concrete camera-policy case and an independent physical audit.
+
+`rerun` recreates a named case in a fresh directory and refuses changed inputs,
+sources or runtime versions. `compare` requires identical case identities,
+evaluator and runtime while allowing a different policy revision. Privileged
+diagnostics remain visible but are excluded from camera-only comparisons. This
+separation is for trusted task code, not a Python sandbox. Identities cover the
+dependencies callers declare; compiled MuJoCo models require their recorded runtime.
 
 ## Other robots
 

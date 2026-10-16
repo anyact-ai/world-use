@@ -56,14 +56,17 @@ def crop_image(image, box=None, max_side=1024):
                                         [0, crop.height / out.height, bounds[1]], [0, 0, 1]])
 
 
-def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None, tracker=None):
+def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None, tracker=None,
+          client: Client | None = None):
     """vision loads EdgeTAM in its own process for select_target and observe_targets; tests and examples can pass
-    any object with the same select/update/forget/close methods as tracker instead."""
+    any object with the same select/update/forget/close methods as tracker instead.
+    client can supply a recorded transport shared with a task program."""
     from mcp.server.mcpserver import Image, MCPServer
     from mcp.server.mcpserver.exceptions import ToolError
     from mcp.types import CallToolResult, TextContent, ToolAnnotations
 
-    c = Client(url)
+    c = client if client is not None else Client(url)
+    url = c.url
     if vision:
         initial = c.status()
         if initial["enabled"] or initial["power_uncertain"]:

@@ -9,37 +9,23 @@ import argparse
 import asyncio
 import base64
 import json
-import threading
-import time
 from pathlib import Path
 
-import mujoco
-import numpy as np
 from adapter import PandaBody
 
-from world_use import Kernel, RealClock, World
 from world_use.cameras import SimCamera, View
-from world_use.client import Client
-from world_use.daemon import Daemon
 from world_use.mcp_server import build
+from world_use.simulation import SimulationSession
 from world_use.vision_worker import TrackerProcess
 
 
 class Episode:
     def __init__(self, output, scene, *, park_left_m=.20, views=None, task=None, setup=None,
-                 camera_factory=None, sensors=None):
+                 camera_factory=None, sensors=None, sources=None, entrypoint="counter/agent_episode.py"):
         self.out = Path(output)
         self.out.mkdir(parents=True, exist_ok=False)
-        self.start = time.monotonic()
         self.log = []
-        self.samples = []
-        self.stop = threading.Event()
-        self.tracker = TrackerProcess(device="cpu", startup_timeout_s=240)
         self.body = PandaBody(self.out, scene, park_left_m=park_left_m)
-        self.k = Kernel(self.body, World(), RealClock(100), run_dir=self.out / "flight")
-        self.k.connect()
-        self.k.set_home_route([], note="Initial parked Panda pose")
-        mujoco.mj_saveModel(self.body.model, str(self.out / "scene.mjb"), None)
         camera = SimCamera("counter", self.body.lens(), self.body)
         side = SimCamera("side", View.look_at([.05, 1.05, .75], [.43, .10, .28],
                                              fov_deg=52, size=(1024, 768)), self.body)
@@ -47,33 +33,33 @@ class Episode:
             name: SimCamera(name, view, self.body) for name, view in views.items()}
         if camera_factory is not None:
             cameras = camera_factory(self.body)
-        (self.out / 'cameras.json').write_text(json.dumps({
-            name: cam.view.to_dict() for name, cam in cameras.items()}, indent=2))
-        self.daemon = Daemon(self.k, port=0, cams=cameras,
-                             session={"adapter": "RoboCasa Panda (simulation)"}, config={})
-        self.daemon.start()
-        self.client = Client(f"http://127.0.0.1:{self.daemon.http.server_address[1]}")
-        self.server = build(self.client.url, tracker=self.tracker)
-        self.client.record(context={
-            "agent": "Codex, current development conversation",
-            "role": "Interactive model-chosen tool calls from observations; not a prewritten controller",
-            "prior_context": "Agent configured and inspected the upstream RoboCasa scene",
-            "task": task or "Put the mug in the sink, verify with RGB-D after release, then power off",
-            "sensors": sensors or "Fixed simulated RGB-D cameras; EdgeTAM CPU",
-            "setup": setup or "0.75-scale cup; mobile base parked 0.20 m left before the session",
-        })
-        self.thread = threading.Thread(target=self.sample, daemon=True)
-        self.thread.start()
+        declared = {"counter/"+p.name: p for p in Path(__file__).parent.glob("*.py")}
+        declared.update(sources or {})
+        self.session = SimulationSession(self.body, self.out, cameras=cameras,
+            sources=declared, entrypoint=entrypoint, parameters=dict(scene=str(scene)))
+        self.k, self.daemon, self.client = self.session.kernel, self.session.daemon, self.session.client
+        try:
+            self.tracker = TrackerProcess(device="cpu", startup_timeout_s=240)
+            self.server = build(tracker=self.tracker, client=self.client)
+            self.client.record(context={
+                "agent": "Codex, current development conversation",
+                "role": "Interactive model-chosen tool calls from observations; not a prewritten controller",
+                "prior_context": "Agent configured and inspected the upstream RoboCasa scene",
+                "task": task or "Put the mug in the sink, verify with RGB-D after release, then power off",
+                "sensors": sensors or "Fixed simulated RGB-D cameras; EdgeTAM CPU",
+                "setup": setup or "0.75-scale cup; mobile base parked 0.20 m left before the session",
+            })
+        except BaseException as error:
+            try:
+                self.session.close(exception=repr(error))
+            finally:
+                if hasattr(self, "tracker"):
+                    self.tracker.close()
+            raise
         print("READY: act(tool, intent='short user-visible action description', **arguments)", flush=True)
 
     def stamp(self):
-        return time.monotonic() - self.start
-
-    def sample(self):
-        while not self.stop.wait(1 / 30):
-            with self.body.lock:
-                if self.body.data is not None:
-                    self.samples.append((self.stamp(), self.body.data.time, self.body.data.qpos.copy()))
+        return self.session.elapsed_s
 
     def act(self, tool, *, intent, **arguments):
         index = len(self.log)
@@ -105,14 +91,15 @@ class Episode:
         state = self.client.status()
         if state["enabled"] or state["power_uncertain"]:
             raise RuntimeError("Go home and release before finishing")
-        self.stop.set()
-        self.thread.join()
-        np.savez_compressed(self.out / "replay.npz", time=[s[0] for s in self.samples],
-                            simulation_time=[s[1] for s in self.samples], qpos=[s[2] for s in self.samples])
-        (self.out / "final.json").write_text(json.dumps(
-            dict(torque_off=True, result=result), indent=2))
-        self.act("shutdown", intent="Save the record and close the simulated robot")
-        self.tracker.close()
+        try:
+            saved = self.session.close(dict(verdict="inconclusive", task_result=result))
+            error = saved["recording_error"] or saved["flight_recording_error"] or self.session.physics.error
+            (self.out / "final.json").write_text(json.dumps(
+                dict(torque_off=True, result=result, recording_error=error), indent=2))
+            if error:
+                raise RuntimeError(f"Episode recording incomplete: {error}")
+        finally:
+            self.tracker.close()
         print("SAVED", self.out.resolve(), flush=True)
 
 

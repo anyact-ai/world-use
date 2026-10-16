@@ -30,7 +30,8 @@ def main():
                                  distance_m=float(contact.dist)))
     sink_contact = any(any(g.startswith('sink_main_group_') for g in c['geoms']) for c in contacts)
     tool_distance = float(np.linalg.norm(data.site('gripper0_right_grip_site').xpos - data.xpos[cup]))
-    torque_off = json.loads((root / 'final.json').read_text())['torque_off']
+    final = json.loads((root / 'final.json').read_text())
+    torque_off = final['torque_off']
     cup_axis = data.xmat[cup].reshape(3, 3)[:, 2]
     result = dict(
         scope='Post-run simulator audit; not supplied to the agent as an observation',
@@ -39,9 +40,10 @@ def main():
         contacts=contacts, cup_motion_last_10_wall_seconds_m=drift,
         cup_axis_degrees_from_vertical=float(np.degrees(np.arccos(np.clip(cup_axis[2], -1, 1)))),
         tool_distance_from_cup_m=tool_distance, torque_off=torque_off,
+        recording_error=final.get('recording_error'),
     )
     result['passed'] = bool(result['finite_replay'] and sink_contact and drift < .001
-                            and tool_distance > .25 and torque_off)
+                            and tool_distance > .25 and torque_off and not result['recording_error'])
     (root / 'audit.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result, indent=2))
     if not result['passed']:

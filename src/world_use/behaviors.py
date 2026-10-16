@@ -119,10 +119,12 @@ class PathBehavior(Behavior):
 
     def prepare(self, k):
         self.path = np.asarray(self.plan(k), float)
-        self.info = k.envelope.check_path(self.path, k.cmd.q, allow_contact=self.allow_contact)
+        self.info = k.envelope.check_path(self.path, k.cmd.q, allow_contact=self.allow_contact,
+                                          contact=getattr(self, "contact_surface", None))
         self.vel = np.gradient(np.vstack([k.cmd.q, self.path]), axis=0)[1:] * k.manifest.rate_hz
         self.vel[-1] = 0.0
         self.i = 0
+        self._geometry_started = False
 
     def ready(self, k):
         if self._pending is not None:
@@ -138,6 +140,9 @@ class PathBehavior(Behavior):
             k.rebias()
         if self.i == 0:
             k.check_guard()
+        if not self._geometry_started:
+            k.envelope.begin_geometry(k.state.q, getattr(self, "contact_surface", None))
+            self._geometry_started = True
         return True
 
     def tick(self, k):
@@ -482,6 +487,9 @@ class Guarded(Line):
 
     def _clip_to_surfaces(self, k, d):
         """A known surface ends the search: no need to plan (or be able to reach) beyond it."""
+        if k.envelope.has_tool_geometry:
+            delta, self.contact_surface = k.envelope.contact_target(k.cmd.q, d, self.OVERSHOOT)
+            return delta, None if self.contact_surface is None else self.contact_surface[1]
         p0 = k.chain.fk(k.cmd.q)[:3, 3]
         length = float(np.linalg.norm(d))
         u = d / length
