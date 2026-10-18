@@ -90,20 +90,22 @@ def run(scene, output, *, max_pushes=20, feedback="camera", preview=False, model
             execute([{"do": "move_to", "to": park}], "Clear the camera view")
             for i, item in enumerate(task["letters"]):
                 for attempt in range(max_pushes):
-                    pose = observe(i)
-                    push = session.record.call(next_push, item["letter"], pose, item["target_xy"], item["target_yaw"])
-                    xy_error = np.linalg.norm(pose["xy"]-item["target_xy"])
-                    yaw_error = np.degrees(angle_difference(item["target_yaw"], pose["yaw"]))
-                    print(f"{item['name']} {attempt}: {xy_error*1000:.1f} mm, {yaw_error:.1f} deg", flush=True)
-                    if push is None:
-                        break
-                    p, q = push["start"], push["end"]
-                    execute(transit + [{"do": "move_to", "to": [*p, .10]},
-                             {"do": "move_to", "to": [*p, .003], "speed": .3},
-                             {"do": "move_to", "to": [*q, .003], "speed": .15},
-                             {"do": "line", "up": .10}] + transit + [{"do": "move_to", "to": park},
-                             {"do": "hold", "seconds": .3}], f"{item['name']} push {attempt+1}")
-                    actions[-1]["decision"] = push
+                    with session.record.phase("push", context=dict(item=item["name"], attempt=attempt + 1)):
+                        pose = observe(i)
+                        push = session.record.call(next_push, item["letter"], pose,
+                                                   item["target_xy"], item["target_yaw"])
+                        xy_error = np.linalg.norm(pose["xy"]-item["target_xy"])
+                        yaw_error = np.degrees(angle_difference(item["target_yaw"], pose["yaw"]))
+                        print(f"{item['name']} {attempt}: {xy_error*1000:.1f} mm, {yaw_error:.1f} deg", flush=True)
+                        if push is None:
+                            break
+                        p, q = push["start"], push["end"]
+                        execute(transit + [{"do": "move_to", "to": [*p, .10]},
+                                 {"do": "move_to", "to": [*p, .003], "speed": .3},
+                                 {"do": "move_to", "to": [*q, .003], "speed": .15},
+                                 {"do": "line", "up": .10}] + transit + [{"do": "move_to", "to": park},
+                                 {"do": "hold", "seconds": .3}], f"{item['name']} push {attempt+1}")
+                        actions[-1]["decision"] = push
                 else:
                     raise RuntimeError(f"{item['name']} exhausted {max_pushes} pushes")
             execute([{"do": "hold", "seconds": 2}], "Verify settled letters")

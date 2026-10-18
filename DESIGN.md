@@ -162,7 +162,8 @@ working first slices.
 The milestones below retain the acceptance criteria and limits of the wider development cycle.
 
 World-use's direction is to help agents turn observations into checked robot actions and improve from recorded
-outcomes. Other projects, including [RoboSimStudio](https://robosimstudio.github.io/), are sources of inspiration.
+outcomes. Other projects, including [RoboSimStudio](https://robosimstudio.github.io/) and
+[ASPIRE](https://research.nvidia.com/labs/gear/aspire/), are sources of inspiration.
 Derive our interfaces, implementation and user experience from our own tasks and existing architecture; copying
 another repository or pursuing feature parity is not the objective. Each addition should solve an observed
 problem in setup, scene accuracy, execution or diagnosis, with a concrete way to tell whether it helped.
@@ -207,10 +208,20 @@ thermal fitting needs corresponding measurements. No new hardware operation is p
   observations and submits plans; an independent evaluator reads the physical outcome. Scene validity, task
   outcome, recording completeness and power cleanup remain distinct. Privileged diagnostic runs are labelled
   and excluded from camera-only comparisons. This is an API boundary for trusted code, not a Python sandbox.
+  Agent orchestration and skill promotion remain outside the runtime. Declared prompts and skill documents
+  are frozen with the policy revision; changing that knowledge preserves the scene's case identity.
 - **Records and views** connect the executed source, scene revision, assets, calibration, parameters, seed,
   exact observations, actions and outcomes. Extend the existing run records with backend-specific scene/replay
   artifacts rather than maintaining a second generic recording system. Views show reference footage,
   reconstruction, policy observations and estimated geometry with their roles labelled.
+  Named task phases group observations, computations and calls in the same trace. Inspection expands one
+  phase's artifacts and known job outcomes; incomplete calls retain an unknown outcome.
+
+Perception, grasp proposals and planning are separate from the `Body` I/O contract. Add a provider boundary
+when a task needs another implementation, using explicit frames, units, observation provenance and failure
+results. Isolate heavyweight dependencies in an optional process or service and retain the CPU setup.
+Backend selection and fallback must be explicit; resulting actions still pass through kernel checks.
+Keep agent-facing help and request validation tied to the same contracts.
 
 ### Delivery sequence
 

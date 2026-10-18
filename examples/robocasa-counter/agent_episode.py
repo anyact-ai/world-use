@@ -66,7 +66,9 @@ class Episode:
         entry = dict(index=index, tool=tool, intent=intent, arguments=arguments, start=self.stamp())
         self.log.append(entry)
         try:
-            reply = asyncio.run(self.server.call_tool(tool, arguments))
+            with self.session.record.phase(intent, context=dict(tool=tool, arguments=arguments)) as phase:
+                entry["phase"] = phase
+                reply = asyncio.run(self.server.call_tool(tool, arguments))
             entry["result"] = reply.structured_content
             entry["text"] = [c.text for c in reply.content if c.type == "text"]
             entry["images"] = []

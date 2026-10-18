@@ -86,6 +86,44 @@ def test_raw_policy_frames_keep_capture_clock_pixels_and_hash(episode):
                for chunk in RrdReader(output).stream() if chunk.entity_path == "/evidence/raw/side")
 
 
+def test_phase_inspection_connects_observations_calls_and_job_outcomes(episode, monkeypatch, capsys):
+    from world_use import cli
+
+    task = prepare(episode / "task", {"test.py": Path(__file__)}, entrypoint="test.py", parameters={})
+    record = Record(task)
+    frame = Frame(Image.new("RGB", (10, 8), "red"), "side")
+    with record.phase("place", context={"object": "block"}) as placement:
+        record.invoke("http", dict(method="GET", path="/frame"), lambda: frame)
+        with record.phase("verify") as verification:
+            record.invoke("http", dict(method="GET", path="/jobs/7?wait=0"),
+                          lambda: dict(id=7, status="failed"))
+        lost = record.append("intent", operation="http", inputs=dict(method="POST", path="/run", body={}))
+    with record.phase("unrelated"):
+        record.append("note", text="not part of placement")
+    (episode / "flight/events.jsonl").write_text(json.dumps(dict(kind="finished", level="info", t=1.,
+        data=dict(job=7, status="failed", outcome=dict(status="failed", message="grip lost")))) + "\n")
+    monkeypatch.setattr(bodies, "make", lambda *a, **kw: pytest.fail("inspection opened a robot"))
+    overview = inspect(episode).report["task_trace"]
+    assert "events" not in overview
+    assert {p["name"] for p in overview["phases"]} == {"place", "verify", "unrelated"}
+    detail = inspect(episode, phase=placement).report["task_trace"]
+    assert detail["jobs"][7]["outcome"]["message"] == "grip lost"
+    assert detail["unanswered_calls"] == [lost]
+    assert any(e.get("phase") == verification for e in detail["events"])
+    assert not any(e.get("text") == "not part of placement" for e in detail["events"])
+    assert len(detail["artifacts"]) == 1
+    assert (task / detail["artifacts"][0]["path"]).is_file()
+    assert cli.main(["inspect", str(episode), "--phase", str(placement)]) == 0
+    assert json.loads(capsys.readouterr().out)["task_trace"]["selected_phase"] == placement
+    assert inspect(task, phase=verification).report["task_trace"]["job_ids"] == [7]
+    with pytest.raises(ValueError, match="unknown task phase"):
+        inspect(episode, phase=999)
+    (task / detail["artifacts"][0]["path"]).write_text("changed evidence")
+    inspect(episode, phase=verification)  # A different phase does not load the damaged frame.
+    with pytest.raises(ValueError, match="artifact changed"):
+        inspect(episode, phase=placement)
+
+
 def suite(folder):
     folder.mkdir()
     value = dict(format_version=1, scene_revision="b" * 64, policy={"revision": "policy"},

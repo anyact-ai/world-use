@@ -43,17 +43,20 @@ class Inspection:
     report: dict = field(default_factory=dict)
 
 
-def inspect(path: Path, *, case: str | None = None) -> Inspection:
+def inspect(path: Path, *, case: str | None = None, phase: int | None = None) -> Inspection:
     """Read the same revision and evidence for a person or agent. Never connect to a robot."""
     root = Path(path).expanduser().resolve()
     if root.is_file():
         root = root.parent
     result = Inspection(root)
+    task = None
     if (root / "inspection.json").exists():
         workspace = _read(root / "inspection.json")
         active = workspace.get("active")
         if active:
-            result = inspect(artifact(root, {"path": active["episode"]}))
+            result = inspect(artifact(root, {"path": active["episode"]}), phase=phase)
+        elif phase is not None:
+            raise ValueError("workspace has no active task to inspect")
         result.root = root
         result.report["workspace"] = workspace
         result.report["scene_revision"] = workspace.get("scene_revision")
@@ -74,13 +77,15 @@ def inspect(path: Path, *, case: str | None = None) -> Inspection:
         if "path" in validation:
             result.validation = artifact(root, validation)
     elif (root / "trial.json").exists() or ((root / "started.json").exists() and root.parent.name == "trials"):
-        result = inspect(root.parent.parent, case=root.name)
+        result = inspect(root.parent.parent, case=root.name, phase=phase)
         result.root = root
         return result
     elif (root / "scene-validation.json").exists():
         result.validation = root / "scene-validation.json"
     elif (root / "flight/session.json").exists():
         result.episode = root
+    elif (root / "invocation.json").exists():
+        task = root
     elif (root / "session.json").exists():
         result.flight = root
         if (root / "external-scene.json").exists():
@@ -90,7 +95,7 @@ def inspect(path: Path, *, case: str | None = None) -> Inspection:
                 raise ValueError("unsupported external-scene marker")
             result.episode = root.parent
     else:
-        raise ValueError("inspection needs a flight record, episode, evaluation suite, validation or workspace")
+        raise ValueError("inspection needs a flight record, task, episode, evaluation suite, validation or workspace")
     if result.episode is not None and (result.episode / "flight/session.json").exists():
         result.flight = result.episode / "flight"
     if result.validation is not None:
@@ -106,8 +111,75 @@ def inspect(path: Path, *, case: str | None = None) -> Inspection:
         result.report["flight"] = inspect_record(result.flight)
     if result.episode is not None and (result.episode / "task/result.json").exists():
         result.report["task"] = _read(result.episode / "task/result.json")
+    if result.episode is not None and (result.episode / "task/invocation.json").exists():
+        task = result.episode / "task"
+    if task is not None:
+        trace = task_trace(task, phase=phase)
+        if phase is not None and result.flight is not None:
+            # Job IDs come from recorded replies/polls; never guess the outcome of a lost submission.
+            jobs = result.report["flight"]["jobs"]
+            trace["jobs"] = {job: jobs.get(job, {}) for job in trace["job_ids"]}
+        result.report["task_trace"] = trace
+    elif phase is not None:
+        raise ValueError("select an episode or named case with a task trace before selecting a phase")
     result.report.setdefault("path", str(root))
     return result
+
+
+def task_trace(task: Path, *, phase: int | None = None) -> dict:
+    """Index phases; expand one phase's evidence on demand, retaining unknown call outcomes."""
+    manifest = _read(task / "invocation.json")
+    events = read_trace(task)
+    phases = {}
+    for event in events:
+        if event["kind"] == "phase_begin":
+            phases[event["seq"]] = dict(id=event["seq"], parent=event.get("phase"), name=event["name"],
+                context=event["context"], start_s=event["elapsed_s"], status="unknown")
+        elif event["kind"] == "phase_end" and event.get("phase") in phases:
+            phases[event["phase"]].update(status=event["status"], end_s=event["elapsed_s"],
+                                          exception=event.get("exception"), message=event.get("message"))
+    report = dict(path=str(task), invocation=manifest["invocation"], revision=manifest["revision"],
+                  sources=manifest["sources"], phases=list(phases.values()))
+    if phase is None:
+        return report
+    if phase not in phases:
+        raise ValueError(f"unknown task phase: {phase}")
+    selected = {phase}
+    for item in phases.values():
+        if item["parent"] in selected:
+            selected.add(item["id"])
+    selected_events = [e for e in events if e.get("phase") in selected
+                       or (e["kind"] == "phase_begin" and e["seq"] in selected)]
+    intents = {e["seq"]: e for e in selected_events if e["kind"] == "intent"}
+    answered = {e["call"] for e in selected_events if e["kind"] in ("reply", "exception")}
+    job_ids = set()
+    for event in selected_events:
+        intent = intents.get(event.get("call"), {})
+        request = intent.get("inputs", {})
+        if intent.get("operation") != "http" or event["kind"] != "reply":
+            continue
+        route = request.get("path", "").split("?")[0]
+        if route in ("/run", "/answer", "/home", "/calibrate") or route.startswith("/jobs/"):
+            job = event.get("result", {}).get("id")
+            if type(job) is int:
+                job_ids.add(job)
+    artifacts = {}
+
+    def collect(value):
+        if isinstance(value, dict):
+            if "path" in value and "sha256" in value:
+                artifact(task, value)
+                artifacts[value["path"]] = value
+            for child in value.values():
+                collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+
+    collect(selected_events)
+    report.update(selected_phase=phase, events=selected_events, artifacts=list(artifacts.values()),
+                  unanswered_calls=sorted(intents.keys() - answered), job_ids=sorted(job_ids))
+    return report
 
 
 def frames(episode: Path, *, seen: set[str] | None = None):

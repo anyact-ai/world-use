@@ -83,11 +83,19 @@ def test_failed_cell_keeps_source_inputs_output_and_exception(tmp_path):
 
 
 def test_killed_task_leaves_unanswered_intent_not_a_success(tmp_path):
-    root = bundle(tmp_path, "import os\ndef run(robot, params, record):\n    record.call(os._exit, 9)\n")
+    root = bundle(tmp_path, "import os\ndef run(robot, params, record):\n"
+                  "    with record.phase('attempt'):\n        record.call(os._exit, 9)\n")
     result = execute(root)
     assert result.returncode == 9
     assert events(root)[-1]["kind"] == "intent" and events(root)[-1]["inputs"]["args"] == [9]
+    phase = next(e["seq"] for e in events(root) if e["kind"] == "phase_begin")
+    assert events(root)[-1]["phase"] == phase
+    assert not any(e["kind"] == "phase_end" for e in events(root))
     assert not (root / "result.json").exists()
+    from world_use.inspection import inspect
+    trace = inspect(root, phase=phase).report["task_trace"]
+    assert trace["phases"][0]["status"] == "unknown"
+    assert trace["unanswered_calls"] == [events(root)[-1]["seq"]]
 
 
 def test_truncated_trace_exposes_only_the_committed_prefix(tmp_path):
@@ -167,6 +175,36 @@ def connected(tmp_path, monkeypatch):
     client = recording.RecordedClient("http://fake.invalid", record)
     client.begin()
     return client, record, transport
+
+
+def test_phases_group_client_evidence_and_restore_parent_after_failure(connected):
+    client, record, _ = connected
+    with record.phase("place", context={"object": "block"}) as outer:
+        frame = client.frame("top", depth=True)
+        measurement = client.measure(frame, point=[0, 0])
+        client.run([], requires=[dict(evidence=measurement["id"], max_age_s=30)])
+        with pytest.raises(ValueError, match="object missed target"), record.phase("verify") as inner:
+            raise ValueError("object missed target")
+        client.status()
+    client.status()
+    trace = events(record.root)
+    begin = next(e for e in trace if e["seq"] == outer)
+    assert begin["phase"] is None and begin["context"] == {"object": "block"}
+    assert next(e for e in trace if e["seq"] == inner)["phase"] == outer
+    assert next(e for e in trace if e["kind"] == "reply" and "frame" in e["result"])["phase"] == outer
+    assert [e["status"] for e in trace if e["kind"] == "phase_end"] == ["failed", "completed"]
+    assert trace[-1]["phase"] is None
+    assert any(e["phase"] == outer and e["seq"] > inner and e["kind"] == "reply" for e in trace)
+
+
+def test_phase_recording_failure_preserves_original_exception_and_recovery(connected):
+    client, record, transport = connected
+    with pytest.raises(KeyboardInterrupt, match="interrupted"), record.phase("attempt"):
+        record.error = "disk full"
+        raise KeyboardInterrupt("interrupted")
+    assert record.phase_id is None
+    client.release()
+    assert transport.requests[-1][1] == "/release"
 
 
 def test_hardware_is_refused_before_any_mutating_request(tmp_path, monkeypatch):

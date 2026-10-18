@@ -43,6 +43,15 @@ wu view runs/scene-validation/refined --out comparison.rrd
 wu rerun runs/evaluation nominal-seed17 --out runs/evaluation-repeat
 ```
 
+Inspection also accepts a recorded Python task directory. `task_trace.phases` lists
+named phases with their IDs, parents and completion state. Expand one with
+`wu inspect runs/evaluation --case nominal-seed17 --phase 42 --json`, using an ID
+from that list. The result includes nested phases, recorded calls, checked artifact
+references and known job outcomes. Large frames and arrays remain in their files.
+A missing phase end or unanswered call retains an unknown outcome; inspection
+does not infer that motion stopped or succeeded. Phase clocks remain relative to
+the task start. Job IDs connect the trace to flight evidence without aligning clocks.
+
 The evidence panes label reference comparisons, raw policy frames and estimated
 geometry separately. `--scene` additionally renders a snapshot of recorded full
 simulation state and needs the same graphics support as replay. It never advances

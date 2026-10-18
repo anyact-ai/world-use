@@ -195,6 +195,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("inspect", help="summarize a recorded run offline")
     p.add_argument("run", type=Path)
     p.add_argument("--case", help="named case within an evaluation suite")
+    p.add_argument("--phase", type=int, help="task phase ID from inspection; include its calls and evidence")
     p = sub.add_parser("rerun", help="rerun one pinned simulation evaluation case in a fresh suite")
     p.add_argument("suite", type=Path)
     p.add_argument("case")
@@ -265,12 +266,12 @@ def main(argv=None) -> int:
         if a.cmd in ("inspect", "replay"):
             from . import records
             if a.cmd == "inspect":
-                if (a.run / "session.json").exists() and a.case is None:
+                if (a.run / "session.json").exists() and a.case is None and a.phase is None:
                     r = records.inspect(a.run)
                     print(json.dumps(r, indent=2) if a.json else records.describe(r))
                 else:
                     from .inspection import inspect
-                    print(json.dumps(inspect(a.run, case=a.case).report, indent=2))
+                    print(json.dumps(inspect(a.run, case=a.case, phase=a.phase).report, indent=2))
             else:
                 print(records.replay(a.run, a.out or a.run / "replay.gif", speed=a.speed))
             return 0

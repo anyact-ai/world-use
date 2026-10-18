@@ -13,7 +13,7 @@ import sys
 import time
 import traceback
 from collections.abc import Mapping
-from contextlib import redirect_stderr, redirect_stdout, suppress
+from contextlib import contextmanager, redirect_stderr, redirect_stdout, suppress
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
@@ -119,6 +119,7 @@ class Record:
         self.sequence = 0
         self.error: str | None = None
         self.cell_source: str | None = None
+        self.phase_id: int | None = None
         self.finished = False
 
     def artifact(self, data: bytes, suffix: str) -> dict:
@@ -173,7 +174,7 @@ class Record:
             encoded = self.encode(data)
             self.sequence += 1
             event = dict(seq=self.sequence, elapsed_s=time.monotonic() - self.start, kind=kind,
-                         cell=self.cell_source, **encoded)
+                         cell=self.cell_source, phase=self.phase_id, **encoded)
             with (self.root / "trace.jsonl").open("ab") as stream:
                 stream.write(json_bytes(event, indent=None))
                 stream.flush()
@@ -182,6 +183,28 @@ class Record:
         except Exception as exc:
             self.error = str(exc)
             raise RecordingError(self.error) from exc
+
+    @contextmanager
+    def phase(self, name: str, *, context: dict | None = None):
+        """Group observations, calculations and calls; completion does not imply physical success.
+
+        Yields the trace sequence identifying this phase. Nested phases retain their parent.
+        A missing end after process loss leaves the outcome unknown; no action is retried.
+        """
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("phase name must be non-empty")
+        previous = self.phase_id
+        self.phase_id = self.append("phase_begin", name=name, context=context or {})
+        try:
+            yield self.phase_id
+        except BaseException as exc:
+            with suppress(RecordingError):
+                self.append("phase_end", status="failed", exception=type(exc).__name__, message=str(exc))
+            raise
+        else:
+            self.append("phase_end", status="completed")
+        finally:
+            self.phase_id = previous
 
     def invoke(self, kind, inputs, function, *, recovery=False):
         """Record intent before calling, then reply or exception; never retry the function."""

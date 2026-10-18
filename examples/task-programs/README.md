@@ -63,6 +63,23 @@ value or exception afterward. To read an external file, first copy it with
 are saved without pickle. Functions must come from declared local source or an
 identified installed dependency; arbitrary imports are not discovered for you.
 
+Group related evidence and actions into a named phase:
+
+```python
+with record.phase("place", context={"object": "block"}) as phase_id:
+    frame = robot.frame("top", depth=True)
+    # Measure, compute and submit through this recorded client.
+```
+
+Phases may nest. All recorded calls, computations and artifacts retain the active
+phase ID; `wu inspect TASK_FOLDER` lists phases and `--phase ID` expands one.
+Completion means the Python block returned normally, not that placement succeeded.
+Record the verification result separately. Exceptions mark a phase failed; process
+loss without an end leaves it unknown. Phases do not change control, retry calls or
+resolve motor power. The recorder remains single-writer; independent clients are
+outside its coverage. The pushing example groups each feedback attempt; the kitchen
+agent example groups each MCP call and its internal observations.
+
 For exploration, execute a file-backed cell in a persistent namespace:
 
 ```python
