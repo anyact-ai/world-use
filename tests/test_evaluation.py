@@ -100,6 +100,62 @@ def test_case_identity_survives_policy_change_and_inputs_are_frozen(tmp_path, pr
     assert first["trials"][0]["simulation_s"] == pytest.approx(.2)
 
 
+def test_policy_knowledge_is_frozen_and_comparable_on_identical_cases(tmp_path, programs, fake_process):
+    skill = tmp_path / "shared-skill.md"
+    skill.write_text("Verify the held object after lifting.")
+    first = run(programs, tmp_path / "one", policy_context={"skills/grasp.md": skill})
+    frozen = Path(fake_process[0][1]["context"]["skills/grasp.md"])
+    assert frozen.read_text() == skill.read_text()
+    assert "context" not in fake_process[1][1]  # Evaluator inputs stay independent.
+    skill.write_text("Verify again after transport.")
+    second = run(programs, tmp_path / "two", policy_context={"skills/grasp.md": skill})
+    assert first["policy_revision"] != second["policy_revision"]
+    assert first["policy_context"] != second["policy_context"]
+    assert len(evaluation.compare(tmp_path / "one", tmp_path / "two")) == 1
+    repeated = evaluation.rerun(tmp_path / "one", "nominal", tmp_path / "repeat")
+    assert repeated["policy_revision"] == first["policy_revision"]
+    assert repeated["policy_context"] == first["policy_context"]
+    frozen.write_text("changed snapshot")
+    with pytest.raises(ValueError, match="source snapshot changed"):
+        evaluation.rerun(tmp_path / "one", "nominal", tmp_path / "changed")
+
+
+@pytest.mark.parametrize("stage", ["policy", "evaluator"])
+def test_mutated_suite_inputs_invalidate_attempt_and_prevent_later_execution(
+    tmp_path, programs, fake_process, monkeypatch, stage
+):
+    launch = evaluation.launch
+
+    def mutate(task, output, *, parameters, **kwargs):
+        code = launch(task, output, parameters=parameters, **kwargs)
+        if ("episode" in parameters) == (stage == "evaluator"):
+            (tmp_path / "suite/inputs/model.dat").write_bytes(b"accidental overwrite")
+        return code
+
+    monkeypatch.setattr(evaluation, "launch", mutate)
+    report = run(programs, tmp_path / "suite", cases=[case("first"), case("second")])
+    assert report["counts"] == dict(completed=0, invalid=2, interrupted=0)
+    assert all(any("recorded input changed" in r for r in trial["reasons"]) for trial in report["trials"])
+    assert len(fake_process) == (1 if stage == "policy" else 2)
+
+
+def test_mutated_policy_context_cannot_produce_a_valid_trial(tmp_path, programs, fake_process, monkeypatch):
+    skill = tmp_path / "skill.md"
+    skill.write_text("Initial guidance")
+    launch = evaluation.launch
+
+    def mutate(task, output, *, parameters, **kwargs):
+        code = launch(task, output, parameters=parameters, **kwargs)
+        Path(parameters["context"]["skill.md"]).write_text("changed during execution")
+        return code
+
+    monkeypatch.setattr(evaluation, "launch", mutate)
+    report = run(programs, tmp_path / "suite", policy_context={"skill.md": skill})
+    assert report["counts"]["invalid"] == 1
+    assert "source snapshot changed" in report["trials"][0]["reasons"][0]
+    assert len(fake_process) == 1
+
+
 def test_invalid_interrupted_and_unsuccessful_cases_are_retained(tmp_path, programs, fake_process):
     report = run(programs, tmp_path / "suite", cases=[case("good"), case("bad-start", valid_start=False),
                  case("lost", mode="killed"), case("broken-record", mode="corrupt"), case("failed", mode="failed")])
@@ -180,6 +236,7 @@ def test_frozen_policy_uses_session_and_evaluator_sees_only_completed_episode(tm
 from world_use import World, bodies
 from world_use.simulation import SimulationSession
 def run(robot, params, record):
+    assert Path(params["context"]["skill.md"]).read_text() == "Use current observations"
     truth = World()
     truth.add_box("hidden_truth", "object", [.5, 0, .02], [.03, .03, .04])
     body = bodies.make("sim", truth, q=[.3782, .0015, -.0005, -.0011, .0625, .0051], gripper=1.)
@@ -201,7 +258,9 @@ def run(robot, params, record):
     assert not json.loads((episode / "task/result.json").read_text())["final_status"]["enabled"]
     return dict(verdict="pass", valid_start=True, reasons=[], interventions=[])
 ''')
-    report = run(programs, tmp_path / "actual")
+    skill = tmp_path / "skill.md"
+    skill.write_text("Use current observations")
+    report = run(programs, tmp_path / "actual", policy_context={"skill.md": skill})
     assert report["counts"] == dict(completed=1, invalid=0, interrupted=0), report
     assert report["trials"][0]["task"]["verdict"] == "pass"
     assert report["trials"][0]["recording"]["power_off"]

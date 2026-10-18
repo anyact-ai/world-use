@@ -211,6 +211,22 @@ diagnostics remain visible but are excluded from camera-only comparisons. This
 separation is for trusted task code, not a Python sandbox. Identities cover the
 dependencies callers declare; compiled MuJoCo models require their recorded runtime.
 
+Pass `policy_context={"skills/grasp.md": skill_path, "prompt.txt": prompt_path}`
+to `run_suite` to freeze the declared knowledge behind a policy. These files may
+come from outside the task directory. They join the policy source bundle and its
+revision; the policy receives saved paths in `params["context"]`. Scene inputs
+remain in `inputs`, which determines case identity. This permits comparisons of
+different prompts or skills on identical scenes, seeds and evaluator code.
+Reruns use the saved context. Changed shared inputs or source/context snapshots
+detected before or after execution invalidate the attempt and remain in the report.
+
+The caller must declare the knowledge actually used; copying a document alone
+does not establish that an authoring agent read it. Freeze the policy and knowledge
+before evaluating held-out cases. Case roles are labels, not an access barrier.
+Keep task development and skill promotion outside the kernel. Reproducing a lesson
+from its text tests whether the instructions suffice; transfer needs separate
+held-out tasks and embodiments with their assumptions and results recorded.
+
 ## Other robots
 
 A custom URDF must provide physically valid inertias and collision geometry.

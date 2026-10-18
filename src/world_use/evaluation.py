@@ -100,17 +100,27 @@ def _validation(report: Path | None, output: Path, scene_revision: str) -> dict:
                 status=value["status"], reference_kind=value.get("reference", {}).get("kind"))
 
 
-def _definition(output: Path, task: Path, sources: Sequence[Path]) -> dict:
-    prepare(output, _sources(task, sources), entrypoint=task.name, parameters={})
+def _definition(output: Path, task: Path, sources: Sequence[Path], context: Mapping[str, Path] | None = None) -> dict:
+    bundle = _sources(task, sources)
+    context_names = {}
+    for name, path in (context or {}).items():
+        _checked_path(output / "source/__context__", name)
+        relative = f"__context__/{name}"
+        if relative in bundle:
+            raise ValueError(f"policy context collides with source: {name}")
+        bundle[relative] = Path(path)
+        context_names[name] = relative
+    prepare(output, bundle, entrypoint=task.name, parameters={})
     manifest = _read(output / "invocation.json")
     return dict(path=output.name, entrypoint=manifest["entrypoint"], sources=manifest["sources"],
-                revision=manifest["revision"])
+                revision=manifest["revision"], context=context_names)
 
 
 def run_suite(task: Path, evaluator: Path, output: Path, *, cases: Sequence[dict],
               inputs: Mapping[str, Path], scene_revision: str, sources: Sequence[Path] = (),
               evaluator_sources: Sequence[Path] = (), validation: Path | None = None,
-              observation_mode: str = "camera", parent: str | None = None) -> dict:
+              observation_mode: str = "camera", parent: str | None = None,
+              policy_context: Mapping[str, Path] | None = None) -> dict:
     """Execute a fresh suite, preserving every declared case and attempt.
 
     Each case has ``name``, ``seed``, ``role`` (development/held_out), and ``parameters``.
@@ -118,6 +128,9 @@ def run_suite(task: Path, evaluator: Path, output: Path, *, cases: Sequence[dict
     (its fresh SimulationSession episode directory). The independent evaluator receives
     ``episode`` and ``case`` and must return verdict, valid_start, reasons, interventions.
     Scene validity, recording integrity, task success and power cleanup remain separate.
+    ``policy_context`` snapshots declared prompts/skills as part of the policy revision,
+    independently of scene inputs and case identity. Their paths reach the policy as
+    ``params["context"]``. Capturing them does not prove the authoring agent used them.
     """
     if observation_mode not in ("camera", "privileged_diagnostic"):
         raise ValueError("observation_mode must be camera or privileged_diagnostic")
@@ -146,7 +159,7 @@ def run_suite(task: Path, evaluator: Path, output: Path, *, cases: Sequence[dict
     if validation is not None and _read(validation).get("scene_revision") != scene_revision:
         raise ValueError("scene validation is stale: scene_revision does not match the evaluated scene")
     output.mkdir(parents=True, exist_ok=False)
-    policy = _definition(output / "policy", Path(task), sources)
+    policy = _definition(output / "policy", Path(task), sources, policy_context)
     check = _definition(output / "evaluator", Path(evaluator), evaluator_sources)
     input_refs = {}
     for name, data in payloads.items():
@@ -172,11 +185,22 @@ def run_suite(task: Path, evaluator: Path, output: Path, *, cases: Sequence[dict
     return report
 
 
-def _launch(root: Path, definition: dict, output: Path, parameters: dict) -> int:
+def _verify_sources(root: Path, definition: dict):
     source = root / definition["path"] / "source"
     for name, expected in definition["sources"].items():
         if digest(_checked_path(source, name).read_bytes()) != expected:
             raise ValueError(f"source snapshot changed: {name}")
+
+
+def _verify_inputs(root: Path, suite: dict):
+    for name, ref in suite["inputs"].items():
+        if digest(_checked_path(root, ref["path"]).read_bytes()) != ref["sha256"]:
+            raise ValueError(f"recorded input changed: {name}")
+
+
+def _launch(root: Path, definition: dict, output: Path, parameters: dict) -> int:
+    _verify_sources(root, definition)
+    source = root / definition["path"] / "source"
     return launch(source / definition["entrypoint"], output, parameters=parameters,
                   sources=[source / name for name in definition["sources"]], parent=str(root))
 
@@ -190,16 +214,23 @@ def _run_case(root: Path, suite: dict, case: dict):
                                   privileged_evaluator=True, policy_exit=None, evaluator_exit=None)
     interrupted = False
     try:
+        _verify_inputs(root, suite)
         params = {key: case[key] for key in ("name", "seed", "role", "parameters")}
         params.update(inputs={name: str(root / ref["path"]) for name, ref in suite["inputs"].items()},
+                      context={name: str(root / suite["policy"]["path"] / "source" / relative)
+                               for name, relative in suite["policy"].get("context", {}).items()},
                       output=str(trial / "episode"), observation_mode=suite["observation_mode"])
         result["policy_exit"] = _launch(root, suite["policy"], trial / "policy", params)
+        _verify_inputs(root, suite)
+        _verify_sources(root, suite["policy"])
         policy_result = trial / "policy/result.json"
         if not policy_result.exists():
             result["reasons"].append("policy process ended without a terminal record")
         else:
             result["evaluator_exit"] = _launch(root, suite["evaluator"], trial / "evaluator",
                 dict(episode=str(trial / "episode"), case=case))
+            _verify_inputs(root, suite)
+            _verify_sources(root, suite["evaluator"])
             evaluation = trial / "evaluator/result.json"
             if not evaluation.exists():
                 result["reasons"].append("evaluator process ended without a terminal record")
@@ -308,6 +339,8 @@ def summarize(root: Path) -> dict:
                     reasons=["no terminal trial record; execution may not have started"])
         rows.append(dict(case=case, **trial))
     return dict(format_version=1, policy_revision=suite["policy"]["revision"],
+                policy_context={name: suite["policy"]["sources"][relative]
+                                for name, relative in suite["policy"].get("context", {}).items()},
                 evaluator_revision=suite["evaluator"]["revision"], runtime_id=suite["runtime_id"],
                 scene_validation=suite["scene_validation"], observation_mode=suite["observation_mode"],
                 camera_comparison_eligible=suite["observation_mode"] == "camera", trials=rows,
@@ -322,17 +355,15 @@ def rerun(root: Path, case_name: str, output: Path) -> dict:
     cases = [c for c in suite["cases"] if c["name"] == case_name]
     if len(cases) != 1:
         raise ValueError(f"unknown case: {case_name}")
-    for name, ref in suite["inputs"].items():
-        if digest(_checked_path(root, ref["path"]).read_bytes()) != ref["sha256"]:
-            raise ValueError(f"recorded input changed: {name}")
+    _verify_inputs(root, suite)
     definitions = []
     for key in ("policy", "evaluator"):
         definition = suite[key]
         source = root / definition["path"] / "source"
-        for name, expected in definition["sources"].items():
-            if digest(_checked_path(source, name).read_bytes()) != expected:
-                raise ValueError(f"source snapshot changed: {name}")
-        definitions.append((source / definition["entrypoint"], [source / name for name in definition["sources"]]))
+        _verify_sources(root, definition)
+        context_names = set(definition.get("context", {}).values())
+        definitions.append((source / definition["entrypoint"],
+                            [source / name for name in definition["sources"] if name not in context_names]))
     if _identity(environment()) != suite["runtime_id"]:
         raise ValueError("runtime changed; restore the recorded versions before rerunning")
     validation = suite["scene_validation"]
@@ -344,6 +375,8 @@ def rerun(root: Path, case_name: str, output: Path) -> dict:
                      inputs={name: root / ref["path"] for name, ref in suite["inputs"].items()},
                      scene_revision=suite["scene_revision"], sources=definitions[0][1],
                      evaluator_sources=definitions[1][1], validation=report,
+                     policy_context={name: root / suite["policy"]["path"] / "source" / relative
+                                     for name, relative in suite["policy"].get("context", {}).items()},
                      observation_mode=suite["observation_mode"], parent=str(root))
 
 
