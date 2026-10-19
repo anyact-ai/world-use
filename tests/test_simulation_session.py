@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from world_use import World, bodies
+from world_use import Refused, World, bodies
 from world_use.body import ToolBox
 from world_use.cameras import SimCamera, View
 from world_use.client import Client
@@ -80,6 +80,15 @@ def test_exception_preserves_trace_and_shuts_down_simulation(tmp_path, failure):
     assert not saved["final_status"]["enabled"]
     assert not session.daemon.control.is_alive()
     assert not session.physics.thread.is_alive()
+
+
+def test_shared_client_cannot_stop_the_session_before_its_record_is_saved(tmp_path):
+    # MCP servers and trackers built on this client must not end the episode without its task record.
+    with session_at(tmp_path / "run") as session:
+        with pytest.raises(Refused, match="saves its task record"):
+            session.client.shutdown()
+        assert session.daemon.control.is_alive() and not session.client.status()["enabled"]
+    assert json.loads((tmp_path / "run/task/result.json").read_text())["exception"] is None
 
 
 def test_failed_cleanup_keeps_the_task_exception_and_the_session_open(tmp_path, monkeypatch):

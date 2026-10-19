@@ -154,7 +154,8 @@ with SimulationSession(body, Path("runs/new-episode"), cameras=cameras,
 
 The normal `Client` API records calls and exact RGB-D frame transport. Pass this
 client to `Tracking` or `mcp_server.build(client=...)` to include their internal
-observations. A source snapshot documents the live caller; it does not execute
+observations. Its `shutdown` is refused, including the MCP tool: only
+`session.close()` stops the daemon, because it saves the task record. A source snapshot documents the live caller; it does not execute
 that snapshot. Use [`world_use.tasks`](../examples/task-programs) when a task
 must execute its frozen source in a fresh Python process.
 

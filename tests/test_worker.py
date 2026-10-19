@@ -34,7 +34,8 @@ def test_an_owner_that_exits_without_closing_still_exits(tmp_path):
     # An embedded simulation left open after failed cleanup must not keep its task process alive.
     script = tmp_path / "owner.py"
     # Kept referenced, as by a running daemon: collecting it would close the pipe and end the worker anyway.
-    script.write_text("from world_use.worker import Rehearser\n\nif __name__ == '__main__':\n    worker = Rehearser()\n")
+    script.write_text("from world_use.worker import Rehearser\n\n"
+                      "if __name__ == '__main__':\n    worker = Rehearser()\n")
     subprocess.run([sys.executable, str(script)], timeout=60, check=True)
 
 

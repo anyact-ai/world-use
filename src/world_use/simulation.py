@@ -22,6 +22,7 @@ from .bodies.mujoco_scene import mj
 from .cameras import View
 from .client import Client
 from .daemon import Daemon
+from .errors import Refused
 from .kernel import Kernel
 from .recorder import save_arrays, save_summary
 from .tasks import Record, RecordedClient, RecordingError, prepare
@@ -153,6 +154,14 @@ class _RecordedBody:
             self.body.close()
 
 
+class _SessionClient(RecordedClient):
+    """The session's recorded client, shared with MCP servers and trackers; it cannot stop its own daemon."""
+
+    def shutdown(self) -> dict:
+        raise Refused("this simulation session saves its task record when it closes", "session_shutdown",
+                      "release power, then close the simulation session")
+
+
 class SimulationSession:
     """Own one external MuJoCo episode, initially idle and unpowered.
 
@@ -195,7 +204,7 @@ class SimulationSession:
             folder = prepare(self.output / "task", sources, entrypoint=entrypoint,
                              parameters=parameters or {}, url=url)
             self.record = Record(folder)
-            self.client = RecordedClient(url, self.record)
+            self.client = _SessionClient(url, self.record)
             self.client.begin()
             self.client.record(context=dict(execution="live caller with declared source snapshot", **(context or {})))
             save_summary(self.output / "flight/external-scene.json", dict(path="..", format="mujoco-v1"))
@@ -218,7 +227,7 @@ class SimulationSession:
         if any(status.get(key) for key in ("enabled", "power_uncertain", "job", "queued")):
             raise RuntimeError("stop active work and release power before closing the simulation session")
         # The ordinary shutdown path owns release, stopping the loop and closing the body.
-        reply = self.client.shutdown()
+        reply = self.client._call("POST", "/shutdown", {})
         self.daemon.http.server_close()
         self.closed = True
         final_error = reply.get("summary", {}).get("recording_error")
