@@ -120,6 +120,54 @@ def test_contact_allowance_cannot_follow_a_changed_support_or_payload(k):
     assert env.watch(feedback(touching), touching).kind == "surface"
 
 
+@pytest.mark.parametrize("guarded", [False, True])
+def test_small_steps_cannot_replenish_surface_allowance(k, guarded):
+    env, q = rig(k.manifest, payload=True)
+    table = env.world.add_box("table", "surface", [0, 0, -.01], [.4, .4, .02])
+    if guarded:
+        _, contact = env.contact_target(q, np.array([0, 0, -.1]), .02)
+        env.begin_geometry(q, contact)
+    q = np.array([0., 0., .015 if guarded else .02, 0.])
+    initial_depth = table.box_depth(env.chain.fk(q), env.world.boxes["package"].size)
+    env.hold_geometry(q)
+    for _ in range(20):
+        end = q - [0, 0, .0005, 0]
+        try:
+            env.check_path(np.linspace(q, end, 10), q)
+        except Refused:
+            break
+        env.begin_geometry(q)
+        assert env.watch(feedback(end), end) is None
+        env.hold_geometry(end)
+        q = end
+    else:
+        pytest.fail("ordinary steps accumulated 10 mm of penetration")
+    depth = table.box_depth(env.chain.fk(q), env.world.boxes["package"].size)
+    assert depth <= initial_depth + .001
+    env.begin_geometry(q)
+    assert env.watch(feedback(q - [0, 0, .001, 0]), q).kind == "surface"
+    lifted = q + [0, 0, .01, 0]
+    env.check_path(np.linspace(q, lifted, 100), q)
+    env.hold_geometry(lifted)
+    with pytest.raises(Refused, match="payload:package"):
+        env.check_path(np.linspace(lifted, q - [0, 0, .002, 0], 100), lifted)
+
+
+def test_worker_keeps_consumed_surface_allowance(lifted, rehearser):
+    k = lifted
+    bounds = ToolBox("probe", (0, 0, 0), (.01, .01, .01), "fixture dimensions")
+    k.manifest = k.body.manifest = replace(k.manifest, tool_boxes=(bounds,))
+    extent = np.abs(k.tool[2, :3]) @ np.array(bounds.size) / 2
+    k.world.add_box("table", "surface", k.tool[:3, 3] - [0, 0, extent + .01], [.4, .4, .02])
+    k.envelope = Envelope(k.manifest, k.chain, k.world, k.state.q)
+    assert k.run(dict(do="line", down=.0005)).ok
+    before = k.state.q.copy()
+    future, _ = rehearser.prepare(dict(do="line", down=.0007), k)
+    with pytest.raises(Refused, match="tool:probe"):
+        future.result(timeout=10)
+    np.testing.assert_array_equal(k.state.q, before)
+
+
 def test_tool_bounds_are_serialized_for_worker_and_record(k):
     box = ToolBox("left finger", (0, .03, -.02), (.02, .06, .04), "measured swept bounds", "finger")
     manifest = replace(k.manifest, tool_boxes=(box,))

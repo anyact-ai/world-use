@@ -127,6 +127,8 @@ class Validation:
                 if a is None or b is None or not (a[1] < b[0] or b[1] < a[0]):
                     raise ValueError("fit and held-out evidence overlaps; declare disjoint observation intervals")
         self.output.mkdir(parents=True, exist_ok=False)
+        self.artifacts: dict[str, str] = {}
+        self.finished = False
         self.evidence = {}
         for item, data in payloads:
             self.evidence[item.name] = dict(**self.artifact(data, item.path.suffix.lstrip(".") or "bin"),
@@ -134,16 +136,18 @@ class Validation:
                                            alignment=self.observations[item.name].alignment, checks=list(item.checks),
                                            interval_s=None if item.interval_s is None else list(item.interval_s))
         self.checks: list[dict] = []
-        self.finished = False
         write_new(self.output / "specification.json", json_bytes(dict(
             scene=scene, tolerances=tolerances, observations=self.evidence)))
 
     def artifact(self, data: bytes, suffix: str) -> dict:
+        if self.finished:
+            raise ValueError("validation is already finished")
         sha = digest(data)
         relative = f"artifacts/{sha}.{suffix}"
         path = self.output / relative
         if not path.exists():
             write_new(path, data)
+        self.artifacts[relative] = sha
         return dict(path=relative, sha256=sha)
 
     def _check(self, observation: str, name: str, metrics: dict, details: dict, *,
@@ -292,6 +296,7 @@ class Validation:
         if kind != "measured" and status == "passed":
             status = "unvalidated"
         report = dict(format_version=1, scene_revision=self.scene["revision"], scene=self.scene,
+                      artifacts=dict(self.artifacts),
                       reference=dict(kind=kind, observations=self.evidence), status=status, groups=groups,
                       tolerances=self.tolerances, scope="declared observations and tolerances only",
                       unvalidated=self.limitations +

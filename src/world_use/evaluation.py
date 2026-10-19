@@ -77,19 +77,9 @@ def _validation(report: Path | None, output: Path, scene_revision: str) -> dict:
         raise ValueError("unsupported scene validation report")
     if value.get("scene_revision") != scene_revision:
         raise ValueError("scene validation is stale: scene_revision does not match the evaluated scene")
-    artifacts = {}
-
-    def collect(value):
-        if isinstance(value, dict):
-            if "path" in value and "sha256" in value:
-                artifacts[value["path"]] = value["sha256"]
-            for item in value.values():
-                collect(item)
-        elif isinstance(value, list):
-            for item in value:
-                collect(item)
-
-    collect(value)
+    artifacts = value.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise ValueError("scene validation has no artifact manifest; regenerate the report")
     for name, expected in artifacts.items():
         payload = _checked_path(report.parent, name).read_bytes()
         if digest(payload) != expected:

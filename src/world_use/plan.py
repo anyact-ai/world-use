@@ -142,6 +142,7 @@ class Snapshot:
     held_at: float | None
     grip_start: float | None
     fit: dict | None = None           # the fitted robot model the kernel judges torque by (fit.py), if any
+    surface_limits: list = field(default_factory=list)  # part, support, depth, geometry signature
 
 
 def snapshot(k: Kernel) -> Snapshot:
@@ -156,7 +157,9 @@ def snapshot(k: Kernel) -> Snapshot:
             q_start=np.asarray(k.q_start, float).tolist(), overrides=dict(env.overrides),
             home_route=deepcopy(route[0]) if route is not None and k.last_touch < route[1] else None,
             held_at=k.held_at, grip_start=k.grip_start,
-            fit=None if k.fit is None else k.fit.to_dict())
+            fit=None if k.fit is None else k.fit.to_dict(),
+            surface_limits=[(part, surface, depth, signature)
+                            for (part, surface), (depth, signature) in env.surface_limits.items()])
 
 
 def same_start(s: Snapshot, k: Kernel) -> bool:
@@ -190,6 +193,9 @@ def twin_from(s: Snapshot, manifest: Manifest | None = None) -> Kernel:
     t.q_start = np.asarray(s.q_start, float)
     t.envelope.q_start = t.q_start
     t.envelope.overrides = dict(s.overrides)
+    t.envelope.surface_limits = {(part, surface): (depth, signature)
+                                for part, surface, depth, signature in s.surface_limits}
+    t.envelope.hold_geometry(s.q)
     if s.home_route is not None:      # valid from here on, until something in the twin is touched
         t.home_route = (list(s.home_route), t.events.seq + 1)
     t.held_at, t.grip_start = s.held_at, s.grip_start

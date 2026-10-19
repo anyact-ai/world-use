@@ -95,8 +95,10 @@ Keep-out geometry includes segments from joint to joint, padded by the manifest'
 (3 cm by default), plus declared tool/finger boxes and the estimated held-object box. Planning bounds their
 swept motion, including payload rotation; measured ticks check the same declared geometry. Surfaces constrain
 the tool point and those boxes. Guarded support contact grants one bounded part/surface allowance; interruption
-and completion clear it, while withdrawal from existing contact remains possible. Undeclared fingers/tools,
-the base pedestal, self-collision, arm-link/surface collision and unattached objects as obstacles remain omitted.
+and completion clear its unused budget, while withdrawal from existing contact remains possible. Remaining
+allowances can shrink during withdrawal but never grow at ordinary step boundaries or in planning snapshots.
+Undeclared fingers/tools, the base pedestal, self-collision, arm-link/surface collision and unattached objects as
+obstacles remain omitted.
 The capability report states the declaration sources and omissions. Slow zones cap the planned tool speed.
 
 Faults latch until an operator resets them, and a watchdog trip while idle cancels anything queued. An incomplete

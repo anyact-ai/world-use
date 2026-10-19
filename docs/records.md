@@ -176,7 +176,11 @@ privileged evaluator artifacts stay in separate directories beside `episode/`.
 A missing terminal record remains an interrupted attempt in the summary.
 
 A matching `scene-validation.json` and its hashed evidence can accompany the
-suite. Camera/appearance, geometry and physical-response results remain separate
+suite. The report's artifact manifest includes raw stability samples as well as
+reference inputs, comparison details and images. Every listed file is verified
+and copied for both evaluations and reruns. Regenerate older reports without an
+artifact manifest before attaching them to a suite.
+Camera/appearance, geometry and physical-response results remain separate
 from task success. An absent reference is `unvalidated`; a stale scene revision
 is rejected. See [reference checks and repeated evaluation](simulation.md#reference-checks-and-repeated-evaluation).
 

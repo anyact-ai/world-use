@@ -4,6 +4,7 @@ which is scoped, has a reason, and shows up in the log."""
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 from itertools import pairwise
 from numbers import Real
 
@@ -49,6 +50,7 @@ class Envelope:
             pose = np.eye(4)
             pose[:3, :3], pose[:3, 3] = rpy(*box.rpy), box.center
             self._tool_boxes.append((f"{box.role}:{box.name}", pose, np.asarray(box.size)))
+        self.surface_limits: dict[tuple[str, str], tuple[float, str]] = {}
         self.hold_geometry(q_start)
 
     def _parts(self):
@@ -66,29 +68,35 @@ class Envelope:
     @staticmethod
     def _geometry_key(box, relative, size):
         # A changed support, attachment or payload size must not inherit an earlier contact allowance.
-        return box.pose.tobytes(), box.size.tobytes(), relative.tobytes(), size.tobytes()
+        return sha256(box.pose.tobytes() + box.size.tobytes() + relative.tobytes() + size.tobytes()).hexdigest()
 
-    def _initial_surfaces(self, q):
+    def _surface_allowances(self, q):
         tool = self.chain.fk(q)
-        return {(name, box.name): (max(0.0, box.box_depth(tool @ relative, size)) + SURFACE_TOL,
-                                  self._geometry_key(box, relative, size))
-                for name, relative, size in self._parts() for box in self.world.solids()}
+        limits = {}
+        for name, relative, size in self._parts():
+            for box in self.world.solids():
+                key = name, box.name
+                signature = self._geometry_key(box, relative, size)
+                depth = max(0.0, box.box_depth(tool @ relative, size)) + SURFACE_TOL
+                previous, old_signature = self.surface_limits.get(key, (depth, signature))
+                # Withdrawal can reduce a limit; ordinary step boundaries must never replenish it.
+                limits[key] = min(depth, previous if old_signature == signature else SURFACE_TOL), signature
+        return limits
 
     def hold_geometry(self, q):
         """End a contact phase. Only withdrawal from measured existing contact remains allowed."""
-        self._surface_limits = self._initial_surfaces(q)
+        self.surface_limits = self._surface_allowances(q)
         self._contact_pair = None
 
     def begin_geometry(self, q, contact=None):
-        """Anchor allowances once, before playback; they never grow with each control sample."""
-        self._surface_limits = self._initial_surfaces(q)
-        self._contact_pair = None
+        """Only an explicit guarded contact may expand a retained surface allowance."""
+        self.hold_geometry(q)
         if contact is not None:
             part, surface, depth = contact
             key = (part, surface)
-            if key in self._surface_limits:
-                initial, signature = self._surface_limits[key]
-                self._surface_limits[key] = max(initial, depth), signature
+            if key in self.surface_limits:
+                initial, signature = self.surface_limits[key]
+                self.surface_limits[key] = max(initial, depth), signature
                 self._contact_pair = key
 
     @staticmethod
@@ -258,7 +266,7 @@ class Envelope:
         parts = self._parts()
         if not parts:
             return []
-        allowed = self._initial_surfaces(q_from)
+        allowed = self._surface_allowances(q_from)
         if contact is not None and contact[:2] in allowed:
             old, signature = allowed[contact[:2]]
             allowed[contact[:2]] = max(old, contact[2]), signature
@@ -366,7 +374,7 @@ class Envelope:
                 if box.intersects_box(pose, size):
                     return Trip("keep_out", f"{name} entered keep-out zone {box.name!r}")
             for box in self.world.solids():
-                allowed, signature = self._surface_limits.get((name, box.name), (SURFACE_TOL, None))
+                allowed, signature = self.surface_limits.get((name, box.name), (SURFACE_TOL, None))
                 if signature != self._geometry_key(box, relative, size):
                     allowed = SURFACE_TOL
                 depth = box.box_depth(pose, size)

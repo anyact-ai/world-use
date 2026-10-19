@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -9,7 +10,8 @@ import pytest
 
 from world_use import evaluation
 from world_use.recorder import Tape
-from world_use.tasks import digest, environment, json_bytes
+from world_use.scene_validation import Observation, Validation, scene_identity
+from world_use.tasks import environment, json_bytes
 
 
 def save(path, value):
@@ -83,7 +85,25 @@ def case(name="nominal", **parameters):
 def run(programs, output, **kwargs):
     task, evaluator, model = programs
     return evaluation.run_suite(task, evaluator, output, cases=kwargs.pop("cases", [case()]),
-                                inputs={"model.dat": model}, scene_revision="a" * 64, **kwargs)
+                                inputs={"model.dat": model}, scene_revision=kwargs.pop("scene_revision", "a" * 64),
+                                **kwargs)
+
+
+@pytest.fixture
+def validation(tmp_path):
+    reference = tmp_path / "reference.json"
+    reference.write_text('{"rest_xyz_m": [[0, 0, 0], [0, 0, 0]]}')
+    observation = Observation("rest", reference, "fixture", "synthetic", "held_out",
+                              dict(frame="base", image_transform="none", time_offset_s=0), checks=("stability",))
+    scene = scene_identity({"model.json": reference}, {})
+    record = Validation(tmp_path / "validation", scene=scene, observations=[observation],
+                        tolerances=dict(landmark_px=2., geometry_m=.001, motion_m=.002,
+                                        penetration_m=.001, support_m=.001, drift_m=.0005))
+    result = record.stability("rest", state=[[0], [1]], penetration_m=[0], support_error_m=[0],
+                              rest_xyz_m=[[0, 0, 0], [0, 0, 0]])
+    details = json.loads((record.output / result["details"]["path"]).read_text())
+    record.finish()
+    return record.output, scene["revision"], details["samples"]["path"]
 
 
 def test_case_identity_survives_policy_change_and_inputs_are_frozen(tmp_path, programs, fake_process):
@@ -200,22 +220,57 @@ def test_stale_validation_and_privileged_comparisons_are_refused(tmp_path, progr
         evaluation.compare(tmp_path / "privileged-one", tmp_path / "privileged-two")
 
 
-def test_rerun_pins_source_input_runtime_and_validation(tmp_path, programs, fake_process, monkeypatch):
-    report = tmp_path / "source-report.json"
-    asset = tmp_path / "evidence.dat"
-    asset.write_bytes(b"reference")
-    save(report, dict(format_version=1, scene_revision="a" * 64, status="unvalidated", reference=dict(kind="synthetic",
-                     observations=[dict(path="evidence.dat", sha256=digest(asset.read_bytes()))])))
-    original = run(programs, tmp_path / "one", validation=report)
+def test_rerun_pins_source_input_runtime_and_validation(tmp_path, programs, fake_process, monkeypatch, validation):
+    folder, revision, sample = validation
+    artifacts = {path.relative_to(folder): path.read_bytes() for path in (folder / "artifacts").iterdir()}
+    original = run(programs, tmp_path / "one", validation=folder / "scene-validation.json", scene_revision=revision)
+    shutil.rmtree(folder)
     repeated = evaluation.rerun(tmp_path / "one", "nominal", tmp_path / "repeat")
     assert original["trials"][0]["case"]["id"] == repeated["trials"][0]["case"]["id"]
-    assert (tmp_path / "repeat/validation/evidence.dat").read_bytes() == b"reference"
+    for name, data in artifacts.items():
+        assert (tmp_path / "one/validation" / name).read_bytes() == data
+        assert (tmp_path / "repeat/validation" / name).read_bytes() == data
+    with np.load(tmp_path / "repeat/validation" / sample) as data:
+        assert data["state"].tolist() == [[0], [1]]
     monkeypatch.setattr(evaluation, "environment", lambda: dict(python="changed runtime"))
     with pytest.raises(ValueError, match="runtime changed"):
         evaluation.rerun(tmp_path / "one", "nominal", tmp_path / "wrong-runtime")
     (tmp_path / "one/inputs/model.dat").write_bytes(b"corrupted")
     with pytest.raises(ValueError, match="input changed"):
         evaluation.rerun(tmp_path / "one", "nominal", tmp_path / "wrong-input")
+
+
+@pytest.mark.parametrize("missing", [False, True])
+@pytest.mark.parametrize("rerun", [False, True])
+def test_validation_rejects_changed_or_missing_stability_samples(
+    tmp_path, programs, fake_process, validation, missing, rerun,
+):
+    folder, revision, sample = validation
+    if rerun:
+        run(programs, tmp_path / "original", validation=folder / "scene-validation.json", scene_revision=revision)
+        folder = tmp_path / "original/validation"
+        fake_process.clear()
+    if missing:
+        (folder / sample).unlink()
+    else:
+        (folder / sample).write_bytes(b"corrupted sample")
+    with pytest.raises((ValueError, FileNotFoundError)):
+        if rerun:
+            evaluation.rerun(tmp_path / "original", "nominal", tmp_path / "suite")
+        else:
+            run(programs, tmp_path / "suite", validation=folder / "scene-validation.json", scene_revision=revision)
+    assert not fake_process  # No policy or evaluator runs on unverifiable evidence.
+
+
+def test_validation_without_an_artifact_manifest_requires_regeneration(tmp_path, programs, fake_process, validation):
+    folder, revision, _ = validation
+    path = folder / "scene-validation.json"
+    report = json.loads(path.read_text())
+    del report["artifacts"]
+    save(path, report)
+    with pytest.raises(ValueError, match="regenerate the report"):
+        run(programs, tmp_path / "suite", validation=path, scene_revision=revision)
+    assert not fake_process
 
 
 def test_dwell_rejects_transient_success_simulation_reset_and_observation_gap():

@@ -123,7 +123,7 @@ camera fitter. A fresh comparison directory contains:
   observation provenance, coordinate/time alignment and split.
 - `scene-validation.json`: separate fit and held-out results for
   `appearance_camera`, `geometry` and `physical_response`, including missing
-  checks and explicit limitations.
+  checks, explicit limitations, and a complete artifact path/hash manifest.
 - `artifacts/`: original reference bytes, metric comparison inputs, raw
   stability samples, and original/comparison images when supplied.
 
