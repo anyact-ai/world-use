@@ -2,6 +2,8 @@
 import dataclasses
 import os
 import signal
+import subprocess
+import sys
 
 import pytest
 from conftest import Q_REST, make_kernel
@@ -26,6 +28,15 @@ def test_the_daemon_rehearses_in_the_worker(daemon, monkeypatch):
     assert r["status"] == "refused" and "a 3 cm line can go" in r["incident"]
     assert "a 3 cm line can go" in c.card()
     assert c.run({"do": "line", "up": 0.02, "duration": 0.5}, wait=10)["status"] == "done"
+
+
+def test_an_owner_that_exits_without_closing_still_exits(tmp_path):
+    # An embedded simulation left open after failed cleanup must not keep its task process alive.
+    script = tmp_path / "owner.py"
+    # Kept referenced, as by a running daemon: collecting it would close the pipe and end the worker anyway.
+    script.write_text("from world_use.worker import Rehearser\n\n"
+                      "if __name__ == '__main__':\n    worker = Rehearser()\n")
+    subprocess.run([sys.executable, str(script)], timeout=60, check=True)
 
 
 def test_the_same_report_as_in_process(rehearser, lifted):

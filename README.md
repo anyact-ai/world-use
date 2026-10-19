@@ -132,9 +132,10 @@ or [task programs](examples/task-programs) to record code and inputs for repeate
 | Guide | Use it to |
 | --- | --- |
 | [Perception](docs/perception.md) | Measure camera pixels, align landmarks and require fresh evidence. |
-| [Records and replay](docs/records.md) | Inspect a run, view it in Rerun or fit the robot model. |
-| [Simulation](docs/simulation.md) | Configure MuJoCo scenes, cameras and rendering. |
+| [Records and replay](docs/records.md) | Inspect runs, references and named evaluations together in Rerun. |
+| [Simulation](docs/simulation.md) | Configure scenes, validate references and run comparable evaluations. |
 | [RoboCasa setup](examples/robocasa-counter) | Build the shared Panda kitchen used by the packing and dial demos. |
+| [Letter pushing](examples/push-letters) | Run a camera-feedback pushing policy, change starts or friction, and audit the physics. |
 | [Robot adapters](docs/adapters.md) | Connect another arm through a URDF, a description and a driver. |
 | [reBot setup](docs/rebot.md) | Configure CAN, cameras and supervised hardware operation. |
 | [Hardware records](docs/hardware.md) | Read what worked, what failed and what changed on the physical arm. |

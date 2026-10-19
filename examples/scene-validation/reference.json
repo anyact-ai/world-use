@@ -1,0 +1,51 @@
+{
+  "source_page": "https://web.mit.edu/mcube/push-dataset/index.html",
+  "trajectory_url": "https://raw.githubusercontent.com/peterkty/pnpush/c8352f5fe9a4f03aa07bf3753e04ca7898df6e1f/catkin_ws/src/pnpush_planning/src/analyze/matlab/motion_surface%3Dplywood_shape%3Dhex_a%3D0_v%3D150_i%3D1.000_s%3D0.000_t%3D-0.349.json",
+  "trajectory_sha256": "a1bb50b2f6efcf08084515ced01c50eedbd9b84ae7b792dad1e51dc64b1f35b3",
+  "geometry_url": "https://github.com/peterkty/pnpush/blob/c8352f5fe9a4f03aa07bf3753e04ca7898df6e1f/catkin_ws/src/pnpush_config/src/config/shape_db.py",
+  "probe_url": "https://github.com/peterkty/pnpush/blob/c8352f5fe9a4f03aa07bf3753e04ca7898df6e1f/catkin_ws/src/pnpush_config/src/config/probe_db.py",
+  "geometry": {
+    "hex_side_m": 0.0605,
+    "thickness_m": 0.013,
+    "mass_kg": 0.9827,
+    "polar_inertia_kg_m2": 0.001497,
+    "vertex_angles": "i * 2*pi/6, starting along +x",
+    "shape": "hex"
+  },
+  "assumptions": {
+    "probe_density_kg_m3": 7800,
+    "probe_density_reason": "Nominal steel density; exact probe mass is not measured. Report actual path tracking separately.",
+    "xy_inertia": "symmetric uniform prism approximation from published polar inertia and thickness",
+    "support": "flat plane, gravity along -z; sparse mesh-plane contacts do not establish uniform pressure",
+    "contact": "MuJoCo solref=[0.001, 1], solimp=[0.99, 0.99, 0.001], elliptic cone, 0.5 ms timestep",
+    "probe_drive": "Dynamic x/y translation joints keep probe vertical at declared height; welded to prescribed mocap target with solref=[0.001, 1], solimp=[0.99, 0.99, 0.001]. Actual probe tracking is checked."
+  },
+  "evidence_limits": [
+    "The hex trajectory has been inspected during development and is no longer held-out evidence.",
+    "No synchronized camera footage; visual reconstruction is unvalidated.",
+    "Geometry is compared with the author's published specification, not a new independent measurement.",
+    "Force measurements are retained in the source but not compared by this example.",
+    "Recording ends with the push; no measured static settling interval is declared.",
+    "Support pressure distribution and exact contact compliance are not measured."
+  ],
+  "reuse": "No dataset-wide reuse license was found in the source repository. Downloaded raw data remains local under runs/ and is not bundled. See original authors for reuse terms.",
+  "citation": "Kuan-Ting Yu, Maria Bauza, Nima Fazeli, Alberto Rodriguez. More than a Million Ways to Be Pushed: A High-Fidelity Experimental Dataset of Planar Pushing. IROS 2016. https://arxiv.org/abs/1604.04038",
+  "paper_url": "https://arxiv.org/abs/1604.04038",
+  "collector_url": "https://github.com/peterkty/pnpush/blob/c8352f5fe9a4f03aa07bf3753e04ca7898df6e1f/catkin_ws/src/pnpush_planning/src/collect_push_dataset_with_acceleration.py",
+  "validation_collector_url": "https://github.com/peterkty/pnpush/blob/c8352f5fe9a4f03aa07bf3753e04ca7898df6e1f/catkin_ws/src/pnpush_planning/src/collect_grid_for_validation.py",
+  "rect1_geometry": {
+    "shape": "rect1",
+    "width_m": 0.09,
+    "thickness_m": 0.013,
+    "mass_kg": 0.8374,
+    "polar_inertia_kg_m2": 0.001131,
+    "vertex_order": "(+a,+a), (-a,+a), (-a,-a), (+a,-a); a=width/2"
+  },
+  "probe": {
+    "radius_m": 0.00475,
+    "length_m": 0.156,
+    "bottom_m": 0.007,
+    "sliding_friction": 0.25,
+    "source": "Paper section IV-A and pinned collectors: default probe5, contact height calculation. Friction is the approximate measured probe/object value, not a per-trial measurement."
+  }
+}

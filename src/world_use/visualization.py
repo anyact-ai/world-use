@@ -8,7 +8,9 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 from collections import deque
+from contextlib import suppress
 from pathlib import Path
+from stat import S_ISREG
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -325,10 +327,14 @@ class RecordingView:
 
 
 def view(folder: Path | str, *, output: Path | None = None, follow: bool = False,
-         live_client: Client | None = None) -> Path | None:
+         live_client: Client | None = None, case: str | None = None, scene: bool = False) -> Path | None:
     """View one record; a live client also follows replacement sessions at the same daemon URL."""
-    rr = _sdk()
     folder = Path(folder).expanduser().resolve()
+    if case is not None or scene or not (folder / "session.json").exists():
+        if live_client is not None:
+            raise ValueError("live daemon viewing requires a flight record")
+        return view_evidence(folder, case=case, output=output, follow=follow, scene=scene)
+    rr = _sdk()
     if live_client is not None and output is not None:
         raise ValueError("a portable export follows one recording, not replacement sessions")
     follow = follow or live_client is not None
@@ -390,6 +396,208 @@ def view(folder: Path | str, *, output: Path | None = None, follow: bool = False
         if output is not None and viewer is not None and rec is not None:
             # Save one complete layout after all camera names are known, including on Ctrl+C.
             rec.send_blueprint(blueprint(viewer.base_frame, False, viewer.eye, sorted(viewer.camera_names)))
+        if rec is not None:
+            rec.flush()
+            rec.disconnect()
+    return output
+
+
+class EvidenceView:
+    """Evidence panels accompanying the estimated-world view; never a policy input."""
+
+    def __init__(self, selection, recording, *, scene=False):
+        self.selection, self.rec, self.rr = selection, recording, _sdk()
+        self.scene = scene
+        self.seen_frames: set[str] = set()
+        self.seen_comparisons: set[tuple[str, str]] = set()
+        self.panels = [("Evidence · revision and outcomes", "/evidence/report", "text")]
+        self.last_scene = None
+        self.last_report = None
+
+    def poll(self, selection):
+        from .inspection import artifact, frames
+        rr, rec = self.rr, self.rec
+        self.selection = selection
+        report = json.dumps(selection.report, indent=2)
+        if report != self.last_report:
+            rec.log("evidence/report", rr.TextDocument(
+                "# Recorded evidence\n\nEstimated geometry and physical scene state have separate roles. "
+                "Policy frames are the exact raw observations on `policy_elapsed` (seconds from task start); "
+                "flight telemetry uses `elapsed`. These clocks have different origins. "
+                "A saved scene snapshot restores physics state without advancing it. "
+                "Validation comparisons label reference kind and fit/held-out split.\n\n"
+                f"```json\n{report}\n```", media_type="text/markdown"), static=True)
+            self.last_report = report
+        if selection.validation is not None:
+            report = selection.report["validation"]
+            for name, observation in report["reference"]["observations"].items():
+                ref = observation.get("images", {}).get("comparison")
+                if ref is None or (name, ref["sha256"]) in self.seen_comparisons:
+                    continue
+                path = f"evidence/comparison/{rr.escape_entity_path_part(name)}"
+                rec.log(path, rr.EncodedImage(path=artifact(selection.validation.parent, ref)), static=True)
+                self.seen_comparisons.add((name, ref["sha256"]))
+                label = f"{observation['kind']} reference / render · {name} · {observation['split']}"
+                panel = (label, f"/{path}", "image")
+                if panel not in self.panels:
+                    self.panels.append(panel)
+        if selection.episode is not None:
+            for t, frame in frames(selection.episode, seen=self.seen_frames):
+                rec.reset_time()
+                rec.set_time("policy_elapsed", duration=t)
+                path = f"evidence/raw/{rr.escape_entity_path_part(frame.camera)}"
+                rec.log(path, rr.Image(np.asarray(frame.image)))
+                panel = (f"Raw policy observation · {frame.camera}", f"/{path}", "image")
+                if panel not in self.panels:
+                    self.panels.append(panel)
+            rec.reset_time()
+            if self.scene:
+                parts = sorted((selection.episode / "physics").glob("[0-9]*.npz"))
+                if parts and parts[-1] != self.last_scene:
+                    try:
+                        frame, clocks = _scene_snapshot(selection.episode, parts[-1])
+                        rec.log("evidence/physical-scene", rr.Image(np.asarray(frame)), static=True)
+                        rec.log("evidence/scene-clocks", rr.TextDocument(clocks), static=True)
+                        self.last_scene = parts[-1]
+                        for panel in (("Saved physical scene · fixed camera", "/evidence/physical-scene", "image"),
+                                      ("Scene snapshot clocks", "/evidence/scene-clocks", "text")):
+                            if panel not in self.panels:
+                                self.panels.append(panel)
+                    except Exception as exc:
+                        rec.log("evidence/scene-error",
+                                rr.TextDocument(f"Scene snapshot unavailable: {exc}"), static=True)
+                        panel = ("Scene snapshot error", "/evidence/scene-error", "text")
+                        if panel not in self.panels:
+                            self.panels.append(panel)
+                        self.last_scene = parts[-1]
+
+
+def _scene_snapshot(episode: Path, part: Path):
+    """Restore a committed physical state; no adapter or dynamics rollout is involved."""
+    from dataclasses import replace
+
+    from .bodies.mujoco_render import CameraRenderer
+    from .bodies.mujoco_scene import mj
+    from .cameras import View
+
+    metadata = json.loads((episode / "physics/format.json").read_text())
+    if metadata.get("version") != 1:
+        raise ValueError("unsupported scene recording version")
+    cameras = json.loads((episode / "cameras.json").read_text())
+    if not cameras:
+        raise ValueError("no recorded camera")
+    name, camera = next(iter(cameras.items()))
+    camera = View.from_dict(camera)
+    scale = min(1., 800 / camera.width, 600 / camera.height)
+    camera = camera.scaled(round(camera.width * scale), round(camera.height * scale))
+    camera = replace(camera, T=np.asarray(metadata["base_to_world"]) @ camera.T)
+    model = mj.MjModel.from_binary_path(str(episode / "scene.mjb"))
+    data = mj.MjData(model)
+    with np.load(part, allow_pickle=False) as values:
+        mj.mj_setState(model, data, values["state"][-1], metadata["state_spec"])
+        clocks = (f"Recorded simulation · fixed initial camera {name}\n\n"
+                  f"Wall {values['time'][-1]:.3f} s · simulation {values['simulation_time'][-1]:.3f} s\n\n"
+                  "This is a restored physics snapshot, not a policy observation or estimated world.")
+    mj.mj_forward(model, data)
+    renderer = CameraRenderer()
+    try:
+        return renderer.render(model, data, camera), clocks
+    finally:
+        renderer.close()
+
+
+def evidence_blueprint(viewer, evidence: EvidenceView, *, follow):
+    import rerun.blueprint as rrb
+
+    panels: list = [rrb.TextDocumentView(name=name, origin=origin) if kind == "text" else
+              rrb.Spatial2DView(name=name, origin=origin) for name, origin, kind in evidence.panels]
+    if viewer is not None:
+        panels.insert(0, rrb.Spatial3DView(name="Measured robot · estimated world",
+                      contents=["/robot/**", "/scene/**"],
+                      spatial_information=rrb.SpatialInformation(viewer.base_frame),
+                      eye_controls=rrb.EyeControls3D(
+                          position=viewer.eye[0], look_target=viewer.eye[1], eye_up=[0, 0, 1])))
+        panels += [rrb.Spatial2DView(name=f"Saved annotated observation · {name}",
+                   origin=f"/observations/{evidence.rr.escape_entity_path_part(name)}")
+                   for name in sorted(viewer.camera_names)]
+        panels.append(rrb.TextLogView(name="Execution events", origin="/events"))
+    return rrb.Blueprint(rrb.Grid(*panels, grid_columns=2),
+                         rrb.TimePanel(timeline=TIMELINE, play_state="Following" if follow else "Paused"),
+                         collapse_panels=True)
+
+
+def _fingerprint(path: Path) -> list[tuple[str, int, int]]:
+    """Size and modification time of every saved evidence file; dot-named temporaries are skipped."""
+    root = path if path.is_dir() else path.parent
+    stamps = []
+    for item in root.rglob("*"):
+        if item.name.startswith("."):
+            continue
+        with suppress(FileNotFoundError):
+            info = item.stat()
+            if S_ISREG(info.st_mode):
+                stamps.append((str(item), info.st_size, info.st_mtime_ns))
+    return sorted(stamps)
+
+
+def view_evidence(path: Path, *, case: str | None = None, output: Path | None = None,
+                  follow=False, scene=False):
+    """Keep one inspection window on a revision; workspace reload failure leaves its old scene visible."""
+    from .inspection import inspect
+
+    rr = _sdk()
+    path = Path(path).expanduser().resolve()
+    selection = inspect(path, case=case)
+    stamp, changed = _fingerprint(path), True
+    rec = viewer = reader = evidence = None
+    active = None
+    try:
+        while True:
+            key = (selection.flight, selection.episode)
+            if rec is None or active != key:
+                if rec is not None:
+                    rec.flush()
+                    rec.disconnect()
+                rec = rr.RecordingStream("world-use", recording_id=uuid4())
+                if output is not None:
+                    if active is not None:
+                        raise ValueError("a portable export follows one scene revision; reopen after a reload")
+                    output = output.expanduser().resolve()
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    rec.save(output)
+                else:
+                    app = shutil.which("rerun", path=str(Path(sys.executable).parent))
+                    rr.spawn(recording=rec, memory_limit="1GiB", hide_welcome_screen=True, executable_path=app)
+                rec.send_recording_name(selection.report.get("scene_revision") or path.name)
+                viewer = (None if selection.flight is None else
+                          RecordingView(selection.flight, rec, follow=follow, update_layout=False))
+                reader = None if selection.flight is None else RecordReader(selection.flight)
+                evidence = EvidenceView(selection, rec, scene=scene)
+                active = key
+            assert evidence is not None
+            if viewer is not None and reader is not None:
+                viewer.append(*reader.poll())
+                if reader.complete or not follow:
+                    viewer.finish_events()
+            if changed:
+                evidence.poll(selection)
+                rec.send_blueprint(evidence_blueprint(viewer, evidence, follow=follow))
+            if not follow:
+                break
+            time.sleep(1)
+            # Re-inspecting reads every tape chunk and the whole trace; skip it while no saved file has changed.
+            current = _fingerprint(path)
+            changed, stamp = current != stamp, current
+            if not changed:
+                continue
+            try:
+                selection = inspect(path, case=case)
+            except (ValueError, OSError) as exc:
+                # Atomic workspace pointers avoid partial loads. A malformed new report must not clear the old view.
+                selection.report["inspection_error"] = str(exc)
+    except KeyboardInterrupt:
+        pass
+    finally:
         if rec is not None:
             rec.flush()
             rec.disconnect()

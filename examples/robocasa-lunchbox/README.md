@@ -49,6 +49,11 @@ Complete the [kitchen setup](../robocasa-counter/README.md#build-the-upstream-sc
 
 Use a new output directory for each run. `--measure-only` checks perception and
 layout without powering the simulated robot.
+The shared [simulation session](../../docs/simulation.md#external-simulation-sessions) saves
+declared source and raw RGB-D in `task/`, full-scene state in `physics/` and
+`replay.npz`, and normal robot records in `flight/`. The task retains its geometry
+calculations and independent physical audit. `wu replay runs/lunchbox-new/flight
+--out scene.gif --speed 3` renders the saved scene through the initial side camera.
 
 <details>
 <summary>Run the shifted-layout check</summary>

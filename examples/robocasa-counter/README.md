@@ -81,6 +81,10 @@ Start an interactive recorder with a new output directory:
 The recorder exposes `act(tool, intent=..., **arguments)` and `finish()`, with no
 prewritten pickup policy. Read `wu policy`, inspect the cameras and choose calls
 from their returns. Release the robot before `finish(result="...")`.
+Each episode uses the shared [simulation session](../../docs/simulation.md#external-simulation-sessions):
+`task/` retains declared source and exact client observations, while `physics/`
+keeps incremental full-scene states. `calls.json` adds the task's MCP intents and presentation images.
+Use `wu replay runs/robocasa-agent-new/flight --out scene.gif --speed 3` for a fixed-camera replay.
 
 ```sh
 .venv/bin/python examples/robocasa-counter/audit_episode.py runs/robocasa-agent-new

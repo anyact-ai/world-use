@@ -1,0 +1,369 @@
+"""Comparable cases, preserved failures and privileged evaluation outside policy calls."""
+from __future__ import annotations
+
+import json
+import shutil
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from world_use import evaluation
+from world_use.recorder import Tape
+from world_use.scene_validation import Observation, Validation, scene_identity
+from world_use.tasks import environment, json_bytes
+
+
+def save(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(json_bytes(value))
+
+
+def evidence(folder):
+    save(folder / "task/result.json", dict(recording_error=None, flight_recording_error=None,
+        final_status=dict(enabled=False, power_uncertain=False, physics_recording=dict(error=None))))
+    save(folder / "flight/session.json", dict(format_version=3))
+    tape = Tape(1)
+    tape.add(0, False, False, 0, [0], [0], None, None, None, None, None)
+    (folder / "flight/tape").mkdir()
+    np.savez_compressed(folder / "flight/tape/000000.npz", **tape.arrays())
+    event = json_bytes(dict(kind="closed", level="info", t=0, message="closed"))
+    # Journal events are single-line JSON.
+    event = json_bytes(json.loads(event), indent=None)
+    (folder / "flight/events.jsonl").write_bytes(event)
+    save(folder / "flight/complete.json", dict(parts=1, events_bytes=len(event)))
+    save(folder / "physics/complete.json", dict(parts=1, error=None))
+    arrays = dict(time=np.array([0., .1, .2]), simulation_time=np.array([1., 1.1, 1.2]),
+                  qpos=np.zeros((3, 1)), qvel=np.zeros((3, 1)), state=np.zeros((3, 2)))
+    np.savez_compressed(folder / "physics/000000.npz", **arrays)
+    np.savez_compressed(folder / "replay.npz", **arrays)
+
+
+@pytest.fixture
+def programs(tmp_path):
+    task, evaluator, model = (tmp_path / name for name in ("policy.py", "audit.py", "model.dat"))
+    task.write_text("def run(robot, params, record):\n    return {'verdict': 'pass'}\n")
+    evaluator.write_text("def run(robot, params, record):\n    return {'verdict': 'pass'}\n")
+    model.write_bytes(b"frozen model")
+    return task, evaluator, model
+
+
+@pytest.fixture
+def fake_process(monkeypatch):
+    calls = []
+
+    def launch(task, output, *, parameters, **kwargs):
+        output.mkdir()
+        calls.append((task, parameters))
+        save(output / "invocation.json", dict(environment=environment()))
+        mode = (parameters.get("case") or parameters)["parameters"].get("mode")
+        if output.name == "setup":
+            save(Path(parameters["output"]) / "start.json", dict(seed=parameters["seed"]))
+            valid = parameters["parameters"].get("valid_start", True)
+            result = dict(verdict="pass", valid_start=valid, reasons=[] if valid else ["letters overlap"])
+        elif "episode" in parameters:
+            if mode == "evaluator-lost":
+                return 9
+            case = parameters["case"]
+            result = dict(verdict="pass", valid_start=case["parameters"].get("valid_start", True),
+                          reasons=[], interventions=[], evaluator_secret="only after execution")
+        else:
+            assert "evaluator_secret" not in parameters and "episode" not in parameters
+            if mode == "killed":
+                return 9
+            if mode == "interrupt":
+                raise KeyboardInterrupt
+            if mode == "edit-scene":
+                save(Path(parameters["scene"]) / "start.json", dict(seed=0))
+            evidence(Path(parameters["output"]))
+            if mode == "corrupt":
+                (Path(parameters["output"]) / "flight/complete.json").unlink()
+            result = dict(verdict="fail" if mode == "failed" else "pass")
+        lost_record = output.name == "setup" and mode == "setup-unrecorded"
+        save(output / "result.json", dict(result=result, exception=None,
+                                          recording_error="disk full" if lost_record else None))
+        return 1 if result["verdict"] == "fail" else 0
+
+    monkeypatch.setattr(evaluation, "launch", launch)
+    return calls
+
+
+def case(name="nominal", **parameters):
+    return dict(name=name, role="development", seed=37, parameters=parameters)
+
+
+def run(programs, output, **kwargs):
+    task, evaluator, model = programs
+    return evaluation.run_suite(task, evaluator, output, cases=kwargs.pop("cases", [case()]),
+                                inputs={"model.dat": model}, scene_revision=kwargs.pop("scene_revision", "a" * 64),
+                                **kwargs)
+
+
+@pytest.fixture
+def validation(tmp_path):
+    reference = tmp_path / "reference.json"
+    reference.write_text('{"rest_xyz_m": [[0, 0, 0], [0, 0, 0]]}')
+    observation = Observation("rest", reference, "fixture", "synthetic", "held_out",
+                              dict(frame="base", image_transform="none", time_offset_s=0), checks=("stability",))
+    scene = scene_identity({"model.json": reference}, {})
+    record = Validation(tmp_path / "validation", scene=scene, observations=[observation],
+                        tolerances=dict(landmark_px=2., geometry_m=.001, motion_m=.002,
+                                        penetration_m=.001, support_m=.001, drift_m=.0005))
+    result = record.stability("rest", state=[[0], [1]], penetration_m=[0], support_error_m=[0],
+                              rest_xyz_m=[[0, 0, 0], [0, 0, 0]])
+    details = json.loads((record.output / result["details"]["path"]).read_text())
+    record.finish()
+    return record.output, scene["revision"], details["samples"]["path"]
+
+
+def test_case_identity_survives_policy_change_and_inputs_are_frozen(tmp_path, programs, fake_process):
+    first = run(programs, tmp_path / "one")
+    programs[0].write_text("def run(robot, params, record):\n    return {'verdict': 'fail'}\n")
+    second = run(programs, tmp_path / "two")
+    assert first["policy_revision"] != second["policy_revision"]
+    assert first["trials"][0]["case"]["id"] == second["trials"][0]["case"]["id"]
+    assert len(evaluation.compare(tmp_path / "one", tmp_path / "two")) == 1
+    programs[2].write_bytes(b"changed original")
+    assert (tmp_path / "one/inputs/model.dat").read_bytes() == b"frozen model"
+    assert fake_process[0][1]["seed"] == 37
+    assert first["scene_validation"]["status"] == "unvalidated"
+    assert first["trials"][0]["simulation_s"] == pytest.approx(.2)
+
+
+def test_policy_knowledge_is_frozen_and_comparable_on_identical_cases(tmp_path, programs, fake_process):
+    skill = tmp_path / "shared-skill.md"
+    skill.write_text("Verify the held object after lifting.")
+    first = run(programs, tmp_path / "one", policy_context={"skills/grasp.md": skill})
+    frozen = Path(fake_process[0][1]["context"]["skills/grasp.md"])
+    assert frozen.read_text() == skill.read_text()
+    assert "context" not in fake_process[1][1]  # Evaluator inputs stay independent.
+    skill.write_text("Verify again after transport.")
+    second = run(programs, tmp_path / "two", policy_context={"skills/grasp.md": skill})
+    assert first["policy_revision"] != second["policy_revision"]
+    assert first["policy_context"] != second["policy_context"]
+    assert len(evaluation.compare(tmp_path / "one", tmp_path / "two")) == 1
+    repeated = evaluation.rerun(tmp_path / "one", "nominal", tmp_path / "repeat")
+    assert repeated["policy_revision"] == first["policy_revision"]
+    assert repeated["policy_context"] == first["policy_context"]
+    frozen.write_text("changed snapshot")
+    with pytest.raises(ValueError, match="source snapshot changed"):
+        evaluation.rerun(tmp_path / "one", "nominal", tmp_path / "changed")
+
+
+@pytest.mark.parametrize("stage", ["policy", "evaluator"])
+def test_mutated_suite_inputs_invalidate_attempt_and_prevent_later_execution(
+    tmp_path, programs, fake_process, monkeypatch, stage
+):
+    launch = evaluation.launch
+
+    def mutate(task, output, *, parameters, **kwargs):
+        code = launch(task, output, parameters=parameters, **kwargs)
+        if ("episode" in parameters) == (stage == "evaluator"):
+            (tmp_path / "suite/inputs/model.dat").write_bytes(b"accidental overwrite")
+        return code
+
+    monkeypatch.setattr(evaluation, "launch", mutate)
+    report = run(programs, tmp_path / "suite", cases=[case("first"), case("second")])
+    assert report["counts"] == dict(completed=0, invalid=2, interrupted=0)
+    assert all(any("recorded input changed" in r for r in trial["reasons"]) for trial in report["trials"])
+    assert len(fake_process) == (1 if stage == "policy" else 2)
+
+
+def test_mutated_policy_context_cannot_produce_a_valid_trial(tmp_path, programs, fake_process, monkeypatch):
+    skill = tmp_path / "skill.md"
+    skill.write_text("Initial guidance")
+    launch = evaluation.launch
+
+    def mutate(task, output, *, parameters, **kwargs):
+        code = launch(task, output, parameters=parameters, **kwargs)
+        Path(parameters["context"]["skill.md"]).write_text("changed during execution")
+        return code
+
+    monkeypatch.setattr(evaluation, "launch", mutate)
+    report = run(programs, tmp_path / "suite", policy_context={"skill.md": skill})
+    assert report["counts"]["invalid"] == 1
+    assert "source snapshot changed" in report["trials"][0]["reasons"][0]
+    assert len(fake_process) == 1
+
+
+def test_invalid_interrupted_and_unsuccessful_cases_are_retained(tmp_path, programs, fake_process):
+    report = run(programs, tmp_path / "suite", cases=[case("good"), case("bad-start", valid_start=False),
+                 case("lost", mode="killed"), case("broken-record", mode="corrupt"), case("failed", mode="failed"),
+                 case("evaluator-crash", mode="evaluator-lost")])
+    assert report["counts"] == dict(completed=2, invalid=3, interrupted=1)
+    assert report["trials"][4]["task"]["verdict"] == "fail"
+    assert report["trials"][2]["policy_exit"] == 9
+    assert "flight record is incomplete" in report["trials"][3]["reasons"]
+    assert report["trials"][5]["status"] == "invalid"  # A lost evaluator is not an interruption.
+    interrupted = run(programs, tmp_path / "interrupted", cases=[case("stop", mode="interrupt"), case("not-started")])
+    assert interrupted["counts"]["interrupted"] == 2
+    assert not (tmp_path / "interrupted/trials/not-started").exists()
+
+
+def test_interrupt_after_a_passing_evaluation_is_not_completed(tmp_path, programs, fake_process, monkeypatch):
+    def interrupt(episode):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(evaluation, "episode_integrity", interrupt)
+    report = run(programs, tmp_path / "suite")
+    assert report["counts"] == dict(completed=0, invalid=0, interrupted=1)
+    assert "recording" not in report["trials"][0]
+
+
+def test_setup_owns_the_starting_state_and_case_identity(tmp_path, programs, fake_process):
+    setup = tmp_path / "setup.py"
+    setup.write_text("def run(robot, params, record):\n    return {'verdict': 'pass'}\n")
+    cases = [case(), case("overlap", valid_start=False), case("edited", mode="edit-scene"),
+             case("unrecorded", mode="setup-unrecorded")]
+    first = run(programs, tmp_path / "one", setup=setup, cases=cases)
+    assert [t["status"] for t in first["trials"]] == ["completed", "invalid", "invalid", "invalid"]
+    assert "letters overlap" in first["trials"][1]["reasons"]
+    assert "prepared scene changed" in first["trials"][2]["reasons"][-1]
+    assert first["trials"][3]["reasons"] == ["setup failed or its record is incomplete"]
+    stages = [(Path(task).name, parameters.get("scene")) for task, parameters in fake_process]
+    assert [name for name, _ in stages] == ["setup.py", "policy.py", "audit.py", "setup.py",
+                                            "setup.py", "policy.py", "setup.py"]
+    assert stages[1][1] == stages[2][1] == str(tmp_path / "one/trials/nominal/scene")
+    programs[0].write_text("def run(robot, params, record):\n    return {'verdict': 'fail'}\n")
+    run(programs, tmp_path / "two", setup=setup, cases=cases)
+    assert len(evaluation.compare(tmp_path / "one", tmp_path / "two")) == 4  # A policy edit keeps every case.
+    repeated = evaluation.rerun(tmp_path / "one", "nominal", tmp_path / "repeat")
+    assert repeated["setup_revision"] == first["setup_revision"]
+    assert repeated["trials"][0]["case"]["id"] == first["trials"][0]["case"]["id"]
+    setup.write_text("# a different seeded variation\n" + setup.read_text())
+    run(programs, tmp_path / "three", setup=setup, cases=cases)
+    with pytest.raises(ValueError, match="identical named seeded cases"):
+        evaluation.compare(tmp_path / "one", tmp_path / "three")
+
+
+@pytest.mark.parametrize("change", ["missing-chunk", "replay-changed", "missing-flight-close", "recording-error"])
+def test_integrity_checks_committed_evidence_not_a_passing_verdict(tmp_path, change):
+    evidence(tmp_path)
+    assert evaluation.episode_integrity(tmp_path)["complete"]
+    if change == "missing-chunk":
+        (tmp_path / "physics/000000.npz").unlink()
+    elif change == "replay-changed":
+        with np.load(tmp_path / "replay.npz") as replay:
+            arrays = dict(replay)
+        arrays["qpos"][1, 0] = .3
+        np.savez_compressed(tmp_path / "replay.npz", **arrays)
+    elif change == "missing-flight-close":
+        (tmp_path / "flight/complete.json").unlink()
+    else:
+        saved = json.loads((tmp_path / "task/result.json").read_text())
+        saved["final_status"]["physics_recording"]["error"] = "disk full"
+        save(tmp_path / "task/result.json", saved)
+    assert not evaluation.episode_integrity(tmp_path)["complete"]
+
+
+def test_stale_validation_and_privileged_comparisons_are_refused(tmp_path, programs, fake_process):
+    validation = tmp_path / "validation.json"
+    save(validation, dict(format_version=1, scene_revision="b" * 64, status="passed", reference=dict(kind="measured")))
+    with pytest.raises(ValueError, match="stale"):
+        run(programs, tmp_path / "stale", validation=validation)
+    assert not (tmp_path / "stale").exists()
+    run(programs, tmp_path / "privileged-one", observation_mode="privileged_diagnostic")
+    run(programs, tmp_path / "privileged-two", observation_mode="privileged_diagnostic")
+    with pytest.raises(ValueError, match="excluded"):
+        evaluation.compare(tmp_path / "privileged-one", tmp_path / "privileged-two")
+
+
+def test_rerun_pins_source_input_runtime_and_validation(tmp_path, programs, fake_process, monkeypatch, validation):
+    folder, revision, sample = validation
+    artifacts = {path.relative_to(folder): path.read_bytes() for path in (folder / "artifacts").iterdir()}
+    original = run(programs, tmp_path / "one", validation=folder / "scene-validation.json", scene_revision=revision)
+    shutil.rmtree(folder)
+    repeated = evaluation.rerun(tmp_path / "one", "nominal", tmp_path / "repeat")
+    assert original["trials"][0]["case"]["id"] == repeated["trials"][0]["case"]["id"]
+    for name, data in artifacts.items():
+        assert (tmp_path / "one/validation" / name).read_bytes() == data
+        assert (tmp_path / "repeat/validation" / name).read_bytes() == data
+    with np.load(tmp_path / "repeat/validation" / sample) as data:
+        assert data["state"].tolist() == [[0], [1]]
+    monkeypatch.setattr(evaluation, "environment", lambda: dict(python="changed runtime"))
+    with pytest.raises(ValueError, match="runtime changed"):
+        evaluation.rerun(tmp_path / "one", "nominal", tmp_path / "wrong-runtime")
+    (tmp_path / "one/inputs/model.dat").write_bytes(b"corrupted")
+    with pytest.raises(ValueError, match="input changed"):
+        evaluation.rerun(tmp_path / "one", "nominal", tmp_path / "wrong-input")
+
+
+@pytest.mark.parametrize("missing", [False, True])
+@pytest.mark.parametrize("rerun", [False, True])
+def test_validation_rejects_changed_or_missing_stability_samples(
+    tmp_path, programs, fake_process, validation, missing, rerun,
+):
+    folder, revision, sample = validation
+    if rerun:
+        run(programs, tmp_path / "original", validation=folder / "scene-validation.json", scene_revision=revision)
+        folder = tmp_path / "original/validation"
+        fake_process.clear()
+    if missing:
+        (folder / sample).unlink()
+    else:
+        (folder / sample).write_bytes(b"corrupted sample")
+    with pytest.raises((ValueError, FileNotFoundError)):
+        if rerun:
+            evaluation.rerun(tmp_path / "original", "nominal", tmp_path / "suite")
+        else:
+            run(programs, tmp_path / "suite", validation=folder / "scene-validation.json", scene_revision=revision)
+    assert not fake_process  # No policy or evaluator runs on unverifiable evidence.
+
+
+def test_validation_without_an_artifact_manifest_requires_regeneration(tmp_path, programs, fake_process, validation):
+    folder, revision, _ = validation
+    path = folder / "scene-validation.json"
+    report = json.loads(path.read_text())
+    del report["artifacts"]
+    save(path, report)
+    with pytest.raises(ValueError, match="regenerate the report"):
+        run(programs, tmp_path / "suite", validation=path, scene_revision=revision)
+    assert not fake_process and not (tmp_path / "suite").exists()
+
+
+def test_dwell_rejects_transient_success_simulation_reset_and_observation_gap():
+    times = np.arange(0., 2.1, .1)
+    true = np.ones(len(times), dtype=bool)
+    assert evaluation.held_for(times, true, seconds=2, max_gap_s=.11)
+    transient = true.copy()
+    transient[-2] = False
+    assert not evaluation.held_for(times, transient, seconds=2, max_gap_s=.11)
+    assert not evaluation.held_for([0., 2.], [True, True], seconds=2, max_gap_s=.11)
+    assert not evaluation.held_for([0., 1., 0., 2.], [True] * 4, seconds=2, max_gap_s=1.1)
+    assert not evaluation.held_for([0., 0.], [True, True], seconds=2, max_gap_s=1.1)
+
+
+def test_frozen_policy_uses_session_and_evaluator_sees_only_completed_episode(tmp_path, programs):
+    task, auditor, _ = programs
+    task.write_text('''from pathlib import Path
+from world_use import World, bodies
+from world_use.simulation import SimulationSession
+def run(robot, params, record):
+    assert Path(params["context"]["skill.md"]).read_text() == "Use current observations"
+    truth = World()
+    truth.add_box("hidden_truth", "object", [.5, 0, .02], [.03, .03, .04])
+    body = bodies.make("sim", truth, q=[.3782, .0015, -.0005, -.0011, .0625, .0051], gripper=1.)
+    with SimulationSession(body, Path(params["output"]), cameras={}, sources={"policy.py": Path(__file__)},
+                           entrypoint="policy.py") as session:
+        assert "hidden_truth" not in session.client.world()["boxes"]
+        assert "episode" not in params and "evaluator" not in params
+        session.client.enable()
+        session.client.run([dict(do="hold", seconds=.1)], wait=10, check=False)
+        session.client.release()
+        session.close(dict(verdict="inconclusive"))
+    return dict(verdict="pass")
+''')
+    auditor.write_text('''import json
+from pathlib import Path
+def run(robot, params, record):
+    episode = Path(params["episode"])
+    assert (episode / "physics/complete.json").exists()
+    assert not json.loads((episode / "task/result.json").read_text())["final_status"]["enabled"]
+    return dict(verdict="pass", valid_start=True, reasons=[], interventions=[])
+''')
+    skill = tmp_path / "skill.md"
+    skill.write_text("Use current observations")
+    report = run(programs, tmp_path / "actual", policy_context={"skill.md": skill})
+    assert report["counts"] == dict(completed=1, invalid=0, interrupted=0), report
+    assert report["trials"][0]["task"]["verdict"] == "pass"
+    assert report["trials"][0]["recording"]["power_off"]

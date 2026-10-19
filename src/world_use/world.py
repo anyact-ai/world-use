@@ -112,6 +112,27 @@ class Box:
             return -np.inf
         return float(self.size[2] / 2 - d[2])
 
+    def box_bounds(self, pose, size, margin: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+        """A conservative projection of an oriented box onto this box's three axes."""
+        center = self.local(pose[:3, 3])
+        half = np.abs(self.pose[:3, :3].T @ pose[:3, :3]) @ (np.asarray(size) / 2) + margin
+        return center - half, center + half
+
+    def intersects_box(self, pose, size, margin: float = 0.0) -> bool:
+        low, high = self.box_bounds(pose, size, margin)
+        return bool(np.all(low <= self.size / 2) and np.all(high >= -self.size / 2))
+
+    def box_depth(self, pose, size, margin: float = 0.0) -> float:
+        """Deepest projected corner below the support top; -inf outside its footprint.
+
+        Like depth(), a surface remains solid below its top. Projection can overestimate overlap when
+        boxes are rotated; it cannot miss an intersecting corner or edge.
+        """
+        low, high = self.box_bounds(pose, size, margin)
+        if np.any(low[:2] > self.size[:2] / 2) or np.any(high[:2] < -self.size[:2] / 2):
+            return -np.inf
+        return float(self.size[2] / 2 - low[2])
+
     @property
     def top(self) -> float:
         return float(self.pose[2, 3] + self.pose[2, 2] * self.size[2] / 2)

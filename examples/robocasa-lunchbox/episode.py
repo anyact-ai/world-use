@@ -16,8 +16,10 @@ from world_use.geometry import align_planar
 
 
 class LunchboxEpisode(Episode):
-    def __init__(self, output, scene=Path('runs/robocasa-lunchbox-compact/scene')):
+    def __init__(self, output, scene=Path('runs/robocasa-lunchbox-compact/scene'), *, entrypoint="lunchbox/episode.py"):
         super().__init__(output, scene, park_left_m=0, camera_factory=cameras,
+                         sources={"lunchbox/"+p.name: p for p in Path(__file__).parent.glob("*.py")},
+                         entrypoint=entrypoint,
                          task='Pack both snacks in the open lunchbox; leave them released, then power off',
                          sensors='Fixed side RGB-D and Panda eye-in-hand RGB-D; EdgeTAM CPU',
                          setup='Upstream RoboCasa kitchen, two rigid packaged snacks and an open container')

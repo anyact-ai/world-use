@@ -88,6 +88,7 @@ def audit(root):
     data = mj.MjData(model)
     replay = np.load(root/'replay.npz')
     final = json.loads((root/'final.json').read_text())
+    assert not final.get('recording_error'), final
     windows = contact_windows(root, final['object_phases']) if 'object_phases' in final else {}
     data.qpos[:] = replay['qpos'][-1]
     mj.mj_forward(model, data)

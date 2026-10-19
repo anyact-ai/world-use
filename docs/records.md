@@ -24,6 +24,60 @@ An open or interrupted record reports only the telemetry already committed to di
 frames as a reconstruction. The original camera pictures stay in `views/`. `wu fit` writes `fit.json`; the
 [2026-09-28 hardware record](hardware.md#2026-09-28-a-model-fitted-from-flight-records) shows what a fit changes.
 
+[External simulation sessions](simulation.md#external-simulation-sessions) additionally save the compiled scene,
+full physics states and exact policy observations beside `flight/`. For these records, `wu replay` follows
+`flight/external-scene.json` to restore the actual scene through a fixed recorded camera, without stepping physics.
+Keep the whole episode folder together. Rerun's 3D view continues to show the estimated world.
+
+## Inspect an experiment
+
+`wu inspect` and `wu view` also accept an external episode, an evaluation suite or
+trial, or a scene-validation directory. Select a named case to connect the suite's
+revision and outcome to its flight record and exact policy observations:
+
+```sh
+wu inspect runs/evaluation --case nominal-seed17 --json
+wu view runs/evaluation --case nominal-seed17
+wu view runs/evaluation --case nominal-seed17 --scene --out case.rrd
+wu view runs/scene-validation/refined --out comparison.rrd
+wu rerun runs/evaluation nominal-seed17 --out runs/evaluation-repeat
+```
+
+Inspection also accepts a recorded Python task directory. `task_trace.phases` lists
+named phases with their IDs, parents and completion state. Expand one with
+`wu inspect runs/evaluation --case nominal-seed17 --phase 42 --json`, using an ID
+from that list. The result includes nested phases, recorded calls, checked artifact
+references and known job outcomes. Large frames and arrays remain in their files.
+A missing phase end or unanswered call retains an unknown outcome; inspection
+does not infer that motion stopped or succeeded. Phase clocks remain relative to
+the task start. Job IDs connect the trace to flight evidence without aligning clocks.
+
+The evidence panes label reference comparisons, raw policy frames and estimated
+geometry separately. `--scene` additionally renders a snapshot of recorded full
+simulation state and needs the same graphics support as replay. It never advances
+physics. Full motion remains available through `wu replay`; a snapshot is not a
+new observation or a physical validation result.
+Raw frames use `policy_elapsed` from the task start; flight telemetry uses
+`elapsed` from the kernel start. Select the appropriate timeline; the viewer does
+not claim these different clock origins are aligned.
+
+Inspection is read-only. `wu rerun` explicitly executes the recorded trusted
+Python policy and evaluator in fresh processes and a fresh output directory. It
+refuses changed source, inputs or runtime; failed and interrupted saved cases
+can be recreated. A completed attempt can still have a failed task verdict.
+
+For embedded scene development, [`SimulationWorkspace`](../src/world_use/inspection.py)
+owns an explicit `factory(fresh_output) -> SimulationSession`. `reset()` builds
+a new episode under the same declared scene revision; `reload(factory,
+scene_revision=...)` tries a revised scene. Both require the current simulation
+to be idle with confirmed power off. Failed candidates retain the last valid
+record and publish the error in `inspection.json`. `wu view WORKSPACE --follow`
+follows that pointer in one viewer. This is an explicit Python lifecycle API;
+the viewer does not edit scene source or control hardware. The scene owner must
+serialize reset/reload with other control calls.
+A storage failure while publishing a replacement closes the candidate and keeps
+the previous recorded scene selected; the previous daemon may already be closed.
+
 ## View in Rerun
 
 ![A recorded block task in Rerun: robot geometry, camera observations, joint plots and events](assets/simulation-rerun.png)
@@ -113,6 +167,25 @@ from a uniform sample of that size (`tick_percentile_sample`); the maximum stays
 exact percentiles from the saved chunks.
 
 ## What an agent adds
+
+Named simulation evaluations keep `suite.json` with frozen setup/policy/evaluator source,
+declared input hashes, runtime identity, scene revision and every case/seed. Each
+`trials/<name>/trial.json` records execution status, outcome, reasons, interventions,
+wall and simulation time, recording integrity and power cleanup. Setup, policy and
+privileged evaluator artifacts stay in separate directories beside `scene/` and `episode/`.
+Status is decided once from the recorded facts: an interrupt or a policy process lost
+without a terminal record is `interrupted`; a failed setup or evaluator, changed inputs,
+sources or runtime, or incomplete evidence is `invalid`; anything else is `completed`.
+A case that never wrote `trial.json` remains an interrupted attempt in the summary.
+
+A matching `scene-validation.json` and its hashed evidence can accompany the
+suite. The report's artifact manifest includes raw stability samples as well as
+reference inputs, comparison details and images. Every listed file is verified
+and copied for both evaluations and reruns. Regenerate older reports without an
+artifact manifest before attaching them to a suite.
+Camera/appearance, geometry and physical-response results remain separate
+from task success. An absent reference is `unvalidated`; a stale scene revision
+is rejected. See [reference checks and repeated evaluation](simulation.md#reference-checks-and-repeated-evaluation).
 
 For saved Python tasks, the [task-program example](../examples/task-programs) records source snapshots,
 parameters, full frames and computations alongside the existing flight record. Each invocation uses fresh

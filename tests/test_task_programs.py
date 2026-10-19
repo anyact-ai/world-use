@@ -1,7 +1,6 @@
 """Task recording with saved inputs and a fake transport; no daemon, model or simulator is started."""
 from __future__ import annotations
 
-import importlib.util
 import json
 import subprocess
 import sys
@@ -14,22 +13,17 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from world_use import tasks as recording
 from world_use.cameras import Frame, View
 from world_use.client import Client
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples/task-programs"
-spec = importlib.util.spec_from_file_location("task_record", EXAMPLE / "task_record.py")
-assert spec is not None and spec.loader is not None
-recording = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = recording
-spec.loader.exec_module(recording)
 
 
 def bundle(tmp_path, code="def run(robot, params, record):\n    return {'verdict': 'pass'}\n", **options):
     task = tmp_path / "task.py"
     task.write_text(code)
-    sources = {"task.py": task, **{f"__runner__/{name}": EXAMPLE / name
-                                  for name in ("run_task.py", "task_record.py")}}
+    sources = {"task.py": task, "__runner__/tasks.py": Path(recording.__file__)}
     return recording.prepare(tmp_path / "invocation", sources, entrypoint="task.py", parameters={}, **options)
 
 
@@ -38,7 +32,7 @@ def events(root):
 
 
 def execute(root):
-    return subprocess.run([sys.executable, "-I", str(root / "source/__runner__/run_task.py"),
+    return subprocess.run([sys.executable, "-I", str(root / "source/__runner__/tasks.py"),
                            "--execute", str(root)], cwd=root / "source", text=True, capture_output=True, check=False)
 
 
@@ -48,8 +42,7 @@ def test_frozen_entrypoint_and_helper_are_executed_once(tmp_path):
                     "    return {'verdict': 'pass', 'value': VALUE, 'parameter': params['n']}\n")
     helper = tmp_path / "helper.py"
     helper.write_text("VALUE = 7\n")
-    sources = {"task.py": task, "helper.py": helper,
-               **{f"__runner__/{name}": EXAMPLE / name for name in ("run_task.py", "task_record.py")}}
+    sources = {"task.py": task, "helper.py": helper, "__runner__/tasks.py": Path(recording.__file__)}
     root = recording.prepare(tmp_path / "run", sources, entrypoint="task.py", parameters={"n": 3})
     task.write_text("raise RuntimeError('mutable original was imported')\n")
     helper.write_text("VALUE = 900\n")
@@ -90,11 +83,19 @@ def test_failed_cell_keeps_source_inputs_output_and_exception(tmp_path):
 
 
 def test_killed_task_leaves_unanswered_intent_not_a_success(tmp_path):
-    root = bundle(tmp_path, "import os\ndef run(robot, params, record):\n    record.call(os._exit, 9)\n")
+    root = bundle(tmp_path, "import os\ndef run(robot, params, record):\n"
+                  "    with record.phase('attempt'):\n        record.call(os._exit, 9)\n")
     result = execute(root)
     assert result.returncode == 9
     assert events(root)[-1]["kind"] == "intent" and events(root)[-1]["inputs"]["args"] == [9]
+    phase = next(e["seq"] for e in events(root) if e["kind"] == "phase_begin")
+    assert events(root)[-1]["phase"] == phase
+    assert not any(e["kind"] == "phase_end" for e in events(root))
     assert not (root / "result.json").exists()
+    from world_use.inspection import inspect
+    trace = inspect(root, phase=phase).report["task_trace"]
+    assert trace["phases"][0]["status"] == "unknown"
+    assert trace["unanswered_calls"] == [events(root)[-1]["seq"]]
 
 
 def test_truncated_trace_exposes_only_the_committed_prefix(tmp_path):
@@ -118,6 +119,30 @@ def test_invalid_or_failed_task_has_a_failure_record(tmp_path, code):
     assert result.returncode != 0
     saved = json.loads((root / "result.json").read_text())
     assert saved["result"] is None and saved["exception"]
+
+
+def test_non_finite_result_keeps_its_terminal_record(tmp_path):
+    code = "def run(robot, params, record):\n    return {'verdict': 'fail', 'error_m': float('nan')}\n"
+    root = bundle(tmp_path, code)
+    execute(root)
+    saved = json.loads((root / "result.json").read_text())
+    assert saved["result"] == {"verdict": "fail", "error_m": "nan"} and saved["exception"] is None
+
+
+def test_interrupted_launcher_lets_the_task_finish_its_record(tmp_path, monkeypatch):
+    task = tmp_path / "task.py"
+    task.write_text("import time\ndef run(robot, params, record):\n    time.sleep(1)\n    return {'verdict': 'pass'}\n")
+    wait = subprocess.Popen.wait
+
+    def interrupted_once(process, timeout=None):
+        # The interrupt reaches the launcher while it waits; no real signal can escape into pytest.
+        monkeypatch.setattr(subprocess.Popen, "wait", wait)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(subprocess.Popen, "wait", interrupted_once)
+    with pytest.raises(KeyboardInterrupt):
+        recording.launch(task, tmp_path / "run", parameters={})
+    assert json.loads((tmp_path / "run/result.json").read_text())["result"] == {"verdict": "pass"}
 
 
 class Transport:
@@ -174,6 +199,36 @@ def connected(tmp_path, monkeypatch):
     client = recording.RecordedClient("http://fake.invalid", record)
     client.begin()
     return client, record, transport
+
+
+def test_phases_group_client_evidence_and_restore_parent_after_failure(connected):
+    client, record, _ = connected
+    with record.phase("place", context={"object": "block"}) as outer:
+        frame = client.frame("top", depth=True)
+        measurement = client.measure(frame, point=[0, 0])
+        client.run([], requires=[dict(evidence=measurement["id"], max_age_s=30)])
+        with pytest.raises(ValueError, match="object missed target"), record.phase("verify") as inner:
+            raise ValueError("object missed target")
+        client.status()
+    client.status()
+    trace = events(record.root)
+    begin = next(e for e in trace if e["seq"] == outer)
+    assert begin["phase"] is None and begin["context"] == {"object": "block"}
+    assert next(e for e in trace if e["seq"] == inner)["phase"] == outer
+    assert next(e for e in trace if e["kind"] == "reply" and "frame" in e["result"])["phase"] == outer
+    assert [e["status"] for e in trace if e["kind"] == "phase_end"] == ["failed", "completed"]
+    assert trace[-1]["phase"] is None
+    assert any(e["phase"] == outer and e["seq"] > inner and e["kind"] == "reply" for e in trace)
+
+
+def test_phase_recording_failure_preserves_original_exception_and_recovery(connected):
+    client, record, transport = connected
+    with pytest.raises(KeyboardInterrupt, match="interrupted"), record.phase("attempt"):
+        record.error = "disk full"
+        raise KeyboardInterrupt("interrupted")
+    assert record.phase_id is None
+    client.release()
+    assert transport.requests[-1][1] == "/release"
 
 
 def test_hardware_is_refused_before_any_mutating_request(tmp_path, monkeypatch):
@@ -259,10 +314,6 @@ def test_launcher_reports_exit_state_without_issuing_robot_actions(tmp_path, mon
     # Execute with the real recorded client and a fake transport, without spawning a daemon.
     monkeypatch.setattr(sys, "path", sys.path.copy())
     monkeypatch.setitem(sys.modules, "task_program", None)
-    spec = importlib.util.spec_from_file_location("task_launcher", EXAMPLE / "run_task.py")
-    assert spec is not None and spec.loader is not None
-    launcher = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(launcher)
     code = ("import numpy as np\ndef run(robot, params, record):\n"
             "    robot.run([])\n    return {'verdict': 'pass', 'values': np.array([1, 2])}\n")
     root = bundle(tmp_path, code, url="http://fake.invalid")
@@ -280,7 +331,7 @@ def test_launcher_reports_exit_state_without_issuing_robot_actions(tmp_path, mon
 
     transport.after_run = change_state
     monkeypatch.setattr(Client, "_call", lambda *args, **kwargs: transport.call(*args, **kwargs))
-    assert launcher.execute(root) == 1
+    assert recording.execute(root) == 1
     saved = json.loads((root / "result.json").read_text())
     assert saved["result"]["verdict"] == "pass"  # Preserve what the task actually returned.
     assert all(path in ("/record", "/run") for method, path, _ in transport.requests if method == "POST")

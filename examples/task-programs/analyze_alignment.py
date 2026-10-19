@@ -36,7 +36,7 @@ def run(robot, params, record):
 
 
 def main():
-    from run_task import launch
+    from world_use.tasks import launch
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("geometry", type=Path)

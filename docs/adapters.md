@@ -7,7 +7,8 @@ path; the planning worker uses the description, without loading hardware code.
 For an external simulation, the [Panda kitchen adapter](../examples/robocasa-counter/adapter.py)
 shows the same I/O contract connected to a RoboCasa scene. Its
 [setup guide](../examples/robocasa-counter) explains what the integration supports and where
-it disables rehearsal.
+it disables rehearsal. MuJoCo tasks can share lifecycle and recording through
+[`SimulationSession`](simulation.md#external-simulation-sessions).
 
 ## Try the complete path
 
@@ -126,6 +127,38 @@ its URDF range, and `m_per_unit` is optional. Two opposed prismatic fingers that
 start at zero share the opening along `opens_along`; they need `m_per_unit`. Other
 mechanisms need their own simulation model. Without `[gripper]`, joints outside the
 arm chain stay at their URDF zero.
+
+### Collision bounds
+
+Declare conservative boxes in the `tool_link` frame for tools and fingers that
+extend beyond the tool point. Each finger box must cover its whole travel; separate
+boxes can leave the opening between fingers free. For example, after measuring a
+tool, replace these illustrative dimensions and source:
+
+```toml
+[[tool_boxes]]
+name = "probe"
+role = "tool"                  # tool or finger
+center = [0.0, 0.0, -0.025]    # metres in the tool frame
+size = [0.01, 0.01, 0.05]      # full extents, metres
+rpy = [0.0, 0.0, 0.0]         # radians
+source = "caliper measurement of mounted probe"
+```
+
+Planning and measured ticks check these boxes against keep-out zones and support
+surfaces. The estimated held-object box uses its declared attachment transform;
+it does not reveal simulator state. Planning includes the swept corners of a
+rotating payload. A guarded, nearly normal approach can select one support for
+the existing bounded contact search. Every part that reaches it wholly above its
+footprint, such as two fingers, shares that allowance; overhanging parts and other
+geometry keep their clearance.
+That allowance ends with the step or interruption. It is a search allowance under
+contact monitoring, not evidence that physical penetration is acceptable.
+
+The card and rehearsal report list declared sources and omissions. Empty
+`tool_boxes` means no tool/finger bounds were declared. Self-collision, the
+pedestal, arm-link/surface collision and unattached objects as obstacles remain
+outside these checks. Declaring bounds does not change simulator geometry.
 
 ### Rest or brakes
 

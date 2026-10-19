@@ -2,8 +2,9 @@
 
 An LLM can explore a task with short Python snippets, then extract a parameterized
 program for repeated use. This example preserves the code and observations behind
-those decisions. It uses the existing world-use client; nothing is added to the
-kernel or the installed `wu` interface.
+those decisions. The implementation lives in `world_use.tasks` and uses the
+existing client and kernel. [External simulation sessions](../../docs/simulation.md#external-simulation-sessions)
+share its recorder.
 
 Each invocation gets its own source snapshot, parameters, inputs and trace.
 Repeat the **program**, using current observations, rather than resending a saved
@@ -44,7 +45,7 @@ def run(robot, params, record):
 With `{"values": [1, 2, 3]}` in `parameters.json`:
 
 ```sh
-uv run python examples/task-programs/run_task.py /path/to/task.py \
+uv run python -m world_use.tasks /path/to/task.py \
   --params /path/to/parameters.json --output runs/task-01
 ```
 
@@ -61,6 +62,23 @@ value or exception afterward. To read an external file, first copy it with
 `path = record.input_file(original_path)`, then read that saved path. NumPy arrays
 are saved without pickle. Functions must come from declared local source or an
 identified installed dependency; arbitrary imports are not discovered for you.
+
+Group related evidence and actions into a named phase:
+
+```python
+with record.phase("place", context={"object": "block"}) as phase_id:
+    frame = robot.frame("top", depth=True)
+    # Measure, compute and submit through this recorded client.
+```
+
+Phases may nest. All recorded calls, computations and artifacts retain the active
+phase ID; `wu inspect TASK_FOLDER` lists phases and `--phase ID` expands one.
+Completion means the Python block returned normally, not that placement succeeded.
+Record the verification result separately. Exceptions mark a phase failed; process
+loss without an end leaves it unknown. Phases do not change control, retry calls or
+resolve motor power. The recorder remains single-writer; independent clients are
+outside its coverage. The pushing example groups each feedback attempt; the kitchen
+agent example groups each MCP call and its internal observations.
 
 For exploration, execute a file-backed cell in a persistent namespace:
 
@@ -100,9 +118,9 @@ source automatically. Refresh after grasp changes, contact, loss of tracking,
 and before verifying a released placement. Re-establish movable objects and
 occupancy; a new Python process does not reset the daemon's world.
 
-Pass this same client to `Tracking(robot, tracker)` to record its internal frame
-acquisitions too. Calls through an independent client or MCP server are outside
-this recorder's coverage. Full frame transport data, including native RGB,
+Pass this same client to `Tracking(robot, tracker)` or `mcp_server.build(client=robot)`
+to record their internal frame acquisitions too. Calls through an independent
+client are outside this recorder's coverage. Full frame transport data, including native RGB,
 aligned depth, calibration revision, timestamp and captured tool pose, is saved
 in `.frame.json` artifacts. Read these offline using
 `Frame.from_dict(json.loads(path.read_text()))`; restoring a file does not make

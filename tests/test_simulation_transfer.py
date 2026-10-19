@@ -51,7 +51,7 @@ def test_two_blocks_cross_a_divider_and_remain_placed(tmp_path):
                               dict(do="move_to", to=to.tolist())], k)
             assert not shortcut.ok and any(r["rule"] == "keep_out" for r in shortcut.problems)
             np.testing.assert_array_equal(k.cmd.q, before)
-            # Clear the divider with the bottom of the payload too; the kernel does not model payload collision.
+            # The declared held-object box must clear the divider with its bottom too.
             execute([dict(do="move_to", to=[tool[0], tool[1], .36]),
                      dict(do="move_to", to=[to[0], -.04, .36]),
                      dict(do="move_to", to=[to[0], to[1], .36]),

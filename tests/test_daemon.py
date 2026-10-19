@@ -140,7 +140,7 @@ def test_cli_returns_structured_json_and_concise_input_errors(client, tmp_path, 
     for args, message in [
         (["run", "[{"], "invalid JSON"),
         (["check", str(tmp_path / "missing.json")], "cannot read JSON file"),
-        (["inspect", str(tmp_path / "missing")], "not a flight record"),
+        (["inspect", str(tmp_path / "missing")], "flight record"),
         (["replay", str(tmp_path), "--speed", "0"], "speed"),
     ]:
         assert cli.main(["--url", client.url, *args]) == 2

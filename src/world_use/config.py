@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .body import GripperSpec, JointSpec, Manifest, Rest
+from .body import GripperSpec, JointSpec, Manifest, Rest, ToolBox
 from .cameras import CameraConfig
 from .kinematics import Chain
 from .request_models import BoxRequest
@@ -134,6 +134,13 @@ def manifest_from_data(data: dict, folder: Path = Path(".")) -> Manifest:
         if min(weights) < 0 or max(weights) <= 0:
             raise ValueError("robot.ik_weights: expected 6 nonnegative weights for x, y, z, rx, ry, rz")
         data["ik_weights"] = weights
+    if "tool_boxes" in data:
+        if not isinstance(data["tool_boxes"], (list, tuple)):
+            raise ValueError("robot.tool_boxes: expected a list of boxes")
+        boxes = tuple(_make(ToolBox, box, "tool_boxes") for box in data["tool_boxes"])
+        if len({box.name for box in boxes}) != len(boxes):
+            raise ValueError("robot.tool_boxes: names must be unique")
+        data["tool_boxes"] = boxes
     if "turn_clearance" in data:
         turn = data["turn_clearance"]
         _keys(turn, ("joints", "height_m"), "turn_clearance")

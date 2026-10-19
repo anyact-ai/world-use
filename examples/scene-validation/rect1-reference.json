@@ -1,0 +1,55 @@
+{
+  "source_page": "https://web.mit.edu/mcube/push-dataset/index.html",
+  "archive_url": "https://dl.dropboxusercontent.com/s/5h3dsjorbrpmjqh/rect1_json.zip",
+  "selection_basis": "Selected by published filename parameters only, before downloading any trajectory measurements. Two development cases, repeated trials reserved, plus a reserved different contact offset and angle.",
+  "evidence_limit": "Separate recorded pushes on the same plywood/rect1 setup; does not establish transfer to another setup. Source is the author-linked ICRA2017 validation archive.",
+  "selected_at": "2026-10-16T11:24:50.264350+00:00",
+  "selection_sha256": "e744c895646fd514bb6c30c92d8e454c627ccd7b6dcfa5e127fdf69f2b43625e",
+  "cases": [
+    {
+      "name": "fit_center",
+      "role": "fit",
+      "path": "fit_center.json",
+      "archive_member": "rect1_json/motion_surface=plywood_shape=rect1_a=0_v=20_i=0.000_s=0.500_t=0.000_rep=0000.json",
+      "sha256": "171f128d4e77039232ac6373449d929d3b5af34a660bb899510abb049c602301",
+      "bytes": 104804,
+      "source_url": "https://dl.dropboxusercontent.com/s/5h3dsjorbrpmjqh/rect1_json.zip"
+    },
+    {
+      "name": "fit_offset",
+      "role": "fit",
+      "path": "fit_offset.json",
+      "archive_member": "rect1_json/motion_surface=plywood_shape=rect1_a=0_v=20_i=0.000_s=0.300_t=-0.300_rep=0000.json",
+      "sha256": "983d35d3445664f0e0f0ccb5388981e682b97e41fece24a44d6d7b1577f7cccc",
+      "bytes": 113992,
+      "source_url": "https://dl.dropboxusercontent.com/s/5h3dsjorbrpmjqh/rect1_json.zip"
+    },
+    {
+      "name": "reserved_center_repeat",
+      "role": "held_out",
+      "path": "reserved_center_repeat.json",
+      "archive_member": "rect1_json/motion_surface=plywood_shape=rect1_a=0_v=20_i=0.000_s=0.500_t=0.000_rep=0099.json",
+      "sha256": "7cc70d8ebb1fd305612362f05e677d6f5d64f5aaa718f471fde6206a70cee63e",
+      "bytes": 105318,
+      "source_url": "https://dl.dropboxusercontent.com/s/5h3dsjorbrpmjqh/rect1_json.zip"
+    },
+    {
+      "name": "reserved_offset_repeat",
+      "role": "held_out",
+      "path": "reserved_offset_repeat.json",
+      "archive_member": "rect1_json/motion_surface=plywood_shape=rect1_a=0_v=20_i=0.000_s=0.300_t=-0.300_rep=0099.json",
+      "sha256": "04981baac0f988f399a831582940b668b798af365c522bd6068c9892e2dcabdd",
+      "bytes": 112643,
+      "source_url": "https://dl.dropboxusercontent.com/s/5h3dsjorbrpmjqh/rect1_json.zip"
+    },
+    {
+      "name": "reserved_new_contact",
+      "role": "held_out",
+      "path": "reserved_new_contact.json",
+      "archive_member": "rect1_json/motion_surface=plywood_shape=rect1_a=0_v=20_i=0.000_s=0.700_t=0.400_rep=0099.json",
+      "sha256": "eed4cdfa2eb4283dfcedf31047420cdf795bed22f0970786b25008c18bcd14ea",
+      "bytes": 105946,
+      "source_url": "https://dl.dropboxusercontent.com/s/5h3dsjorbrpmjqh/rect1_json.zip"
+    }
+  ]
+}

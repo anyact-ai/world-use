@@ -194,13 +194,21 @@ def main(argv=None) -> int:
     p.add_argument("--context", help="JSON or a JSON file with agent/model inputs to retain")
     p = sub.add_parser("inspect", help="summarize a recorded run offline")
     p.add_argument("run", type=Path)
+    p.add_argument("--case", help="named case within an evaluation suite")
+    p.add_argument("--phase", type=int, help="task phase ID from inspection; include its calls and evidence")
+    p = sub.add_parser("rerun", help="rerun one pinned simulation evaluation case in a fresh suite")
+    p.add_argument("suite", type=Path)
+    p.add_argument("case")
+    p.add_argument("--out", required=True, type=Path)
     p = sub.add_parser("replay", help="render recorded measurements and the world model; never operates hardware")
     p.add_argument("run", type=Path)
     p.add_argument("--out", type=Path, help="GIF to write (default: replay.gif in the run folder)")
     p.add_argument("--speed", type=float, default=1.0)
     p = sub.add_parser("view", help="open a read-only Rerun viewer for the local daemon or a recorded run")
     p.add_argument("run", nargs="?", type=Path, help="run folder; omit to follow the daemon across sessions")
-    p.add_argument("--follow", action="store_true", help="follow new samples in the supplied run folder")
+    p.add_argument("--follow", action="store_true", help="follow samples or a simulation inspection workspace")
+    p.add_argument("--case", help="named case within an evaluation suite")
+    p.add_argument("--scene", action="store_true", help="also render the latest saved physical scene (requires OpenGL)")
     p.add_argument("--out", type=Path, help="save a portable .rrd instead of opening a window")
     p = sub.add_parser("calibrate", help="find where a camera is from the arm: answer where it sees the tool point")
     p.add_argument("camera")
@@ -239,17 +247,31 @@ def main(argv=None) -> int:
                     raise ValueError("the daemon has no run folder; start it with --runs or supply a saved run")
                 folder = Path(recorded)
             result = view(folder, output=a.out, follow=a.follow or a.run is None,
-                          live_client=c if a.run is None and a.out is None else None)
+                          live_client=c if a.run is None and a.out is None else None, case=a.case, scene=a.scene)
             if result is not None:
                 print(json.dumps(dict(path=str(result))) if a.json else result)
             return 0
+        if a.cmd == "rerun":
+            from .evaluation import rerun
+            from .inspection import inspect
+            selected = inspect(a.suite, case=a.case)
+            if selected.flight is not None and selected.report["flight"]["session"].get("mode") != "simulation":
+                raise ValueError("named evaluation rerun requires simulation evidence")
+            r = rerun(a.suite, a.case, a.out)
+            print(json.dumps(r, indent=2))
+            return 0 if all(t["status"] == "completed" and (t.get("task") or {}).get("verdict") == "pass"
+                            for t in r["trials"]) else 4
         if a.cmd == "demo":
             return cmd_demo(a)
         if a.cmd in ("inspect", "replay"):
             from . import records
             if a.cmd == "inspect":
-                r = records.inspect(a.run)
-                print(json.dumps(r, indent=2) if a.json else records.describe(r))
+                if (a.run / "session.json").exists() and a.case is None and a.phase is None:
+                    r = records.inspect(a.run)
+                    print(json.dumps(r, indent=2) if a.json else records.describe(r))
+                else:
+                    from .inspection import inspect
+                    print(json.dumps(inspect(a.run, case=a.case, phase=a.phase).report, indent=2))
             else:
                 print(records.replay(a.run, a.out or a.run / "replay.gif", speed=a.speed))
             return 0
@@ -316,7 +338,7 @@ def main(argv=None) -> int:
         print(f"{a.cmd}: {e}", file=sys.stderr)
         return 2
     except OSError as e:
-        if a.cmd in ("demo", "inspect", "replay", "view", "fit", "policy", "up"):
+        if a.cmd in ("demo", "inspect", "replay", "view", "rerun", "fit", "policy", "up"):
             print(f"{a.cmd}: {e}", file=sys.stderr)
             return 2
         return _unreachable(a.url, e)
