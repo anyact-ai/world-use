@@ -8,7 +8,9 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 from collections import deque
+from contextlib import suppress
 from pathlib import Path
+from stat import S_ISREG
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -524,6 +526,20 @@ def evidence_blueprint(viewer, evidence: EvidenceView, *, follow):
                          collapse_panels=True)
 
 
+def _fingerprint(path: Path) -> list[tuple[str, int, int]]:
+    """Size and modification time of every saved evidence file; dot-named temporaries are skipped."""
+    root = path if path.is_dir() else path.parent
+    stamps = []
+    for item in root.rglob("*"):
+        if item.name.startswith("."):
+            continue
+        with suppress(FileNotFoundError):
+            info = item.stat()
+            if S_ISREG(info.st_mode):
+                stamps.append((str(item), info.st_size, info.st_mtime_ns))
+    return sorted(stamps)
+
+
 def view_evidence(path: Path, *, case: str | None = None, output: Path | None = None,
                   follow=False, scene=False):
     """Keep one inspection window on a revision; workspace reload failure leaves its old scene visible."""
@@ -532,6 +548,7 @@ def view_evidence(path: Path, *, case: str | None = None, output: Path | None = 
     rr = _sdk()
     path = Path(path).expanduser().resolve()
     selection = inspect(path, case=case)
+    stamp, changed = _fingerprint(path), True
     rec = viewer = reader = evidence = None
     active = None
     try:
@@ -562,11 +579,17 @@ def view_evidence(path: Path, *, case: str | None = None, output: Path | None = 
                 viewer.append(*reader.poll())
                 if reader.complete or not follow:
                     viewer.finish_events()
-            evidence.poll(selection)
-            rec.send_blueprint(evidence_blueprint(viewer, evidence, follow=follow))
+            if changed:
+                evidence.poll(selection)
+                rec.send_blueprint(evidence_blueprint(viewer, evidence, follow=follow))
             if not follow:
                 break
             time.sleep(1)
+            # Re-inspecting reads every tape chunk and the whole trace; skip it while no saved file has changed.
+            current = _fingerprint(path)
+            changed, stamp = current != stamp, current
+            if not changed:
+                continue
             try:
                 selection = inspect(path, case=case)
             except (ValueError, OSError) as exc:

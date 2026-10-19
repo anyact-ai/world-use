@@ -18,7 +18,9 @@ def render(folder, speed=2., fps=30):
     if not np.isfinite(speed) or speed <= 0:
         raise ValueError("playback speed must be positive and finite")
     folder = Path(folder)
-    replay = np.load(folder / "replay.npz")
+    # Each NpzFile access decompresses the whole array; the frame loop needs them in memory.
+    with np.load(folder / "replay.npz") as stored:
+        replay = {key: stored[key] for key in stored.files}
     times = replay["simulation_time"] if "simulation_time" in replay else replay["time"]
     model = mj.MjModel.from_binary_path(str(folder / "scene.mjb"))
     data = mj.MjData(model)

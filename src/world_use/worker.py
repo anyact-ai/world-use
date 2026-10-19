@@ -6,6 +6,7 @@ multiprocessing's public API.
 """
 from __future__ import annotations
 
+import atexit
 import multiprocessing
 import os
 import signal
@@ -82,6 +83,9 @@ class Rehearser:
         self._closed = threading.Event()
         self._executor = ThreadPoolExecutor(1, thread_name_prefix="robot-planning")
         self._start()
+        # The worker ignores SIGTERM, so multiprocessing's exit handler would terminate and then join it forever
+        # when an owner exits without close(). Registered after multiprocessing's handler, this runs first.
+        atexit.register(self._kill)
 
     def _start(self):
         ctx = multiprocessing.get_context("spawn")
@@ -148,4 +152,5 @@ class Rehearser:
     def close(self):
         self._closed.set()
         self._kill()
+        atexit.unregister(self._kill)
         self._executor.shutdown(wait=True, cancel_futures=True)

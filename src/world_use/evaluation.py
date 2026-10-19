@@ -251,8 +251,11 @@ def _run_case(root: Path, suite: dict, case: dict):
             result["setup_exit"] = _launch(root, suite["setup"], trial / "setup", dict(params, output=str(scene)))
             _verify_inputs(root, suite)
             _verify_sources(root, suite["setup"])
-            prepared = (_terminal(trial / "setup") or {}).get("result")
-            if (not isinstance(prepared, dict) or not isinstance(prepared.get("valid_start"), bool)
+            record = _terminal(trial / "setup") or {}
+            prepared = record.get("result")
+            if record.get("exception") or record.get("recording_error"):
+                reject("setup failed or its record is incomplete")
+            elif (not isinstance(prepared, dict) or not isinstance(prepared.get("valid_start"), bool)
                     or not isinstance(prepared.get("reasons"), list)):
                 reject("setup did not establish an initial state")
             elif not prepared["valid_start"]:

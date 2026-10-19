@@ -2,11 +2,8 @@
 from __future__ import annotations
 
 import json
-import os
-import signal
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -132,20 +129,20 @@ def test_non_finite_result_keeps_its_terminal_record(tmp_path):
     assert saved["result"] == {"verdict": "fail", "error_m": "nan"} and saved["exception"] is None
 
 
-def test_interrupted_launcher_lets_the_task_finish_its_record(tmp_path):
+def test_interrupted_launcher_lets_the_task_finish_its_record(tmp_path, monkeypatch):
     task = tmp_path / "task.py"
     task.write_text("import time\ndef run(robot, params, record):\n    time.sleep(1)\n    return {'verdict': 'pass'}\n")
-    output = tmp_path / "run"
+    wait = subprocess.Popen.wait
 
-    def interrupt():  # Only the launcher is signalled, as when it alone is sent SIGINT.
-        while not (output / "started.json").exists():
-            time.sleep(.01)
-        os.kill(os.getpid(), signal.SIGINT)
+    def interrupted_once(process, timeout=None):
+        # The interrupt reaches the launcher while it waits; no real signal can escape into pytest.
+        monkeypatch.setattr(subprocess.Popen, "wait", wait)
+        raise KeyboardInterrupt
 
-    threading.Thread(target=interrupt, daemon=True).start()
+    monkeypatch.setattr(subprocess.Popen, "wait", interrupted_once)
     with pytest.raises(KeyboardInterrupt):
-        recording.launch(task, output, parameters={})
-    assert json.loads((output / "result.json").read_text())["result"] == {"verdict": "pass"}
+        recording.launch(task, tmp_path / "run", parameters={})
+    assert json.loads((tmp_path / "run/result.json").read_text())["result"] == {"verdict": "pass"}
 
 
 class Transport:

@@ -15,7 +15,8 @@ def run(robot, params, record):
     # The suite's setup program already judged the starting state; invalid starts never reach the policy.
     folder = Path(params["episode"])
     physical = audit(folder)
-    replay = np.load(folder / "replay.npz")
+    with np.load(folder / "replay.npz") as stored:
+        replay = {key: stored[key] for key in ("simulation_time", "qpos", "qvel")}
     model = mj.MjModel.from_binary_path(str(folder / "scene.mjb"))
     task = json.loads((folder / "task.json").read_text())
     condition = np.ones(len(replay["simulation_time"]), dtype=bool)

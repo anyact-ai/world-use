@@ -79,7 +79,9 @@ def fake_process(monkeypatch):
             if mode == "corrupt":
                 (Path(parameters["output"]) / "flight/complete.json").unlink()
             result = dict(verdict="fail" if mode == "failed" else "pass")
-        save(output / "result.json", dict(result=result, exception=None, recording_error=None))
+        lost_record = output.name == "setup" and mode == "setup-unrecorded"
+        save(output / "result.json", dict(result=result, exception=None,
+                                          recording_error="disk full" if lost_record else None))
         return 1 if result["verdict"] == "fail" else 0
 
     monkeypatch.setattr(evaluation, "launch", launch)
@@ -211,17 +213,20 @@ def test_interrupt_after_a_passing_evaluation_is_not_completed(tmp_path, program
 def test_setup_owns_the_starting_state_and_case_identity(tmp_path, programs, fake_process):
     setup = tmp_path / "setup.py"
     setup.write_text("def run(robot, params, record):\n    return {'verdict': 'pass'}\n")
-    cases = [case(), case("overlap", valid_start=False), case("edited", mode="edit-scene")]
+    cases = [case(), case("overlap", valid_start=False), case("edited", mode="edit-scene"),
+             case("unrecorded", mode="setup-unrecorded")]
     first = run(programs, tmp_path / "one", setup=setup, cases=cases)
-    assert [t["status"] for t in first["trials"]] == ["completed", "invalid", "invalid"]
+    assert [t["status"] for t in first["trials"]] == ["completed", "invalid", "invalid", "invalid"]
     assert "letters overlap" in first["trials"][1]["reasons"]
     assert "prepared scene changed" in first["trials"][2]["reasons"][-1]
+    assert first["trials"][3]["reasons"] == ["setup failed or its record is incomplete"]
     stages = [(Path(task).name, parameters.get("scene")) for task, parameters in fake_process]
-    assert [name for name, _ in stages] == ["setup.py", "policy.py", "audit.py", "setup.py", "setup.py", "policy.py"]
+    assert [name for name, _ in stages] == ["setup.py", "policy.py", "audit.py", "setup.py",
+                                            "setup.py", "policy.py", "setup.py"]
     assert stages[1][1] == stages[2][1] == str(tmp_path / "one/trials/nominal/scene")
     programs[0].write_text("def run(robot, params, record):\n    return {'verdict': 'fail'}\n")
     run(programs, tmp_path / "two", setup=setup, cases=cases)
-    assert len(evaluation.compare(tmp_path / "one", tmp_path / "two")) == 3  # A policy edit keeps every case.
+    assert len(evaluation.compare(tmp_path / "one", tmp_path / "two")) == 4  # A policy edit keeps every case.
     repeated = evaluation.rerun(tmp_path / "one", "nominal", tmp_path / "repeat")
     assert repeated["setup_revision"] == first["setup_revision"]
     assert repeated["trials"][0]["case"]["id"] == first["trials"][0]["case"]["id"]

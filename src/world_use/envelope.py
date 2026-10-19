@@ -4,6 +4,7 @@ which is scoped, has a reason, and shows up in the log."""
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from hashlib import sha256
 from itertools import pairwise
 from numbers import Real
@@ -20,6 +21,13 @@ MARGIN = 0.02                         # rad kept clear of the URDF limits
 TURN_EPS = np.radians(2.0)            # a turn-clearance joint moving less than this in a path is not a turn
 POINT_EVERY = 40                      # sample gravity loads and surface clearance; zones check every tick
 SURFACE_TOL = 0.001                  # geometry/contact uncertainty allowed below a support top (metres)
+
+
+@lru_cache(maxsize=1024)
+def _signature(raw: bytes) -> str:
+    # Hash at the precision World.to_dict keeps, so a planning twin recognises the same geometry (+ 0.0 drops
+    # signed zeros). Cached by exact bytes: the watchdog asks for every part/support pair on every tick.
+    return sha256((np.round(np.frombuffer(raw), 6) + 0.0).tobytes()).hexdigest()
 
 
 @dataclass
@@ -67,10 +75,8 @@ class Envelope:
 
     @staticmethod
     def _geometry_key(box, relative, size):
-        # A changed support, attachment or payload size must not inherit an earlier contact allowance. Hash at the
-        # precision World.to_dict keeps, so a planning twin recognises the same geometry (+ 0.0 drops signed zeros).
-        values = (box.pose, box.size, relative, size)
-        return sha256(b"".join((np.round(np.asarray(v, float), 6) + 0.0).tobytes() for v in values)).hexdigest()
+        # A changed support, attachment or payload size must not inherit an earlier contact allowance.
+        return _signature(b"".join(np.asarray(v, float).tobytes() for v in (box.pose, box.size, relative, size)))
 
     def _surface_allowances(self, q):
         tool = self.chain.fk(q)
