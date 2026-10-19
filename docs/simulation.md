@@ -204,6 +204,12 @@ gap; wall time is recorded independently. See the
 [pushing evaluation](../examples/push-letters/README.md#compare-policy-revisions-on-fixed-cases) for a
 concrete camera-policy case and an independent physical audit.
 
+An optional `setup` program prepares each case's scene in its own process before the
+policy starts: seeded initial variations, settling and the start-validity check. Its
+revision joins the case identity and its result decides whether the start is valid,
+so neither depends on policy code. The policy and evaluator receive the prepared
+directory as `params["scene"]`; a changed scene invalidates the attempt.
+
 `rerun` recreates a named case in a fresh directory and refuses changed inputs,
 sources or runtime versions. `compare` requires identical case identities,
 evaluator and runtime while allowing a different policy revision. Privileged

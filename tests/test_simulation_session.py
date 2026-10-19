@@ -11,6 +11,7 @@ from PIL import Image
 from world_use import World, bodies
 from world_use.body import ToolBox
 from world_use.cameras import SimCamera, View
+from world_use.client import Client
 from world_use.records import replay
 from world_use.simulation import MujocoRecording, SimulationSession
 from world_use.tasks import RecordingError, read_trace
@@ -79,6 +80,19 @@ def test_exception_preserves_trace_and_shuts_down_simulation(tmp_path, failure):
     assert not saved["final_status"]["enabled"]
     assert not session.daemon.control.is_alive()
     assert not session.physics.thread.is_alive()
+
+
+def test_failed_cleanup_keeps_the_task_exception_and_the_session_open(tmp_path, monkeypatch):
+    def refuse(self, *args, **kwargs):
+        raise RuntimeError("release refused")
+
+    monkeypatch.setattr(Client, "release", refuse)
+    with pytest.raises(ValueError, match="policy failed") as raised, session_at(tmp_path / "run") as session:
+        raise ValueError("policy failed")
+    assert "release refused" in raised.value.__notes__[0]
+    assert not session.closed
+    monkeypatch.undo()
+    session.close(exception="recovered after the test")
 
 
 def test_episodes_do_not_reuse_kernel_or_record(tmp_path):

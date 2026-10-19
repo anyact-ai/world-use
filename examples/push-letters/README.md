@@ -75,9 +75,11 @@ so MuJoCo's maximum-coefficient combination changes the actual contact friction.
 
 ## Compare policy revisions on fixed cases
 
-The evaluation driver freezes the policy and a separate privileged evaluator, snapshots
-the selected scene and initial state, and applies a recorded random seed to small initial
-pose variations. Start with a single `T` scene for a short development case:
+The evaluation driver freezes a setup program, the policy and a separate privileged
+evaluator, and snapshots the selected scene and initial state. `setup.py` runs first, in
+its own process: it applies the recorded seed to small initial pose variations, lets the
+letters settle and decides whether the start is valid. The camera policy then starts from
+that prepared scene. Start with a single `T` scene for a short development case:
 
 ```sh
 uv run python examples/push-letters/scene.py \
@@ -93,7 +95,8 @@ The compiled model includes its meshes but is tied to the recorded MuJoCo versio
 original XML and task metadata retain asset provenance. To compare a revised policy,
 run the same scene and case selection into another fresh output, then use
 `world_use.evaluation.compare(first, second)`. Case identities exclude policy revision
-but include the seed, parameters, scene identity and input hashes.
+but include the seed, parameters, scene identity, input hashes and setup revision, so a
+policy edit cannot change the starting state of a case it is compared on.
 
 `--case held-out` selects the reserved `shifted-seed29` variation. Once a case is used
 to tune the policy, it is no longer independent validation. `--privileged` is explicitly
@@ -101,8 +104,8 @@ labelled state-feedback diagnosis and is refused by camera-only comparison. An o
 `--validation` links a reference report for the exact declared scene identity; without
 one, scene accuracy remains unvalidated even when the task passes.
 
-Each suite keeps `suite.json`, per-case `trials/<name>/trial.json`, frozen policy/evaluator
-invocations, the original episode evidence and `summary.json`. Invalid starts, interrupted
+Each suite keeps `suite.json`, per-case `trials/<name>/trial.json`, frozen setup/policy/evaluator
+invocations, the prepared scene, the original episode evidence and `summary.json`. Invalid starts, interrupted
 or unstarted cases, incomplete recordings, failure reasons and recovery interventions stay
 in the report. Wall and simulation time are separate. The evaluator requires final goal
 conditions to hold over 1.9 simulated seconds with no observation gap above 100 ms, alongside

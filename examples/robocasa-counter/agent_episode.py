@@ -39,6 +39,7 @@ class Episode:
             sources=declared, entrypoint=entrypoint, parameters=dict(scene=str(scene)))
         self.k, self.daemon, self.client = self.session.kernel, self.session.daemon, self.session.client
         try:
+            self.k.set_home_route([], note="Initial parked Panda pose")
             self.tracker = TrackerProcess(device="cpu", startup_timeout_s=240)
             self.server = build(tracker=self.tracker, client=self.client)
             self.client.record(context={

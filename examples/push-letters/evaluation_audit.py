@@ -12,10 +12,8 @@ from world_use.evaluation import held_for
 
 
 def run(robot, params, record):
+    # The suite's setup program already judged the starting state; invalid starts never reach the policy.
     folder = Path(params["episode"])
-    initial = json.loads(record.input_file(folder.parent / "scene/starting-state.json").read_text())
-    if not initial["valid"]:
-        return dict(verdict="inconclusive", valid_start=False, reasons=initial["reasons"], interventions=[])
     physical = audit(folder)
     replay = np.load(folder / "replay.npz")
     model = mj.MjModel.from_binary_path(str(folder / "scene.mjb"))
@@ -44,6 +42,6 @@ def run(robot, params, record):
         reasons.append(telemetry["error"])
     actions = json.loads((folder / "actions.json").read_text())
     interventions = [a["label"] for a in actions if a["label"].startswith("Recovery")]
-    return dict(verdict="pass" if not reasons else "fail", valid_start=True, reasons=reasons,
+    return dict(verdict="pass" if not reasons else "fail", reasons=reasons,
                 interventions=interventions, metrics=dict(physical=physical, goal_held=settled),
                 evidence_role="privileged evaluator; never returned to the policy")

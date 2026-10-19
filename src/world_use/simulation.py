@@ -240,10 +240,16 @@ class SimulationSession:
     def __exit__(self, kind, value, traceback):
         if not self.closed:
             # Recovery remains usable even if recording failed. No implicit retreat motion.
-            recovery = Client(self.client.url)
-            recovery.stop("simulation session ended")
-            recovery.release()
-            self.close(exception=None if value is None else repr(value))
+            try:
+                recovery = Client(self.client.url)
+                recovery.stop("simulation session ended")
+                recovery.release()
+                self.close(exception=None if value is None else repr(value))
+            except Exception as cleanup:
+                if value is None:
+                    raise
+                # The task's own failure stays the reported exception; the session remains open for recovery.
+                value.add_note(f"simulation session cleanup failed: {cleanup!r}")
 
 
 def replay_scene(folder: Path, output: Path, *, fps: int, speed: float) -> Path:

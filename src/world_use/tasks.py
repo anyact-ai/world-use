@@ -6,6 +6,7 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import json
+import math
 import os
 import platform
 import subprocess
@@ -24,6 +25,8 @@ import numpy as np
 
 from world_use.cameras import Frame
 from world_use.client import Client
+
+INTERRUPT_GRACE_S = 30.0              # an interrupted task may release power and close its records first
 
 
 class RecordingError(RuntimeError):
@@ -163,6 +166,8 @@ class Record:
             return {key: self.encode(v) for key, v in value.items()}
         if isinstance(value, (list, tuple)):
             return [self.encode(v) for v in value]
+        if isinstance(value, float) and not math.isfinite(value):
+            return str(value)         # "nan", "inf" or "-inf": strict JSON that keeps the value
         if value is None or isinstance(value, (str, bool, int, float)):
             return value
         raise TypeError(f"declare serializable inputs/outputs; cannot record {type(value).__name__}")
@@ -348,8 +353,22 @@ def launch(task: Path, output: Path, *, parameters: dict, sources=(), url=None, 
     output = prepare(output, bundle, entrypoint=task.name, parameters=parameters, url=url, parent=parent)
     print(f"invocation: {output}", flush=True)
     # Never import the mutable original task. A killed launcher must not cause an automatic retry.
-    return subprocess.run([sys.executable, "-I", str(output / "source/__runner__/tasks.py"),
-                           "--execute", str(output)], cwd=output / "source", check=False).returncode
+    process = subprocess.Popen([sys.executable, "-I", str(output / "source/__runner__/tasks.py"),
+                                "--execute", str(output)], cwd=output / "source")
+    try:
+        return process.wait()
+    except KeyboardInterrupt:
+        # A terminal interrupt reaches the task too. Let it stop, release and close its records instead of
+        # killing it mid-cleanup; a second interrupt or the grace timeout still kills it.
+        try:
+            process.wait(timeout=INTERRUPT_GRACE_S)
+        except subprocess.TimeoutExpired:
+            pass
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+        raise
 
 
 def execute(output: Path) -> int:

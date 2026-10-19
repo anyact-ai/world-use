@@ -168,12 +168,15 @@ exact percentiles from the saved chunks.
 
 ## What an agent adds
 
-Named simulation evaluations keep `suite.json` with frozen policy/evaluator source,
+Named simulation evaluations keep `suite.json` with frozen setup/policy/evaluator source,
 declared input hashes, runtime identity, scene revision and every case/seed. Each
 `trials/<name>/trial.json` records execution status, outcome, reasons, interventions,
-wall and simulation time, recording integrity and power cleanup. Policy and
-privileged evaluator artifacts stay in separate directories beside `episode/`.
-A missing terminal record remains an interrupted attempt in the summary.
+wall and simulation time, recording integrity and power cleanup. Setup, policy and
+privileged evaluator artifacts stay in separate directories beside `scene/` and `episode/`.
+Status is decided once from the recorded facts: an interrupt or a policy process lost
+without a terminal record is `interrupted`; a failed setup or evaluator, changed inputs,
+sources or runtime, or incomplete evidence is `invalid`; anything else is `completed`.
+A case that never wrote `trial.json` remains an interrupted attempt in the summary.
 
 A matching `scene-validation.json` and its hashed evidence can accompany the
 suite. The report's artifact manifest includes raw stability samples as well as

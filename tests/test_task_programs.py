@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -119,6 +122,30 @@ def test_invalid_or_failed_task_has_a_failure_record(tmp_path, code):
     assert result.returncode != 0
     saved = json.loads((root / "result.json").read_text())
     assert saved["result"] is None and saved["exception"]
+
+
+def test_non_finite_result_keeps_its_terminal_record(tmp_path):
+    code = "def run(robot, params, record):\n    return {'verdict': 'fail', 'error_m': float('nan')}\n"
+    root = bundle(tmp_path, code)
+    execute(root)
+    saved = json.loads((root / "result.json").read_text())
+    assert saved["result"] == {"verdict": "fail", "error_m": "nan"} and saved["exception"] is None
+
+
+def test_interrupted_launcher_lets_the_task_finish_its_record(tmp_path):
+    task = tmp_path / "task.py"
+    task.write_text("import time\ndef run(robot, params, record):\n    time.sleep(1)\n    return {'verdict': 'pass'}\n")
+    output = tmp_path / "run"
+
+    def interrupt():  # Only the launcher is signalled, as when it alone is sent SIGINT.
+        while not (output / "started.json").exists():
+            time.sleep(.01)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    threading.Thread(target=interrupt, daemon=True).start()
+    with pytest.raises(KeyboardInterrupt):
+        recording.launch(task, output, parameters={})
+    assert json.loads((output / "result.json").read_text())["result"] == {"verdict": "pass"}
 
 
 class Transport:

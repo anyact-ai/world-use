@@ -56,17 +56,25 @@ def fake_process(monkeypatch):
         output.mkdir()
         calls.append((task, parameters))
         save(output / "invocation.json", dict(environment=environment()))
-        if "episode" in parameters:
+        mode = (parameters.get("case") or parameters)["parameters"].get("mode")
+        if output.name == "setup":
+            save(Path(parameters["output"]) / "start.json", dict(seed=parameters["seed"]))
+            valid = parameters["parameters"].get("valid_start", True)
+            result = dict(verdict="pass", valid_start=valid, reasons=[] if valid else ["letters overlap"])
+        elif "episode" in parameters:
+            if mode == "evaluator-lost":
+                return 9
             case = parameters["case"]
             result = dict(verdict="pass", valid_start=case["parameters"].get("valid_start", True),
                           reasons=[], interventions=[], evaluator_secret="only after execution")
         else:
             assert "evaluator_secret" not in parameters and "episode" not in parameters
-            mode = parameters["parameters"].get("mode")
             if mode == "killed":
                 return 9
             if mode == "interrupt":
                 raise KeyboardInterrupt
+            if mode == "edit-scene":
+                save(Path(parameters["scene"]) / "start.json", dict(seed=0))
             evidence(Path(parameters["output"]))
             if mode == "corrupt":
                 (Path(parameters["output"]) / "flight/complete.json").unlink()
@@ -178,14 +186,49 @@ def test_mutated_policy_context_cannot_produce_a_valid_trial(tmp_path, programs,
 
 def test_invalid_interrupted_and_unsuccessful_cases_are_retained(tmp_path, programs, fake_process):
     report = run(programs, tmp_path / "suite", cases=[case("good"), case("bad-start", valid_start=False),
-                 case("lost", mode="killed"), case("broken-record", mode="corrupt"), case("failed", mode="failed")])
-    assert report["counts"] == dict(completed=2, invalid=2, interrupted=1)
-    assert report["trials"][-1]["task"]["verdict"] == "fail"
+                 case("lost", mode="killed"), case("broken-record", mode="corrupt"), case("failed", mode="failed"),
+                 case("evaluator-crash", mode="evaluator-lost")])
+    assert report["counts"] == dict(completed=2, invalid=3, interrupted=1)
+    assert report["trials"][4]["task"]["verdict"] == "fail"
     assert report["trials"][2]["policy_exit"] == 9
     assert "flight record is incomplete" in report["trials"][3]["reasons"]
+    assert report["trials"][5]["status"] == "invalid"  # A lost evaluator is not an interruption.
     interrupted = run(programs, tmp_path / "interrupted", cases=[case("stop", mode="interrupt"), case("not-started")])
     assert interrupted["counts"]["interrupted"] == 2
     assert not (tmp_path / "interrupted/trials/not-started").exists()
+
+
+def test_interrupt_after_a_passing_evaluation_is_not_completed(tmp_path, programs, fake_process, monkeypatch):
+    def interrupt(episode):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(evaluation, "episode_integrity", interrupt)
+    report = run(programs, tmp_path / "suite")
+    assert report["counts"] == dict(completed=0, invalid=0, interrupted=1)
+    assert "recording" not in report["trials"][0]
+
+
+def test_setup_owns_the_starting_state_and_case_identity(tmp_path, programs, fake_process):
+    setup = tmp_path / "setup.py"
+    setup.write_text("def run(robot, params, record):\n    return {'verdict': 'pass'}\n")
+    cases = [case(), case("overlap", valid_start=False), case("edited", mode="edit-scene")]
+    first = run(programs, tmp_path / "one", setup=setup, cases=cases)
+    assert [t["status"] for t in first["trials"]] == ["completed", "invalid", "invalid"]
+    assert "letters overlap" in first["trials"][1]["reasons"]
+    assert "prepared scene changed" in first["trials"][2]["reasons"][-1]
+    stages = [(Path(task).name, parameters.get("scene")) for task, parameters in fake_process]
+    assert [name for name, _ in stages] == ["setup.py", "policy.py", "audit.py", "setup.py", "setup.py", "policy.py"]
+    assert stages[1][1] == stages[2][1] == str(tmp_path / "one/trials/nominal/scene")
+    programs[0].write_text("def run(robot, params, record):\n    return {'verdict': 'fail'}\n")
+    run(programs, tmp_path / "two", setup=setup, cases=cases)
+    assert len(evaluation.compare(tmp_path / "one", tmp_path / "two")) == 3  # A policy edit keeps every case.
+    repeated = evaluation.rerun(tmp_path / "one", "nominal", tmp_path / "repeat")
+    assert repeated["setup_revision"] == first["setup_revision"]
+    assert repeated["trials"][0]["case"]["id"] == first["trials"][0]["case"]["id"]
+    setup.write_text("# a different seeded variation\n" + setup.read_text())
+    run(programs, tmp_path / "three", setup=setup, cases=cases)
+    with pytest.raises(ValueError, match="identical named seeded cases"):
+        evaluation.compare(tmp_path / "one", tmp_path / "three")
 
 
 @pytest.mark.parametrize("change", ["missing-chunk", "replay-changed", "missing-flight-close", "recording-error"])
@@ -270,7 +313,7 @@ def test_validation_without_an_artifact_manifest_requires_regeneration(tmp_path,
     save(path, report)
     with pytest.raises(ValueError, match="regenerate the report"):
         run(programs, tmp_path / "suite", validation=path, scene_revision=revision)
-    assert not fake_process
+    assert not fake_process and not (tmp_path / "suite").exists()
 
 
 def test_dwell_rejects_transient_success_simulation_reset_and_observation_gap():
