@@ -67,8 +67,10 @@ class Envelope:
 
     @staticmethod
     def _geometry_key(box, relative, size):
-        # A changed support, attachment or payload size must not inherit an earlier contact allowance.
-        return sha256(box.pose.tobytes() + box.size.tobytes() + relative.tobytes() + size.tobytes()).hexdigest()
+        # A changed support, attachment or payload size must not inherit an earlier contact allowance. Hash at the
+        # precision World.to_dict keeps, so a planning twin recognises the same geometry (+ 0.0 drops signed zeros).
+        values = (box.pose, box.size, relative, size)
+        return sha256(b"".join((np.round(np.asarray(v, float), 6) + 0.0).tobytes() for v in values)).hexdigest()
 
     def _surface_allowances(self, q):
         tool = self.chain.fk(q)
@@ -79,25 +81,29 @@ class Envelope:
                 signature = self._geometry_key(box, relative, size)
                 depth = max(0.0, box.box_depth(tool @ relative, size)) + SURFACE_TOL
                 previous, old_signature = self.surface_limits.get(key, (depth, signature))
-                # Withdrawal can reduce a limit; ordinary step boundaries must never replenish it.
-                limits[key] = min(depth, previous if old_signature == signature else SURFACE_TOL), signature
+                # Withdrawal can reduce a limit; ordinary step boundaries must never replenish it. Re-measured
+                # geometry restarts from its measured overlap, so withdrawal stays possible but deeper motion does not.
+                limits[key] = (min(depth, previous) if old_signature == signature else depth), signature
         return limits
+
+    @staticmethod
+    def _contact_keys(contact) -> set[tuple[str, str]]:
+        return set() if contact is None else {(part, contact[1]) for part in contact[0]}
 
     def hold_geometry(self, q):
         """End a contact phase. Only withdrawal from measured existing contact remains allowed."""
         self.surface_limits = self._surface_allowances(q)
-        self._contact_pair = None
+        self._contact_pairs: set[tuple[str, str]] = set()
 
     def begin_geometry(self, q, contact=None):
         """Only an explicit guarded contact may expand a retained surface allowance."""
         self.hold_geometry(q)
-        if contact is not None:
-            part, surface, depth = contact
-            key = (part, surface)
-            if key in self.surface_limits:
-                initial, signature = self.surface_limits[key]
-                self.surface_limits[key] = max(initial, depth), signature
-                self._contact_pair = key
+        if contact is None:
+            return
+        for key in self._contact_keys(contact) & self.surface_limits.keys():
+            initial, signature = self.surface_limits[key]
+            self.surface_limits[key] = max(initial, contact[2]), signature
+            self._contact_pairs.add(key)
 
     @staticmethod
     def _supported(box, pose, size):
@@ -107,14 +113,15 @@ class Envelope:
     def contact_target(self, q, delta, overshoot):
         """First support approached along its normal, with the contacting part wholly above its footprint.
 
-        Only this part/support pair may use the bounded guarded overshoot. Other geometry keeps its
-        ordinary clearance. A side approach gets no support-contact exemption.
+        Returns the clipped delta and (parts, support, overshoot). Every declared part that reaches that support
+        by the clipped end, wholly above its footprint, may use the bounded guarded overshoot. Other supports and
+        overhanging parts keep their ordinary clearance. A side approach gets no support-contact exemption.
         """
         tool = self.chain.fk(q)
         parts = [("tool point", np.eye(4), np.zeros(3)), *self._parts()]
         best = None
         length = float(np.linalg.norm(delta))
-        for name, relative, size in parts:
+        for _, relative, size in parts:
             pose = tool @ relative
             for box in self.world.solids():
                 normal = box.pose[:3, 2]
@@ -130,13 +137,19 @@ class Envelope:
                 if fraction > 1 or not self._supported(box, at, size):
                     continue
                 if best is None or fraction < best[0]:
-                    best = fraction, name, box.name, down
+                    best = fraction, box, down
         if best is None:
             return delta, None
-        fraction, name, surface, down = best
+        fraction, box, down = best
         # Leave a small amount for sample padding; the actual commanded penetration stays bounded.
         stop = min(1.0, fraction + max(0.0, overshoot - SURFACE_TOL) / down)
-        return delta * stop if length else delta, (name, surface, overshoot)
+        end = tool.copy()
+        end[:3, 3] += stop * delta
+        # The guarded line keeps the tool's orientation, so parts that touch later penetrate less than the first.
+        touching = tuple(name for name, relative, size in self._parts()
+                         if box.box_depth(end @ relative, size) > SURFACE_TOL
+                         and self._supported(box, end @ relative, size))
+        return delta * stop if length else delta, (touching, box.name, overshoot)
 
     @property
     def max_excursion(self) -> float | None:
@@ -267,9 +280,10 @@ class Envelope:
         if not parts:
             return []
         allowed = self._surface_allowances(q_from)
-        if contact is not None and contact[:2] in allowed:
-            old, signature = allowed[contact[:2]]
-            allowed[contact[:2]] = max(old, contact[2]), signature
+        contacts = self._contact_keys(contact)
+        for key in contacts & allowed.keys():
+            old, signature = allowed[key]
+            allowed[key] = max(old, contact[2]), signature
         found = {}
         previous = q_from
         reach = max(np.linalg.norm(relative[:3, 3]) + np.linalg.norm(size) / 2 for _, relative, size in parts)
@@ -287,7 +301,7 @@ class Envelope:
                                              "lift or go around it", box=box.name, geometry=name)
                 for box in self.world.solids():
                     key = name, box.name
-                    if (contact is not None and key == contact[:2] and box.box_depth(pose, size) > SURFACE_TOL
+                    if (key in contacts and box.box_depth(pose, size) > SURFACE_TOL
                             and not self._supported(box, pose, size)):
                         found[key] = Refused(f"{name} would leave the footprint of support {box.name!r}", "surface",
                                              "lift clear before moving off the support", box=box.name, geometry=name)
@@ -378,7 +392,7 @@ class Envelope:
                 if signature != self._geometry_key(box, relative, size):
                     allowed = SURFACE_TOL
                 depth = box.box_depth(pose, size)
-                if (depth > allowed or ((name, box.name) == self._contact_pair and depth > SURFACE_TOL
+                if (depth > allowed or ((name, box.name) in self._contact_pairs and depth > SURFACE_TOL
                                          and not self._supported(box, pose, size))):
                     return Trip("surface", f"{name} entered support surface {box.name!r}")
         g = self.m.gripper

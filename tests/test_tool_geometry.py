@@ -90,7 +90,7 @@ def test_guarded_support_contact_is_bounded_and_does_not_waive_another_part(k):
     env, q = rig(k.manifest, boxes=[finger], payload=True)
     env.world.add_box("table", "surface", [0, 0, -.01], [.4, .4, .02])
     delta, contact = env.contact_target(q, np.array([0, 0, -.12]), .02)
-    assert contact is not None and contact[:2] == ("finger:low finger", "table")
+    assert contact is not None and contact[:2] == (("finger:low finger",), "table")
     env.check_path(np.linspace(q, q + [*delta, 0], 100), q, allow_contact=True, contact=contact)
     env.begin_geometry(q, contact)
     touching = q + [0, 0, -.065, 0]
@@ -118,6 +118,29 @@ def test_contact_allowance_cannot_follow_a_changed_support_or_payload(k):
     surface.pose[2, 3] -= .002
     env.world.boxes["package"].size[2] += .002
     assert env.watch(feedback(touching), touching).kind == "surface"
+    # Re-measured geometry restarts from the measured overlap: withdrawal only.
+    env.hold_geometry(touching)
+    assert env.watch(feedback(touching), touching) is None
+    env.check_path(np.linspace(touching, q, 100), touching)
+    with pytest.raises(Refused, match="payload:package"):
+        env.check_path(np.linspace(touching, touching - [0, 0, .002, 0], 100), touching)
+
+
+@pytest.mark.parametrize("bottom", ["fingers", "level with tool point"])
+def test_guarded_contact_covers_every_part_reaching_the_support(k, bottom):
+    if bottom == "fingers":
+        boxes = [ToolBox(side, (0, y, -.04), (.02, .02, .02), "measured", "finger")
+                 for side, y in (("left", .03), ("right", -.03))]
+    else:
+        boxes = [ToolBox("housing", (0, 0, .01), (.04, .04, .02), "measured")]
+    env, q = rig(k.manifest, boxes=boxes)
+    env.world.add_box("table", "surface", [0, 0, -.01], [.4, .4, .02])
+    delta, contact = env.contact_target(q, np.array([0, 0, -.12]), .02)
+    assert set(contact[0]) == {f"{box.role}:{box.name}" for box in boxes}
+    env.check_path(np.linspace(q, q + [*delta, 0], 100), q, allow_contact=True, contact=contact)
+    env.begin_geometry(q, contact)
+    end = q + [*delta, 0]
+    assert env.watch(feedback(end), end) is None
 
 
 @pytest.mark.parametrize("guarded", [False, True])

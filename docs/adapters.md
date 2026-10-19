@@ -148,8 +148,10 @@ source = "caliper measurement of mounted probe"
 Planning and measured ticks check these boxes against keep-out zones and support
 surfaces. The estimated held-object box uses its declared attachment transform;
 it does not reveal simulator state. Planning includes the swept corners of a
-rotating payload. A guarded, nearly normal approach can select one part/support
-pair for the existing bounded contact search; other parts keep their clearance.
+rotating payload. A guarded, nearly normal approach can select one support for
+the existing bounded contact search. Every part that reaches it wholly above its
+footprint, such as two fingers, shares that allowance; overhanging parts and other
+geometry keep their clearance.
 That allowance ends with the step or interruption. It is a search allowance under
 contact monitoring, not evidence that physical penetration is acceptable.
 
