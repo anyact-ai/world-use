@@ -4,6 +4,10 @@
 
 ### Highlights
 
+- **Measured execution checks.** `settle` and the controller-independent `Settling` checker return on arrival,
+  stalled progress or a deadline. `check_grip`, optional post-squeeze verification and scoped sequence opening
+  expectations report grip consistency without claiming object retention. Compact outcome feedback and CLI/MCP
+  measured facts retain detailed step outcomes in flight records. See [execution checks](docs/adapters.md#measured-completion).
 - **MuJoCo simulation.** The built-in rehearsal twin is a MuJoCo model with the robot's
   meshes, frictional grasps and rendered cameras; objects can slip, tip and fall. `wu demo` runs a scripted block
   task in it, with a success check and failure scenarios.
@@ -29,6 +33,10 @@
 
 ### Breaking changes
 
+- MCP successful sequence outcomes now expose compact `last_step` feedback instead of `data.steps` and
+  `data.last_result`. HTTP job replies and flight events retain the detailed evidence; failures retain their fields.
+- `grip` requires measured pre-opening before closing. A stalled or timed-out pre-opening ends the step.
+  Standalone `gripper` retains command-completion semantics; `check_arrival: true` opts into measured completion.
 - A job command's exit status is its outcome: 0 done, 4 refused, surprise, stopped, faulted or cancelled, 5
   waiting at a checkpoint, 6 still running. An invalid or refused request exits 2, and 1 means the daemon or the
   MCP server could not start.

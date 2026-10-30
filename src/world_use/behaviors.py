@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from . import geometry, motion
+from .checks import Settling
 from .envelope import TURN_EPS
 from .errors import Refused
 from .validation import FIELDS, validate
@@ -50,6 +51,20 @@ class Outcome:
             v = getattr(self, k)
             if v not in (None, "", {}):
                 d[k] = v
+        return d
+
+    def feedback(self) -> dict:
+        """Compact policy feedback; step_done events retain each completed child's outcome."""
+        d = self.to_dict()
+        if self.kind == "seq" and self.ok:
+            data = {k: v for k, v in self.data.items() if k not in ("steps", "last_result")}
+            if data:
+                d["data"] = data
+            else:
+                d.pop("data", None)
+            if "last_result" in self.data:
+                last = Outcome(**self.data["last_result"])
+                d["last_step"] = last.feedback()
         return d
 
 
@@ -563,14 +578,121 @@ class Touchdown(Guarded):
         return np.array([0.0, 0.0, -float(self.params.get("max", 0.06))])
 
 
-# -- gripper ------------------------------------------------------------------------------------------
+# -- measured arrival and gripper checks ---------------------------------------------------------------
+
+class Settle(Behavior):
+    """Wait for measured joints to reach their final commands; return early on arrival or stalled progress.
+
+    seconds        maximum wait (default 1); every tick still passes the kernel's watchdogs
+    tolerance_deg  joint error allowed (default each joint's tracking tolerance / 6)
+    """
+    kind = "settle"
+    example = {"do": "settle", "seconds": 1, "tolerance_deg": 1}
+    moves = False
+
+    def start(self, k):
+        seconds = self.params.get("seconds", 1.)
+        tolerance = ([np.radians(self.params["tolerance_deg"])] * k.manifest.n
+                     if "tolerance_deg" in self.params else [j.track_tol / 6 for j in k.manifest.joints])
+        self.target = k.cmd.q.copy()
+        self.check = Settling(tolerance, seconds, min(.2, seconds / 2))
+        k.set(self.target)                  # no feedforward while waiting at the final command
+
+    def tick(self, k):
+        errors = np.abs(self.target - k.state.q)
+        result = self.check.update(k.state.t, errors)
+        if result is None:
+            return None
+        data = dict(reason=result, settled_s=round(self.check.elapsed_s, 4),
+                    joint_error_deg=np.round(np.degrees(errors), 3).tolist())
+        if result == "arrived":
+            return self.done("measured joints arrived", **data)
+        k.hold_here()
+        return self.surprise("joint settling " + ("made insufficient progress" if result == "stalled" else "timed out"),
+                             hint="inspect the measured state before choosing the next move", **data)
+
+
+def _grip_range(k, params, mm_key="expect_mm", native_key="expect"):
+    g = k.manifest.gripper
+    if g is None or k.state.gripper is None:
+        raise Refused("grip checking needs measured gripper position", "sensing")
+    expected = _native(g, params, mm_key, native_key)
+    if expected is None:
+        return None
+    lo, hi = sorted((g.closed, g.open))
+    if not all(lo <= v <= hi for v in expected):
+        raise Refused(f"expected grip must be within {lo}..{hi} {g.unit}", "gripper_limit")
+    return sorted(expected)
+
+
+def _grip_outside(k, expected):
+    position = k.state.gripper
+    if position is None:
+        raise Refused("grip checking lost measured gripper position", "sensing")
+    if not expected[0] <= position <= expected[1]:
+        k.hold_here()
+        return Outcome("surprise", "check_grip", "measured grip left its expected range",
+                       dict(reason="grip_range", position=position, unit=k.manifest.gripper.unit,
+                            object_retention_verified=False), expected=expected, observed=position,
+                       hint="check the object in a camera; width alone does not establish object loss")
+    return None
+
+
+class CheckGrip(Behavior):
+    """Check measured opening over a bounded interval, without moving the hand or claiming object retention.
+
+    expect_mm     [lo, hi] allowed opening in mm; required unless expect is given
+    expect        the same in native gripper units
+    seconds       observation interval (default 0.2); cached samples do not count
+    max_drift_mm  largest allowed opening change over the interval, mm (optional)
+    max_drift     the same in native units; choose for sensor noise and object compliance
+    """
+    kind = "check_grip"
+    example = {"do": "check_grip", "expect_mm": [35, 45], "seconds": .2, "max_drift_mm": 1}
+    moves = False
+
+    def start(self, k):
+        self.expected = _grip_range(k, self.params)
+        self.duration = self.params.get("seconds", .2)
+        self.drift = self.params.get("max_drift")
+        if "max_drift_mm" in self.params:
+            scale = k.manifest.gripper.m_per_unit
+            if scale is None:
+                raise Refused("max_drift_mm needs gripper mm calibration", "spec", "use max_drift")
+            self.drift = self.params["max_drift_mm"] / (1000 * abs(scale))
+        self.started, self.stamp = None, None
+        self.low = self.high = k.state.gripper
+
+    def tick(self, k):
+        if out := _grip_outside(k, self.expected):
+            return out
+        if self.stamp == k.state.t:
+            return None
+        self.stamp = k.state.t
+        if self.started is None:
+            self.started = self.stamp
+        position = k.state.gripper
+        self.low, self.high = min(self.low, position), max(self.high, position)
+        drift = self.high - self.low
+        data = dict(position=position, unit=k.manifest.gripper.unit, drift=drift,
+                    observed_s=round(self.stamp - self.started, 4), object_retention_verified=False)
+        if self.drift is not None and drift > self.drift:
+            k.hold_here()
+            return self.surprise("measured grip changed beyond the allowed drift", expected=self.drift, observed=drift,
+                                 hint="check grip stability before carrying; compliance can also change opening",
+                                 reason="grip_drift", **data)
+        if self.stamp - self.started + 1e-9 >= self.duration:
+            return self.done("grip measurements stayed within expectation; object retention unverified",
+                             reason="grip_consistent", **data)
+        return None
 
 class Gripper(Behavior):
-    """Open or close the gripper to a given opening.
+    """Command an opening; optionally require measured arrival and return early on stalled settling.
 
     aperture_mm  opening between the fingers, mm
     to           the same in the gripper's native units (see the card)
     seconds      how long to take (default: as fast as its speed limit allows)
+    check_arrival  require measured arrival within the final 0.3 s wait (default false: command completion)
     """
     kind = "gripper"
     example = {"do": "gripper", "aperture_mm": 60}
@@ -579,6 +701,8 @@ class Gripper(Behavior):
         g = k.manifest.gripper
         if g is None:
             raise Refused("this robot has no gripper", "no_gripper")
+        if k.state.gripper is None:
+            raise Refused("gripper needs measured position", "sensing")
         to = _native(g, self.params, "aperture_mm", "to")
         lo, hi = sorted((g.closed, g.open))
         if not lo <= to <= hi:
@@ -590,19 +714,40 @@ class Gripper(Behavior):
         self.traj = start + (to - start) * s
         self.v = np.gradient(np.concatenate([[start], self.traj]))[1:] * k.manifest.rate_hz
         self.v[-1] = 0.0
-        self.i, self.settle = 0, int(0.3 * k.manifest.rate_hz)
+        self.i = 0
+        self.wait = int(.3 * k.manifest.rate_hz)
+        self.settle = (Settling([g.track_tol / 6], .3, .1, stable_s=.1)
+                       if self.params.get("check_arrival", False) else None)
 
     def tick(self, k):
         if self.i < len(self.traj):
             k.set_gripper(self.traj[self.i], self.v[self.i])
             self.i += 1
             return None
-        if self.settle > 0:
-            self.settle -= 1
-            return None
         g, st = k.manifest.gripper, k.state
+        if st.gripper is None:
+            raise Refused("gripper lost measured position", "sensing")
+        if self.settle is None:
+            if self.wait > 0:
+                self.wait -= 1
+                return None
+            result = "command_complete"
+        else:
+            result = self.settle.update(st.t, [abs(self.traj[-1] - st.gripper)])
+        if result is None:
+            return None
+        data = dict(reason=result, settled_s=.3 if self.settle is None else round(self.settle.elapsed_s, 4),
+                    target=float(self.traj[-1]), position=float(st.gripper), unit=g.unit,
+                    object_retention_verified=False)
+        if result not in ("arrived", "command_complete"):
+            k.set_gripper(st.gripper)
+            k.hold_here()
+            return self.surprise(f"gripper settling {result}", expected=float(self.traj[-1]), observed=st.gripper,
+                                 hint="inspect the hand; use grip with an expected width for intentional contact",
+                                 **data)
         return self.done(f"gripper at {st.gripper:.2f} {g.unit}" + _mm(g, st.gripper), position=round(st.gripper, 3),
-                         effort=None if st.gripper_tau is None else round(st.gripper_tau, 2))
+                         effort=None if st.gripper_tau is None else round(st.gripper_tau, 2),
+                         **{key: value for key, value in data.items() if key != "position"})
 
 
 def _mm(g, pos):
@@ -633,6 +778,8 @@ class Grip(Behavior):
     squeeze    how much further to close after contact, native units (at most the gripper's, on the card)
     hold_effort  least gripper effort (absolute) that counts as a firm hold once squeezed; less is a surprise, a grip on
                an edge or a taper that would slip on the lift (default: not checked; requires gripper_effort sensing)
+    verify_s     optionally check the measured grip for this many seconds after squeezing
+    max_drift_mm, max_drift  allowed change during verify_s, in mm or native units; compliance is task dependent
     """
     kind = "grip"
     example = {"do": "grip", "start_mm": 60, "expect_mm": [35, 45]}
@@ -658,24 +805,33 @@ class Grip(Behavior):
             raise Refused(f"grip hold_effort must be at most {g.tau_max}", "gripper_limit")
         if self.hold is not None and "gripper_effort" not in k.manifest.sensing:
             raise Refused("hold_effort requires gripper_effort sensing", "sensing")
+        if "max_drift_mm" in p and g.m_per_unit is None:
+            raise Refused("max_drift_mm needs gripper mm calibration", "spec", "use max_drift")
+        if k.state.gripper is None:
+            raise Refused("grip needs measured position", "sensing")
         # Contact, closing speed and the pre-open margin scale with the gripper's own limits and units. On the reBot
         # (rad): contact at 0.6 effort or 0.1 behind the command, closing at 0.3/s, pre-opening beyond 0.02.
         self.effort, self.lag = 0.15 * g.tau_max, g.track_tol / 6
         self.pre = None
         if start is not None and abs(start - here) > 0.0045 * (hi - lo):     # open to the start width first, smoothly
-            self.pre = Gripper(to=start)
+            self.pre = Gripper(to=start, check_arrival=True)
             k.start_behavior(self.pre)
         self.speed = g.v_max / 15 * np.sign(g.closed - g.open)     # units/s, towards closed
         self.phase, self.contact, self.wait = "open", None, 0
         self.closed_wait = int(np.ceil(.2 * k.manifest.rate_hz))
+        self.verifier = None
 
     def tick(self, k):
         g, st, p = k.manifest.gripper, k.state, self.params
+        if st.gripper is None:
+            raise Refused("grip lost measured position", "sensing")
         if self.hold is not None and (st.gripper_tau is None or not np.isfinite(st.gripper_tau)):
             raise Refused("hold_effort needs a finite gripper effort reading; sensing is unavailable", "sensing")
         if self.phase == "open":
-            if self.pre is not None and self.pre.tick(k) is None:
-                return None
+            if self.pre is not None:
+                out = self.pre.tick(k)
+                if out is None or not out.ok:
+                    return out
             k.check_guard()
             self.phase = "close"
         if self.phase == "close":
@@ -706,9 +862,29 @@ class Grip(Behavior):
             return None
         contact = self.contact
         assert contact is not None, "the squeeze phase starts at a contact"
-        k.touched("grip", f"grip contact at {contact:.2f} {g.unit}")
+        if "verify_s" in p:
+            if self.verifier is None:
+                # Verification may wait: an interrupted check must not allow home to open a possible payload.
+                k.touched("grip", f"grip contact at {contact:.2f} {g.unit}; checking stability")
+                k.gripped(contact, attach=False)
+                params: dict = dict(expect=self.expect or sorted((g.closed, g.open)), seconds=p["verify_s"])
+                params.update({key: p[key] for key in ("max_drift", "max_drift_mm") if key in p})
+                self.verifier = CheckGrip(**params)
+                k.start_behavior(self.verifier)
+            checked = self.verifier.tick(k)
+            if checked is None:
+                return None
+            if not checked.ok:
+                k.gripped(contact, attach=False)
+                return self.surprise(checked.message, expected=checked.expected, observed=checked.observed,
+                                     hint=checked.hint, **checked.data)
+        if self.verifier is None:
+            k.touched("grip", f"grip contact at {contact:.2f} {g.unit}")
         data = dict(contact_at=round(contact, 3),
-                    holding_effort=None if st.gripper_tau is None else round(st.gripper_tau, 2))
+                    holding_effort=None if st.gripper_tau is None else round(st.gripper_tau, 2),
+                    measured_position=st.gripper, object_retention_verified=False)
+        if self.verifier is not None:
+            data["verification"] = checked.feedback()
         a = g.aperture(contact)
         if a is not None:
             data["aperture_mm"] = round(1000 * a, 1)
@@ -744,6 +920,7 @@ class Grasp(Behavior):
     expect_mm, start_mm  as for grip, or expect and start in native units; a start is required: each retry reopens
                          to it
     squeeze, hold_effort  as for grip (a weak grip is a miss too)
+    verify_s, max_drift_mm, max_drift  as for grip; failed post-squeeze checks use the same bounded retry list
     search_mm  [[across, along], ...] offsets from where the grasp began, mm: across the jaws (the direction the
                fingers are thin in) and along them (the way they open), both level (default: 6 mm each way across,
                then 6 mm each way along)
@@ -890,6 +1067,8 @@ class Sequence(Behavior):
     """Steps in order; the first one that does not end "done" ends the sequence. A plain list is one too.
 
     steps  the steps
+    expect_grip_mm, expect_grip  optional opening range monitored on every tick, in mm or native units.
+                                Scope to lift/carry steps; place intentional opening outside this sequence.
     """
     kind = "seq"
     example = {"do": "seq", "label": "lift, wait", "steps": [{"do": "line", "up": 0.05}, {"do": "hold", "seconds": 1}]}
@@ -911,13 +1090,19 @@ class Sequence(Behavior):
         self.i, self.current = 0, None
         self.results: list[Outcome] = []
         self.answers: list[dict] = []     # what free checkpoints were told, however deep, in order
+        self.grip_range = (_grip_range(k, self.params, "expect_grip_mm", "expect_grip")
+                           if self.params.keys() & {"expect_grip_mm", "expect_grip"} else None)
 
     def tick(self, k):
+        if self.grip_range is not None and (out := _grip_outside(k, self.grip_range)):
+            out.data.update(step=self.i + 1, of=len(self.steps))
+            return out
         while True:
             n = len(self.steps)
             if self.current is None and self.i >= n:
+                last = dict(last_result=self.results[-1].to_dict()) if self.results else {}
                 return self.done(f"{n} step{'' if n == 1 else 's'} done", steps=[o.message for o in self.results],
-                                 **self._answers())
+                                 **last, **self._answers())
             where = f"step {self.i + 1}/{n}"
             try:
                 if self.current is None:
@@ -942,7 +1127,7 @@ class Sequence(Behavior):
                 out.data = {**out.data, "step": self.i, "of": n, **self._answers()}
                 out.message = f"{where}: {out.message}"
                 return out
-            k.emit("step_done", f"{where}: {out.message}", step=self.i)
+            k.emit("step_done", f"{where}: {out.message}", step=self.i, outcome=out.to_dict())
 
     def _answers(self) -> dict:
         return {"answers": self.answers} if self.answers else {}
@@ -956,11 +1141,11 @@ class Sequence(Behavior):
         return self.label or f"sequence of {len(self.steps)}"
 
     def spec(self):
-        return {"do": "seq", "steps": [s.spec() for s in self.steps], **({"label": self.label} if self.label else {})}
+        return {**super().spec(), "steps": [s.spec() for s in self.steps]}
 
 
 REGISTRY: dict[str, type[Behavior]] = {c.kind: c for c in (Joints, Line, Lines, MoveTo, Guarded, Touchdown, Gripper,
-                                                            Grip, Grasp, Hold, Checkpoint, Sequence)}
+                                                        Settle, CheckGrip, Grip, Grasp, Hold, Checkpoint, Sequence)}
 BUILTINS = frozenset(REGISTRY.values())
 
 

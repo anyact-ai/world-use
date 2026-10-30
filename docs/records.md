@@ -200,6 +200,15 @@ From the shell: `wu record --context inputs.json --note '...'`; MCP's `record` t
 saved as given, so keep credentials out of them. A `done` outcome means the commands completed; the block example
 saves its separate success check in `result.json` and a `task_result` event.
 
+CLI and MCP job replies include the final step's relevant measured facts, including
+settling reasons and grip consistency. MCP uses `Outcome.feedback()` to compact
+successful sequence outcomes into a summary and `last_step`; embedded callers can
+use it too. HTTP job replies and `to_dict()` retain the full final-step result and
+existing step messages. Each completed sequence child also writes its
+full outcome in `step_done`, so shorter replies do not discard the underlying
+evidence. Failure feedback retains expected, observed and recovery hints. A grip
+consistency result explicitly leaves object retention unverified.
+
 Each measurement adds a `measurement` event with what the agent received: its id, camera and frame, `valid` and
 `reason`, `surface_center`, `visible_bounds` and `from_tool` in the work frame, the picture's capture time
 (`capture_t`) and the path of its picture. Its two files are written before the agent gets the reply, so a storage

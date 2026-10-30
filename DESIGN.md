@@ -51,6 +51,8 @@ methods as if they were the same measurement.
 4. **Every step says what it expects.** Contact within a distance, a grip within a width, an answer at a
    checkpoint. Anything else is a surprise: the robot holds where it really is, queued work is cancelled,
    and the model gets an incident report instead of a stream of numbers.
+   Measured settling has a deadline and can return early on stalled progress. Optional grip checks and scoped
+   opening expectations report sensor consistency; the policy still verifies object retention from observations.
 5. **Idle means holding.** No idle timeouts that move. Holding still can heat motors and is not safe in every
    situation. A heat trip may use a home route the agent set, only if no contact has made it stale and the
    kernel is not faulted. Home routes contain only built-in motion and gripper steps, with no waits or contact

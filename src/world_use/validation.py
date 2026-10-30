@@ -73,7 +73,7 @@ STEPS = Param(dict(type="array", items=dict(type=["object", "array"]), descripti
 MOTION = dict(frame=TEXT, duration=POSITIVE, speed=POSITIVE)
 DISTANCES = dict.fromkeys(DIRECTIONS, NUMBER)          # metres along the frame's axes; back, right, down negate
 GRIP = dict(expect_mm=array(2), expect=array(2), start_mm=NONNEGATIVE, start=NUMBER, squeeze=NONNEGATIVE,
-            hold_effort=POSITIVE.nullable())
+            hold_effort=POSITIVE.nullable(), verify_s=POSITIVE, max_drift=POSITIVE, max_drift_mm=POSITIVE)
 FIELDS: dict[str, dict[str, Param]] = {
     "joints": dict(target_deg=DEGREES, delta_deg=DEGREES, duration=POSITIVE, speed=POSITIVE),
     "line": dict(DISTANCES, **MOTION),
@@ -82,20 +82,25 @@ FIELDS: dict[str, dict[str, Param]] = {
     "move_to": dict(to=array(3), point=DIRECTION, jaws=DIRECTION, within_deg=NONNEGATIVE, **MOTION),
     "guarded": dict(DISTANCES, frame=TEXT, dtau=POSITIVE, expect_contact=FLAG, speed_mps=POSITIVE, joints=JOINTS),
     "touchdown": dict(max=POSITIVE, dtau=POSITIVE, speed_mps=POSITIVE, joints=JOINTS),
-    "gripper": dict(aperture_mm=NONNEGATIVE, to=NUMBER, seconds=NONNEGATIVE),
+    "gripper": dict(aperture_mm=NONNEGATIVE, to=NUMBER, seconds=NONNEGATIVE, check_arrival=FLAG),
+    "settle": dict(seconds=POSITIVE, tolerance_deg=POSITIVE),
+    "check_grip": dict(expect_mm=array(2), expect=array(2), seconds=POSITIVE,
+                       max_drift=POSITIVE, max_drift_mm=POSITIVE),
     "grip": GRIP,
     "grasp": dict(GRIP, search_mm=listing(array(2), "a list of [across, along] offsets"), lift_mm=LIFT),
     "hold": dict(seconds=NONNEGATIVE.nullable()),
     "checkpoint": dict(ask=TEXT, view=TEXT, roi=array(4).nullable(), expect=TEXT.nullable()),
-    "seq": dict(steps=STEPS),
+    "seq": dict(steps=STEPS, expect_grip_mm=array(2), expect_grip=array(2)),
 }
 REQUIRED_ANY_OF = {
     "joints": ("target_deg", "delta_deg"), "line": tuple(DIRECTIONS), "lines": ("legs",),
     "move_to": ("to", "point", "jaws"), "guarded": tuple(DIRECTIONS), "gripper": ("aperture_mm", "to"),
     "grasp": ("start_mm", "start"), "checkpoint": ("ask",), "seq": ("steps",),
+    "check_grip": ("expect_mm", "expect"),
 }
 MUTUALLY_EXCLUSIVE = (
     ("target_deg", "delta_deg"), ("aperture_mm", "to"), ("start_mm", "start"), ("expect_mm", "expect"),
+    ("max_drift", "max_drift_mm"), ("expect_grip", "expect_grip_mm"),
     ("up", "down"), ("forward", "back"), ("left", "right"),
 )
 
@@ -115,6 +120,8 @@ def schema(kind: str) -> dict:
     pairs = [list(pair) for pair in MUTUALLY_EXCLUSIVE if set(pair) <= fields.keys()]
     if pairs:
         out["allOf"] = [{"not": dict(required=pair)} for pair in pairs]
+    if kind in ("grip", "grasp"):
+        out["dependentRequired"] = {key: ["verify_s"] for key in ("max_drift", "max_drift_mm")}
     return out
 
 
@@ -136,6 +143,8 @@ def validate(kind: str, p: dict):
             raise Refused(f"{kind}: give {a} or {b}, not both", "spec")
     if kind in ("line", "guarded") and not any(p.get(word) for word in DIRECTIONS):
         raise Refused(f"{kind} needs a distance that is not zero", "spec")
+    if kind in ("grip", "grasp") and p.keys() & {"max_drift", "max_drift_mm"} and "verify_s" not in p:
+        raise Refused(f"{kind}: max_drift needs verify_s", "spec")
 
 
 def references(p: dict, world, joints: int):

@@ -56,6 +56,33 @@ def test_mcp_wire_requests_use_the_same_strict_arguments(daemon):
     asyncio.run(session())
 
 
+def test_mcp_compacts_successful_sequences_and_keeps_full_daemon_evidence(daemon):
+    import json
+
+    d, c = daemon
+    server = build(c.url)
+
+    async def session():
+        plan = [{"do": "hold", "seconds": .01}] * 12 + [
+            {"do": "check_grip", "expect": [.5, 1.5], "seconds": .02}]
+        reply = await server.call_tool("run", {"plan": plan, "rehearse": False, "wait_s": 10})
+        data = reply.structured_content
+        compact = data["outcome"]
+        full = c.job(data["id"])["outcome"]
+        assert compact["status"] == "done" and compact["last_step"]["data"]["reason"] == "grip_consistent"
+        assert "steps" not in compact.get("data", {}) and len(full["data"]["steps"]) == 13
+        assert len(json.dumps(compact)) < len(json.dumps(full))
+        assert "grip_consistent" in reply.content[0].text
+        steps = [event for event in d.k.events.since() if event["kind"] == "step_done"]
+        assert len(steps) == 13 and all("outcome" in event["data"] for event in steps)
+        failed = await server.call_tool("run", {"plan": {"do": "check_grip", "expect": [1.5, 2.]},
+                                               "rehearse": False, "wait_s": 10})
+        out = failed.structured_content["outcome"]
+        assert out["status"] == "surprise" and out["expected"] == [1.5, 2.]
+        assert "observed" in out and out["hint"]
+    asyncio.run(session())
+
+
 @pytest.mark.usefixtures("file_camera")
 def test_mcp_frames_measurements_and_crops_come_with_their_pictures(daemon):
     import json

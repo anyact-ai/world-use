@@ -17,6 +17,7 @@ from io import BytesIO
 from pydantic import ValidationError
 
 from . import views
+from .behaviors import Outcome
 from .client import DEFAULT_URL, Client, DaemonError
 from .errors import Refused
 from .perception import rectangle
@@ -127,6 +128,8 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
     def job_reply(data, camera=None, depth=False):
         images = []
         text = views.job_text(data, **HINTS)
+        if data.get("outcome"):
+            data = {**data, "outcome": Outcome(**data["outcome"]).feedback()}
         if camera is not None and data.get("status") not in ("queued", "running"):
             try:
                 frame = c.frame(camera, depth=depth)

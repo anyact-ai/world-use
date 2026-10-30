@@ -5,6 +5,7 @@ import time
 
 import numpy as np
 
+from .behaviors import Outcome
 from .errors import Refused
 from .plan import reach
 from .world import along, heading
@@ -109,6 +110,8 @@ def incident(k, job, reach=None) -> str:
     """What went differently from the plan, in one block a policy can act on."""
     out = job.outcome
     lines = [f"job {job.id} {out.status}: {out.message}"]
+    if measured := _measurement_line(out.data):
+        lines.append(measured)
     if out.expected is not None or out.observed is not None:
         lines.append(f"expected: {out.expected}   observed: {out.observed}")
     if out.hint:
@@ -270,6 +273,14 @@ def card(k, reach=None) -> str:
 
 # -- replies as the CLI and MCP print them; each interface adds its own way to act on them ---------------
 
+def _measurement_line(data: dict) -> str:
+    measured = [f"{key}={value:.6g}" if isinstance(value, float) else f"{key}={value}"
+                for key in ("reason", "position", "unit", "drift", "observed_s", "settled_s",
+                            "joint_error_deg", "measured_position", "object_retention_verified")
+                if (value := data.get(key)) is not None]
+    return "measured: " + ", ".join(measured) if measured else ""
+
+
 def job_text(d: dict, *, answer: str, wait: str) -> str:
     """A job reply as a policy reads it: the outcome, or the question it waits on, then the state line. answer
     and wait are the interface's commands for answering a checkpoint and for waiting longer; {id} is the job."""
@@ -281,6 +292,13 @@ def job_text(d: dict, *, answer: str, wait: str) -> str:
     out, hint = d.get("outcome"), []
     if out:
         lines.append(f"job {d['id']} {out['status']}: {out['message']}")
+        feedback = Outcome(**out).feedback()
+        while "last_step" in feedback:
+            feedback = feedback["last_step"]
+        if feedback["kind"] != out["kind"]:
+            lines.append("last: " + feedback["message"])
+        if measured := _measurement_line(feedback.get("data", {})):
+            lines.append(measured)
     elif d["status"] == "waiting":
         q = d["question"]
         where = f" (look at: {q['view']}" + (f" {q['roi']}" if q.get("roi") else "") + ")" if q.get("view") else ""
