@@ -35,9 +35,8 @@
 
 - MCP successful sequence outcomes now expose compact `last_step` feedback instead of `data.steps` and
   `data.last_result`. HTTP job replies and flight events retain the detailed evidence; failures retain their fields.
-- `gripper` requires measured arrival after its trajectory and can finish sooner. A stalled or timed-out hand now
-  returns a surprise and holds its measured position instead of reporting done after a fixed 0.3 s wait.
-  A failed pre-opening also stops `grip`; intentional object contact belongs in `grip` or `grasp`.
+- `grip` requires measured pre-opening before closing. A stalled or timed-out pre-opening ends the step.
+  Standalone `gripper` retains command-completion semantics; `check_arrival: true` opts into measured completion.
 - A job command's exit status is its outcome: 0 done, 4 refused, surprise, stopped, faulted or cancelled, 5
   waiting at a checkpoint, 6 still running. An invalid or refused request exits 2, and 1 means the daemon or the
   MCP server could not start.

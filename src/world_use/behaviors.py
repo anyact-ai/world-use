@@ -687,11 +687,12 @@ class CheckGrip(Behavior):
         return None
 
 class Gripper(Behavior):
-    """Open or close to a measured opening; return early on arrival or stalled settling (at most 0.3 s).
+    """Command an opening; optionally require measured arrival and return early on stalled settling.
 
     aperture_mm  opening between the fingers, mm
     to           the same in the gripper's native units (see the card)
     seconds      how long to take (default: as fast as its speed limit allows)
+    check_arrival  require measured arrival within the final 0.3 s wait (default false: command completion)
     """
     kind = "gripper"
     example = {"do": "gripper", "aperture_mm": 60}
@@ -714,7 +715,9 @@ class Gripper(Behavior):
         self.v = np.gradient(np.concatenate([[start], self.traj]))[1:] * k.manifest.rate_hz
         self.v[-1] = 0.0
         self.i = 0
-        self.settle = Settling([g.track_tol / 6], .3, .1, stable_s=.1)
+        self.wait = int(.3 * k.manifest.rate_hz)
+        self.settle = (Settling([g.track_tol / 6], .3, .1, stable_s=.1)
+                       if self.params.get("check_arrival", False) else None)
 
     def tick(self, k):
         if self.i < len(self.traj):
@@ -724,13 +727,19 @@ class Gripper(Behavior):
         g, st = k.manifest.gripper, k.state
         if st.gripper is None:
             raise Refused("gripper lost measured position", "sensing")
-        result = self.settle.update(st.t, [abs(self.traj[-1] - st.gripper)])
+        if self.settle is None:
+            if self.wait > 0:
+                self.wait -= 1
+                return None
+            result = "command_complete"
+        else:
+            result = self.settle.update(st.t, [abs(self.traj[-1] - st.gripper)])
         if result is None:
             return None
-        data = dict(reason=result, settled_s=round(self.settle.elapsed_s, 4),
+        data = dict(reason=result, settled_s=.3 if self.settle is None else round(self.settle.elapsed_s, 4),
                     target=float(self.traj[-1]), position=float(st.gripper), unit=g.unit,
                     object_retention_verified=False)
-        if result != "arrived":
+        if result not in ("arrived", "command_complete"):
             k.set_gripper(st.gripper)
             k.hold_here()
             return self.surprise(f"gripper settling {result}", expected=float(self.traj[-1]), observed=st.gripper,
@@ -805,7 +814,7 @@ class Grip(Behavior):
         self.effort, self.lag = 0.15 * g.tau_max, g.track_tol / 6
         self.pre = None
         if start is not None and abs(start - here) > 0.0045 * (hi - lo):     # open to the start width first, smoothly
-            self.pre = Gripper(to=start)
+            self.pre = Gripper(to=start, check_arrival=True)
             k.start_behavior(self.pre)
         self.speed = g.v_max / 15 * np.sign(g.closed - g.open)     # units/s, towards closed
         self.phase, self.contact, self.wait = "open", None, 0

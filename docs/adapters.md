@@ -151,11 +151,14 @@ start at zero share the opening along `opens_along`; they need `m_per_unit`. Oth
 mechanisms need their own simulation model. Without `[gripper]`, joints outside the
 arm chain stay at their URDF zero.
 
-`gripper` now checks measured arrival after its trajectory, with a maximum settling
-wait of 0.3 s. Arrival requires 0.1 s within one sixth of the gripper's tracking
+`gripper` accepts `check_arrival: true` to require measured arrival after its trajectory,
+with a maximum settling wait of 0.3 s. Arrival requires 0.1 s within one sixth of the gripper's tracking
 tolerance; a plateau or timeout ends with a surprise and holds the measured hand
-and arm positions. Previously this step always returned done after the wait. Use
-`grip` for intentional object contact; a position command alone does not verify a grasp.
+and arm positions. The default preserves command completion after the existing wait,
+including in home routes, and reports `command_complete` with target and measured
+position. It does not establish arrival. Use `grip` for intentional object contact;
+its pre-opening requires arrival before closing. Neither position nor contact alone
+verifies retention.
 
 `check_grip` observes opening over a bounded interval (default 0.2 s), using an
 explicit `expect_mm` range or native-unit `expect`. Optional `max_drift_mm` or

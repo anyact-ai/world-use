@@ -82,7 +82,7 @@ FIELDS: dict[str, dict[str, Param]] = {
     "move_to": dict(to=array(3), point=DIRECTION, jaws=DIRECTION, within_deg=NONNEGATIVE, **MOTION),
     "guarded": dict(DISTANCES, frame=TEXT, dtau=POSITIVE, expect_contact=FLAG, speed_mps=POSITIVE, joints=JOINTS),
     "touchdown": dict(max=POSITIVE, dtau=POSITIVE, speed_mps=POSITIVE, joints=JOINTS),
-    "gripper": dict(aperture_mm=NONNEGATIVE, to=NUMBER, seconds=NONNEGATIVE),
+    "gripper": dict(aperture_mm=NONNEGATIVE, to=NUMBER, seconds=NONNEGATIVE, check_arrival=FLAG),
     "settle": dict(seconds=POSITIVE, tolerance_deg=POSITIVE),
     "check_grip": dict(expect_mm=array(2), expect=array(2), seconds=POSITIVE,
                        max_drift=POSITIVE, max_drift_mm=POSITIVE),

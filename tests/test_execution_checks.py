@@ -93,10 +93,17 @@ def test_joint_settling_stops_a_blocked_plan_and_cancels_queued_work(k, monkeypa
 
 def test_gripper_returns_early_only_after_measured_arrival_window(k, monkeypatch):
     measured_gripper(k, monkeypatch, lambda: k.cmd.gripper)
-    out = k.run({"do": "gripper", "to": 1.5})
+    out = k.run({"do": "gripper", "to": 1.5, "check_arrival": True})
     assert out.ok and out.data["reason"] == "arrived"
     assert .1 <= out.data["settled_s"] < .3
     assert not out.data["object_retention_verified"]
+
+
+def test_legacy_gripper_completion_is_distinct_from_measured_arrival(k, monkeypatch):
+    measured_gripper(k, monkeypatch, lambda: 1.)
+    out = k.run({"do": "gripper", "to": 1.3})
+    assert out.ok and out.data["reason"] == "command_complete"
+    assert out.data["target"] == 1.3 and out.data["position"] == 1.
 
 
 def test_failed_preopening_stops_grip_before_it_starts_closing(k, monkeypatch):
