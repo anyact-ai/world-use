@@ -58,6 +58,29 @@ every internal submove, including after waiting or background preparation, must 
 `check_guard` before commanding motion. Ordinary custom steps remain refused when a plan has a guard.
 Keep perception and planning outside the control tick.
 
+### Measured completion
+
+Finishing a joint trajectory means its commands were sent. Add `{"do": "settle"}`
+when the next step needs measured arrival. It waits at the final joint command
+for at most one second, returning sooner on arrival or insufficient progress.
+`seconds` changes the cap; `tolerance_deg` sets the allowed joint error. Without
+it, each joint uses one sixth of its declared tracking tolerance. Stalls and
+timeouts report residuals, hold the measured arm pose and cancel following work.
+They do not establish whether contact, controller lag or an unreachable target
+caused the error. Kernel watchdogs continue to run throughout the wait.
+
+External controllers can use `world_use.checks.Settling(tolerances, timeout_s,
+window_s, stable_s=0)` with their own measured residuals, including a vector mixing
+metres and radians. `update(feedback_timestamp, absolute_errors,
+command_active=...)` returns `None`, `"arrived"`, `"stalled"` or `"timeout"`.
+Use a monotonic measurement timestamp and declare tolerances in the residuals'
+units. Cached samples cannot complete the wait; missing feedback still needs the
+adapter's stale-data watchdog. Set `command_active=False` while an approver or
+controller is still changing the applied target: this clears the progress window
+without extending the deadline. A full window with at least three measurements
+is needed for a stall, and slow progress projected to arrive before the deadline
+keeps its remaining time. This checker sends no commands and changes no controller.
+
 ## Describe the robot
 
 Copy [planar.toml](../examples/adapters/planar.toml) and substitute your measured
@@ -127,6 +150,30 @@ its URDF range, and `m_per_unit` is optional. Two opposed prismatic fingers that
 start at zero share the opening along `opens_along`; they need `m_per_unit`. Other
 mechanisms need their own simulation model. Without `[gripper]`, joints outside the
 arm chain stay at their URDF zero.
+
+`gripper` now checks measured arrival after its trajectory, with a maximum settling
+wait of 0.3 s. Arrival requires 0.1 s within one sixth of the gripper's tracking
+tolerance; a plateau or timeout ends with a surprise and holds the measured hand
+and arm positions. Previously this step always returned done after the wait. Use
+`grip` for intentional object contact; a position command alone does not verify a grasp.
+
+`check_grip` observes opening over a bounded interval (default 0.2 s), using an
+explicit `expect_mm` range or native-unit `expect`. Optional `max_drift_mm` or
+`max_drift` bounds the peak-to-peak change during that interval. Millimetre inputs
+need calibration; missing measurements refuse the check. Range or drift failures
+hold the arm and retain the gripper command, then cancel following work. Sensor
+noise, reseating and compliance affect these readings: consistency does not prove
+object retention, and a change does not prove loss. The feedback states that
+object retention remains unverified.
+
+`grip` and `grasp` accept `verify_s` to run the same check after squeezing, with
+optional drift bounds. Their `expect_mm`/`expect` range then also applies to the
+post-squeeze measurements, so allow for the object's compliance. A failed check
+uses `grasp`'s existing bounded offsets; it does not add new search directions.
+For subsequent lift/carry steps, `seq` accepts `expect_grip_mm` or `expect_grip`
+and checks that range every tick, including checkpoint waits. Put intentional
+opening outside that sequence. See the [block example](../examples/pick-place#check-a-grip-before-carrying)
+for composing measured checks with an independent visual check.
 
 ### Collision bounds
 

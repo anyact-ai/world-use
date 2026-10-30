@@ -54,6 +54,35 @@ not retry the same guess. That way out is safe only over this clear tray.
 Grasps use rigid-body contacts and friction, while servo gains, friction and heating are approximate. These
 scenarios check the software, not what will work on hardware; see [simulation](../../docs/simulation.md).
 
+## Check a grip before carrying
+
+After selecting a grasp from observations, a policy can request a bounded
+post-squeeze check, then a small test lift and a fresh camera check. For example,
+these are illustrative expectations for a roughly 40 mm rigid object, with
+clearance for the lift; choose ranges and drift bounds for the actual hand,
+sensor noise and object compliance:
+
+```json
+[
+  {"do": "grasp", "start_mm": 60, "expect_mm": [35, 45], "verify_s": 0.2,
+   "max_drift_mm": 1, "search_mm": [[6, 0], [-6, 0]]},
+  {"do": "seq", "expect_grip_mm": [35, 45], "steps": [
+    {"do": "line", "up": 0.02},
+    {"do": "settle", "seconds": 1},
+    {"do": "check_grip", "expect_mm": [35, 45], "seconds": 0.2, "max_drift_mm": 1},
+    {"do": "checkpoint", "ask": "Did the object follow the lift and remain between the jaws?", "view": "side"}
+  ]}
+]
+```
+
+The policy must look at a fresh image before answering the checkpoint. A rehearsal
+assumes its expected answer and cannot verify retention. `check_grip` observes the
+hand; it does not lift or inspect an object itself. A later carry sequence can
+declare the same opening expectation, with intentional release outside its scope.
+If a check fails, inspect the object and support before choosing recovery; opening
+or retrying a grasp while carrying can drop it. These checks have simulation and
+fake-feedback coverage, not hardware drop-prevention validation.
+
 ## Adapt the task
 
 Keep the scene, procedure and evaluation separate. Start with this working variation: a smaller tray, a shifted
