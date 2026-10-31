@@ -142,7 +142,9 @@ def main():
                 assert not result["outcomes"] and record["summary"]["powered_s"] == 0, result
                 assert not result["evaluation"]["success"], result
             else:
-                assert all(m["tracking"] == "tracked" for m in result["measurements"]), result["measurements"]
+                tracked = [m for m in result["measurements"] if m.get("plane") is None]
+                assert tracked and all(m["tracking"] == "tracked" for m in tracked), result["measurements"]
+                assert any(m.get("plane") for m in result["measurements"])
                 assert result["lift"] == result["placement"] == "pass", result
                 assert result["evaluation"]["success"], result
         image = picture()

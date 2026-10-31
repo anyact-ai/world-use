@@ -74,9 +74,9 @@ async def procedure(server, evaluate, *, tracking=False) -> dict:
     async def tool(which, /, **arguments):
         return (await server.call_tool(which, arguments)).structured_content
 
-    async def measure() -> dict | None:
+    async def measure(*, face=False) -> dict | None:
         """The block measured in a new frame: at its middle pixel, or by the tracker after the first selection."""
-        if tracking and results["measurements"]:
+        if tracking and results["measurements"] and not face:
             m = (await tool("observe_targets", targets=["block"]))["measurements"][0]
         else:
             reply = await server.call_tool("camera_frame", dict(camera="overhead", depth=True))
@@ -86,10 +86,15 @@ async def procedure(server, evaluate, *, tracking=False) -> dict:
                 return None
             point, box = block
             frame = reply.structured_content["frame"]
-            m = await (tool("select_target", frame=frame, target="block", box=box) if tracking
-                       else tool("measure_pixels", frame=frame, target="block", point=point))
+            if face:
+                x, y = map(int, point)
+                m = await tool("measure_pixels", frame=frame, target="block", point=point,
+                               plane=dict(box=[x - 3, y - 3, x + 4, y + 4], max_error_m=.001))
+            else:
+                m = await (tool("select_target", frame=frame, target="block", box=box) if tracking
+                           else tool("measure_pixels", frame=frame, target="block", point=point))
         results["measurements"].append({key: m.get(key) for key in ("id", "valid", "reason", "surface_center",
-                                                                     "from_tool", "tracking")})
+                                                                     "from_tool", "tracking", "plane")})
         return m if m["valid"] else None
 
     async def run(plan, relies_on=None):
@@ -136,9 +141,32 @@ async def procedure(server, evaluate, *, tracking=False) -> dict:
         # The block keeps its offset from the tool, so with the tool here its top is above the target's.
         to = TARGET + [0, 0, SIZE[2] / 2] - np.asarray(after["from_tool"])
         await run(dict(do="move_to", to=at(to[0], to[1], here[2])), after)
-        # Use the measured placement height; a fixed relative descent can release above the tray.
-        await run([dict(do="move_to", to=at(*to)), dict(do="gripper", aperture_mm=65),
-                   dict(do="line", up=.08)], after)
+        # Transport and set-down can change the grasp offset. Check the object
+        # at release height, where support has straightened it, before opening.
+        # Corrections lift above the tray before moving sideways; no re-grasp.
+        work = np.asarray((await tool("world"))["frames"]["work"]["T"])
+        for attempt in range(3):
+            await run([dict(do="move_to", to=at(*to)), dict(do="settle")], after)
+            at_release = await measure(face=True)
+            if at_release is None:
+                raise RuntimeError("the top face is not measurable before release")
+            normal = np.asarray(at_release["plane"]["normal"]) @ work[:3, :3]
+            normal *= 1 if normal[2] >= 0 else -1
+            if normal[2] < .8:
+                raise RuntimeError("the measured face no longer supports the upright-block assumption")
+            center = np.asarray(at_release["surface_center"]) - normal * SIZE[2] / 2
+            error = TARGET - center
+            if np.linalg.norm(error) < .003:
+                break
+            if attempt == 2 or np.linalg.norm(error) > .03:
+                raise RuntimeError("placement did not converge within three bounded visual corrections")
+            here = np.asarray((await tool("status"))["tool"]["work"])
+            to = here + error
+            await run(dict(do="line", up=.06), at_release)
+            high = (await tool("status"))["tool"]["work"][2]
+            await run(dict(do="move_to", to=at(to[0], to[1], high)), at_release)
+            after = at_release
+        await run([dict(do="gripper", aperture_mm=65), dict(do="line", up=.08)], at_release)
         final = await measure()
         aperture = (await tool("status"))["gripper"]["aperture_mm"]
         results["placement"] = "pass" if final and placed(final, aperture) else "fail"

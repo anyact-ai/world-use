@@ -368,4 +368,4 @@ def test_the_example_measures_moves_and_measures_again(tmp_path):
         assert result.get("reason"), details
     assert "block" not in json.loads((tmp_path / "session.json").read_text())["initial"]["world"]["boxes"]
     files = [Path(tmp_path / "perception" / m["id"]) for m in result["measurements"]]
-    assert len(files) == 5 and all(f.with_suffix(".png").is_file() and f.with_suffix(".npz").is_file() for f in files)
+    assert len(files) >= 6 and all(f.with_suffix(".png").is_file() and f.with_suffix(".npz").is_file() for f in files)
