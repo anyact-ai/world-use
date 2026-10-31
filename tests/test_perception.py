@@ -325,6 +325,18 @@ def test_simulated_depth_measurement_guards_runs_without_rehearsal(daemon):
         c.run({"do": "gripper", "aperture_mm": 65}, requires=requires, check=False)
 
 
+def test_bright_orange_face_is_selected_at_its_center_despite_red_clipping():
+    from world_use.examples.perception import seen
+
+    image = Image.new("RGB", (80, 80), "gray")
+    # A lit face from the failed transport frame: the old R/G cut selected its
+    # darker edge alone and moved the inferred grasp offset by centimetres.
+    image.paste((255, 164, 74), (20, 20, 60, 50))
+    image.paste((255, 150, 65), (20, 20, 60, 23))
+    point, _ = seen(image)
+    assert point == pytest.approx([39.5, 34.5], abs=1)
+
+
 def test_the_example_checks_lift_and_placement_from_measurements():
     from world_use.examples.perception import TARGET, lifted, placed
 

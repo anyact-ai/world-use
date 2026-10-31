@@ -195,6 +195,18 @@ and chooses a bounded recovery explicitly. Command completion is returned with
 `completion_verified=False`: finger consistency and image overlap do not establish retention or support.
 Native termination and observation errors propagate immediately without subsequent motion.
 
+Bind RGB procedures to `object_target="cup"` and, for placement,
+`destination_target="shelf"`. The observer then returns `targets`, a list of current
+tracking results with `target` and `valid` fields. Missing or lost bindings refuse
+before the first command. Results retain `intent` and report `assessment="unknown"`:
+the policy must compare the intended object's appearance and before/after motion,
+then judge retention or placement from fresh views. A tracker follows the selected
+region; the policy owns identity, spatial semantics and any corrective action.
+Bindings are optional for callers that supply another observation contract.
+Use `world_use.procedures.feedback(outcome)` for a compact policy report with stage
+statuses, observation evidence and failure details. Archive `outcome.to_dict()`
+separately; repeated successful stage telemetry need not accumulate in model context.
+
 ### Collision bounds
 
 Declare conservative boxes in the `tool_link` frame for tools and fingers that

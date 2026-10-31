@@ -210,6 +210,13 @@ def test_rgb_tracking_needs_no_metric_measurement_and_cannot_guard_motion(daemon
     (lost,) = tracking.observe(["block"])
     assert not lost["valid"] and lost["withdrawn"] == []
     assert "block" not in tracking.targets
+    # Loss is durable evidence, even though the active tracker and metric guard
+    # have been retired. Asking again cannot silently erase the unresolved goal.
+    (again,) = tracking.observe(["block"])
+    assert again["tracking"] == "lost" and not again["valid"]
+    tracking.tracker.lost = False
+    selected = tracking.select(frame.id, "block", box=[30, 30, 70, 70], space="image")
+    assert selected["valid"] and "block" not in tracking.lost
 
 
 def test_reselecting_metric_target_as_image_revokes_previous_evidence(daemon):
@@ -257,8 +264,9 @@ def test_failed_or_lost_targets_are_dropped_and_their_measurements_withdrawn(dae
     assert lost["tracking"] == "lost" and lost["withdrawn"] == [selected["id"]] and not tracking.targets
     with pytest.raises(DaemonError, match="withdrawn"):
         c.run({"do": "hold", "seconds": .01}, requires=[dict(evidence=selected["id"], max_age_s=30)])
+    assert tracking.observe(["block"])[0]["tracking"] == "lost"
     with pytest.raises(ValueError, match="select it first"):
-        tracking.observe(["block"])
+        tracking.observe(["never selected"])
 
 
 def test_mcp_tracking_replies_are_measurements_and_inference_does_not_block_status(daemon):
@@ -354,3 +362,22 @@ def test_selection_provider_failure_withdraws_other_targets(daemon, monkeypatch)
     result = c.answer(job["id"], "yes", wait=30)
     assert result["status"] == "refused" and "withdrawn" in result["outcome"]["message"]
     assert not tracking.targets
+
+
+def test_provider_failure_reports_each_requested_loss_once_and_keeps_it(daemon, monkeypatch):
+    d, c = daemon
+    d.cameras["synthetic"] = Synthetic()
+    tracker = Tracker()
+    tracking = Tracking(c, tracker)
+    for name in ("cup", "plate"):
+        tracking.select(c.frame("synthetic").id, name, box=[30, 30, 70, 70], space="image")
+
+    def stopped(*args, **kwargs):
+        tracker.ready = False
+        raise Refused("provider stopped", "provider_error")
+
+    monkeypatch.setattr(tracker, "update", stopped)
+    results = tracking.observe(["cup", "plate"])
+    assert [r["target"] for r in results] == ["cup", "plate"]
+    assert all(r["tracking"] == "lost" and not r["valid"] for r in results)
+    assert tracking.observe(["cup", "plate"]) == results

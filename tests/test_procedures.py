@@ -1,7 +1,31 @@
 import pytest
 
 from world_use.behaviors import Outcome
-from world_use.procedures import grasp, place
+from world_use.procedures import feedback, grasp, place
+
+
+def test_bound_place_requires_both_regions_before_any_motion():
+    calls = []
+
+    def execute(command):
+        calls.append(command)
+        return Outcome("done", "fixture", "command completed")
+
+    observation = {"targets": [{"target": "cup", "valid": True},
+                               {"target": "shelf", "valid": False, "tracking": "lost"}]}
+    result = place(execute, lambda: observation, move={}, release={}, check={}, withdraw={},
+                   object_target="cup", destination_target="shelf")
+    assert not result.ok and not calls
+    assert result.data["intent"] == {"object": "cup", "destination": "shelf"}
+    assert result.data["assessment"] == "unknown" and "reselect" in result.hint
+
+    observation["targets"][1].update(valid=True, tracking="tracked")
+    result = place(execute, lambda: observation, move={}, release={}, check={}, withdraw={},
+                   object_target="cup", destination_target="shelf")
+    assert result.ok and len(calls) == 4
+    # Selected masks, successful commands and open fingers cannot certify that
+    # the policy named the right cup or that it rests on the shelf.
+    assert result.data["assessment"] == "unknown" and not result.data["completion_verified"]
 
 
 @pytest.mark.parametrize("procedure,failed_at", [(grasp, i) for i in range(5)] + [(place, i) for i in range(4)])
@@ -27,6 +51,11 @@ def test_failure_cancels_remaining_manipulation_and_preserves_evidence(procedure
     assert result.expected == 20 and result.observed == 4
     assert result.data["observations"]["after"]["executed"] == failed_at + 1
     assert not result.data["completion_verified"]
+    compact = feedback(result)
+    assert compact["expected"] == 20 and compact["observed"] == 4
+    assert compact["observations"]["after"]["executed"] == failed_at + 1
+    assert "inspect" in compact["hint"]
+    assert all(set(stage) == {"stage", "status"} for stage in compact["stages"])
 
 
 def test_grasp_observes_the_lift_and_never_claims_retention():

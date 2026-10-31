@@ -301,8 +301,9 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
 
         @server.tool(annotations=ToolAnnotations(read_only_hint=False))
         def observe_targets(targets: list[str]):
-            """Measure selected targets again in one new frame per camera. A lost target is dropped and its
-            measurements are withdrawn, so runs that require them stop; select it again to continue."""
+            """Measure selected targets again in one new frame per camera. A lost target is retired and its
+            measurements are withdrawn, so runs that require them stop. Repeated observations retain the
+            loss; select it again to continue."""
             def observe():
                 data = tracking.observe(targets)
                 return measured(data, dict(measurements=data))

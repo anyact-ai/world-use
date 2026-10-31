@@ -33,9 +33,12 @@ MAX_AGE_S = 45                      # how old a measurement a phase may rely on,
 def seen(image) -> tuple[list[float], list[int]] | None:
     """The middle of the block's lit top face and the box around the whole block, judged by colour alone: the
     block is orange, its top face the brightest orange. No simulator data is used."""
-    rgb = np.asarray(image.convert("RGB")).astype(float)
-    orange = (rgb[..., 0] > 65) & (rgb[..., 0] > 1.6 * rgb[..., 1]) & (rgb[..., 1] > 1.3 * rgb[..., 2])
-    ys, xs = np.nonzero(orange & (rgb[..., 0] > 200))
+    hsv = np.asarray(image.convert("HSV")).astype(float)
+    # Red-channel clipping changes R/G enough to select only the face's edge.
+    # Hue/saturation preserve the whole orange face under that lighting change.
+    hue = hsv[..., 0] * 360 / 255
+    orange = (hue >= 10) & (hue <= 45) & (hsv[..., 1] > 128) & (hsv[..., 2] > 65)
+    ys, xs = np.nonzero(orange & (hsv[..., 2] > 200))
     if len(xs) < 16:
         return None
     point = [float(np.median(xs)), float(np.median(ys))]

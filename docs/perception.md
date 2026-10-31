@@ -161,9 +161,11 @@ adds two tools. `select_target(frame, target, point|box)` selects an object in a
 the same measurements as `measure_pixels`, with `tracking` set to `tracked` or `lost`.
 
 An agent often thinks for longer than the tracker accepts a picture's age (15 s). A selection made in such
-a picture is followed into a new picture before it is measured. A target the tracker loses is dropped, and
+a picture is followed into a new picture before it is measured. A target the tracker loses is retired, and
 the measurements made of it are withdrawn: a run that requires one stops before its next step. Select it
-again to continue. The tracker follows up to four targets and runs one request at a time; selecting a name
+again to continue. Repeated observations of that name return the retained loss instead of erasing the
+unresolved target; Python callers can enumerate `Tracking.lost` alongside active `Tracking.targets`.
+The tracker follows up to four targets and runs one request at a time; selecting a name
 again withdraws its previous measurements. A stopped provider withdraws all its targets. Each target keeps 256
 measurement IDs; before forgetting an older one, it withdraws it too, including from already accepted jobs.
 Nothing tracks in the background. In Python, `Tracking(client, TrackerProcess())` from

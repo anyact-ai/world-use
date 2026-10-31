@@ -21,6 +21,7 @@ class Tracking:
     def __init__(self, client: Client, tracker):
         self.client, self.tracker = client, tracker
         self.targets: dict[str, dict] = {}
+        self.lost: dict[str, dict] = {}
 
     def select(self, frame: str, target: str, *, point=None, box=None, space="world") -> dict:
         """Select target by a point or box in a frame the agent looked at, and measure it. A seed older than the
@@ -48,6 +49,7 @@ class Tracking:
             raise
         self.targets[target] = dict(camera=source.camera, depth=source.depth is not None and space == "world",
                                     space=space, measured=deque(maxlen=256))
+        self.lost.pop(target, None)
         return self._measure(target, source, observation)
 
     def observe(self, targets: list[str]) -> list[dict]:
@@ -55,11 +57,12 @@ class Tracking:
         if not isinstance(targets, list) or not targets or len(set(targets)) != len(targets):
             raise ValueError("targets must be a nonempty list of distinct names")
         for name in targets:
-            if name not in self.targets:
+            if name not in self.targets and name not in self.lost:
                 raise ValueError(f"no selected target {name!r}: select it first")
         frames, results = {}, []
         for name in targets:
-            if name not in self.targets:          # a tracker that stopped took every target with it
+            if name in self.lost:
+                results.append(dict(self.lost[name]))
                 continue
             key = self.targets[name]["camera"], self.targets[name]["depth"]
             if key not in frames:
@@ -70,7 +73,9 @@ class Tracking:
                 if getattr(e, "rule", "") == "busy":
                     raise
                 lost = list(self.targets) if not getattr(self.tracker, "ready", True) else [name]
-                results += [self._lose(target, str(e)) for target in lost]
+                for target in lost:
+                    self._lose(target, str(e))
+                results.append(dict(self.lost[name]))
                 continue
             results.append(self._measure(name, frames[key], observation))
         return results
@@ -112,8 +117,11 @@ class Tracking:
         withdrawn = list(state["measured"]) if state else []
         if withdrawn:
             self.client.withdraw(withdrawn, f"tracking lost {name!r}")
-        return dict(target=name, tracking="lost", valid=False, reason=why, withdrawn=withdrawn)
+        result = dict(target=name, tracking="lost", valid=False, reason=why, withdrawn=withdrawn)
+        self.lost[name] = result
+        return dict(result)
 
     def close(self):
         self.targets.clear()
+        self.lost.clear()
         self.tracker.close()
