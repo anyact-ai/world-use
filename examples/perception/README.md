@@ -32,7 +32,10 @@ measured and the arm is never powered.
    measurement.
 4. Measure again, then descend and grip, requiring the new measurement.
 5. Measure, lift 6 cm, measure: the lift passed if `from_tool` held while the top face rose.
-6. Carry the block above the target, lower to the height calculated from its measured tool offset, open and withdraw.
+6. Carry above the target and lower to the estimated release height. Measure the lit top face and fit a
+   small depth patch there. Its normal and the known block height give the centre despite tilt. Before
+   opening, allow at most three measured approaches, correcting at most 3 cm and lifting above the tray
+   before each sideways correction. Open only when the measured centre is within 3 mm, then withdraw.
 7. Measure: confirmed if the top-face centre is within 8 mm of the target in 3D, the gripper is open and the
    tool is 8 cm clear above the block. This reserves 2 mm of the task's 1 cm tolerance for measurement error;
    a point measured just inside the physical limit is not enough to confirm placement.
@@ -55,7 +58,8 @@ uv run --extra vision python -m world_use.examples.perception \
 For a CPU-only install, use `uv pip install --python .venv/bin/python --torch-backend cpu --editable '.[vision]'`
 and run `.venv/bin/python` directly. The weights load before the arm is powered. The procedure selects the
 block with `select_target`, seeded by the box around its orange pixels, and measures it later with
-`observe_targets`. The CI vision job runs this with the pinned model for both scenarios, checks the
+`observe_targets`. At release height, both modes refine the lit top face with the colour cue and a depth
+plane; the tracker alone does not supply object pose. The CI vision job runs this with the pinned model for both scenarios, checks the
 tracker on a replayed picture and the Rerun export, and keeps everything as its `vision-evidence` artifact:
 
 ```sh
@@ -65,9 +69,10 @@ OMP_NUM_THREADS=2 uv run --extra vision --extra rerun python scripts/vision_smok
 ## Limits
 
 The task assumes a known upright block, a fixed calibrated overhead camera, a clear tray and simulated
-depth. The block tilts a few degrees in the pinch grasp and settles 5 to 9 mm short of the target when
-let go, inside the 1 cm tolerance. The stricter camera check can reject a physically successful placement
-near that limit: `placement` reports the camera check, while `evaluation.success` reports simulator truth.
+depth. The block can tilt and slide within the pinch grasp, so an offset measured before transport can
+miss the release position. The bounded feedback loop remeasures before opening. The stricter camera
+check can still reject a physically successful placement near the limit: `placement` reports the camera
+check, while `evaluation.success` reports simulator truth.
 These runs check that the pieces work together; they are not a
 benchmark of tracking or grasping.
 
