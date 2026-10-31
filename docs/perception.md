@@ -169,6 +169,22 @@ measurement IDs; before forgetting an older one, it withdraws it too, including 
 Nothing tracks in the background. In Python, `Tracking(client, TrackerProcess())` from
 `world_use.tracking` and `world_use.vision_worker` offers the same `select` and `observe`.
 
+For an RGB camera without depth, select with `space="image"`. The same observe tool then returns
+native-pixel bounds, centre and mask area, with camera, frame identity and age. Consecutive observations
+also report centre displacement in pixels and mask-area ratio, referencing the earlier frame. These
+are image changes, not velocity or object motion in metres; camera motion and occlusion can change them.
+`dominant_region` describes the largest connected mask component, including its bounds and centre,
+with `other_area_px` and `components` exposing disconnected predictions. A few isolated pixels can
+otherwise make the full mask's bounding box span unrelated objects. The raw mask is preserved; selecting
+the largest region does not establish that it is the intended object.
+The default `space="world"` preserves the metric RGB-D contract. Reselecting a target in either mode
+withdraws its earlier metric measurements.
+
+Image results have no measurement `id` and cannot satisfy `run(requires=...)`. A tracked mask does not
+verify object identity, retention, or support. Inspect the RGB and reacquire a lost target explicitly;
+do not interpret a new mask after loss as proof that it is the same object. Task programs can record
+the returned image evidence alongside their commands using the existing task recorder.
+
 ## Records
 
 Each measurement adds one `measurement` event and two files to the run: `perception/<id>.png`, the picture

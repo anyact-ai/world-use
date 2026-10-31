@@ -178,6 +178,23 @@ and checks that range every tick, including checkpoint waits. Put intentional
 opening outside that sequence. See the [block example](../examples/pick-place#check-a-grip-before-carrying)
 for composing measured checks with an independent visual check.
 
+### Bounded manipulation procedures
+
+`world_use.procedures.grasp(execute, observe, approach=..., close=..., check=..., lift=...)` composes
+arrival at a chosen pose, close, measured grip check, bounded test lift and second check. `place(execute,
+observe, move=..., release=..., withdraw=..., check=...)` composes measured arrival, release,
+an opening check and withdrawal. Each command is a dictionary passed unchanged to `execute`,
+which must validate it, use the adapter's normal control path and return an `Outcome`.
+`observe()` returns fresh policy-visible evidence. Both functions run in the procedure process,
+never on the control tick, and return stage outcomes plus before/after observations.
+
+The adapter must enforce arrival before closing or releasing, count every internal step, and
+monitor expected opening during lift/carry. These functions stop on the first non-success outcome;
+they never automatically open, retreat or retry after uncertainty. The caller inspects the evidence
+and chooses a bounded recovery explicitly. Command completion is returned with
+`completion_verified=False`: finger consistency and image overlap do not establish retention or support.
+Native termination and observation errors propagate immediately without subsequent motion.
+
 ### Collision bounds
 
 Declare conservative boxes in the `tool_link` frame for tools and fingers that
