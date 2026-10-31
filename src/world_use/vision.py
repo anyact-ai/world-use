@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections import deque
 from copy import copy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,6 +16,46 @@ from .cameras import Frame
 MODEL = "facebook/EdgeTAM"
 REVISION = "f3a09791b2343c0733d456d08d73771d9363b69a"
 TRANSFORMERS_VERSION = "5.15.1"
+
+
+def dominant_region(mask: np.ndarray) -> dict:
+    """Largest 8-connected predicted region, with discarded area made explicit.
+
+    Tiny disconnected predictions can make the full mask's bounding box span the
+    image. Preserve the raw mask; these statistics describe only its largest
+    component, not a corrected segmentation or a verified object identity.
+    """
+    pixels = np.asarray(mask, dtype=bool)
+    if pixels.ndim != 2:
+        raise ValueError("mask must be two-dimensional")
+    pending = pixels.copy()
+    h, w = pixels.shape
+    largest = []
+    components = 0
+    for y, x in zip(*np.nonzero(pixels), strict=True):
+        if not pending[y, x]:
+            continue
+        components += 1
+        todo = deque([(int(y), int(x))])
+        pending[y, x] = False
+        region = []
+        while todo:
+            r, c = todo.popleft()
+            region.append((r, c))
+            for nr in range(max(0, r - 1), min(h, r + 2)):
+                for nc in range(max(0, c - 1), min(w, c + 2)):
+                    if pending[nr, nc]:
+                        pending[nr, nc] = False
+                        todo.append((nr, nc))
+        if len(region) > len(largest):
+            largest = region
+    if not largest:
+        return dict(bbox=None, center=None, area_px=0, other_area_px=0, components=0)
+    points = np.asarray(largest)
+    lo, hi = points.min(axis=0), points.max(axis=0) + 1
+    return dict(bbox=[int(lo[1]), int(lo[0]), int(hi[1]), int(hi[0])],
+                center=points[:, ::-1].mean(axis=0).tolist(), area_px=len(largest),
+                other_area_px=int(pixels.sum()) - len(largest), components=components)
 
 
 @dataclass(frozen=True)

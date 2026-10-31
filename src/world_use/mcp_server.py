@@ -13,6 +13,7 @@ import json
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from io import BytesIO
+from typing import Literal
 
 from pydantic import ValidationError
 
@@ -285,12 +286,16 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
 
     if tracking is not None:
         @server.tool(annotations=ToolAnnotations(read_only_hint=False))
-        def select_target(frame: str, target: str, point: Point | None = None, box: Rectangle | None = None):
+        def select_target(frame: str, target: str, point: Point | None = None, box: Rectangle | None = None,
+                          space: Literal["world", "image"] = "world"):
             """Select an object by a point or box in a camera_frame, name it target, and measure it as
             measure_pixels does. observe_targets measures it again later without selecting. A frame older than the
-            tracker accepts is followed into a new one first. tracking says tracked or lost."""
+            tracker accepts is followed into a new one first. tracking says tracked or lost.
+            space=image returns native-pixel bounds, center and area from RGB without requiring depth or
+            calibration. These are predicted image regions, not verified identity, metric geometry, grip,
+            support, or a measurement id usable by run(requires). The default world mode needs RGB-D."""
             def select():
-                data = tracking.select(frame, target, point=point, box=box)
+                data = tracking.select(frame, target, point=point, box=box, space=space)
                 return measured([data], data)
             return call(select)
 
