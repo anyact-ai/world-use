@@ -88,6 +88,7 @@ class Tracking:
             # Image evidence has no metric measurement id and cannot satisfy run(requires=...).
             result = dict(target=name, space="image", valid=True, tracking="tracked", frame=frame.id,
                         camera=frame.camera, size=list(frame.image.size), age_s=observation.age_s,
+                        captured_at=frame.timestamp,
                         bbox=observation.bbox, center=observation.center,
                         area_px=int(observation.mask.sum()) if observation.mask is not None else None,
                         identity_verified=False, geometry_verified=False)
@@ -97,8 +98,17 @@ class Tracking:
             if previous and previous["frame"] != frame.id and previous["center"] and result["center"]:
                 result["motion"] = dict(from_frame=previous["frame"],
                     center_delta_px=np.subtract(result["center"], previous["center"]).tolist(),
-                    area_ratio=result["area_px"] / previous["area_px"] if previous["area_px"] else None)
+                    area_ratio=result["area_px"] / previous["area_px"] if previous["area_px"] else None,
+                    camera_motion_compensated=False)
+                prior_mask = self.targets[name].get("mask")
+                if prior_mask is not None and observation.mask is not None:
+                    union = np.count_nonzero(prior_mask | observation.mask)
+                    result["motion"]["mask_iou"] = (float(np.count_nonzero(prior_mask & observation.mask) / union)
+                                                    if union else None)
+            elif previous and previous["frame"] == frame.id and "motion" in previous:
+                result["motion"] = dict(previous["motion"])
             self.targets[name]["image"] = result
+            self.targets[name]["mask"] = observation.mask
             return result
         measurement = self.client.measure(frame, mask=observation.mask, target=name)
         history = self.targets[name]["measured"]

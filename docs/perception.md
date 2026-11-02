@@ -171,10 +171,19 @@ measurement IDs; before forgetting an older one, it withdraws it too, including 
 Nothing tracks in the background. In Python, `Tracking(client, TrackerProcess())` from
 `world_use.tracking` and `world_use.vision_worker` offers the same `select` and `observe`.
 
+Targets observing the same camera capture share one image encoding, while their prompts, masks and temporal
+histories remain independent. The cache holds one capture and is scoped to the loaded model and processor;
+camera, capture identity and image content must agree. Reading an existing capture again must preserve its
+`Frame.id` and monotonic `timestamp`. A new capture gets a new identity even when its pixels are unchanged.
+Reusing features never refreshes evidence age, and repeated frames do not advance tracking history.
+
 For an RGB camera without depth, select with `space="image"`. The same observe tool then returns
-native-pixel bounds, centre and mask area, with camera, frame identity and age. Consecutive observations
-also report centre displacement in pixels and mask-area ratio, referencing the earlier frame. These
+native-pixel bounds, centre and mask area, with camera, frame identity, monotonic `captured_at` and age.
+Consecutive observations also report centre displacement, mask-area ratio and mask intersection-over-union
+(`motion.mask_iou`), referencing the earlier frame. These
 are image changes, not velocity or object motion in metres; camera motion and occlusion can change them.
+`camera_motion_compensated=False` makes that limitation explicit. A low overlap is a reason to inspect the
+RGB and reassess association, not proof of a wrong identity or a calibrated confidence score.
 `dominant_region` describes the largest connected mask component, including its bounds and centre,
 with `other_area_px` and `components` exposing disconnected predictions. A few isolated pixels can
 otherwise make the full mask's bounding box span unrelated objects. The raw mask is preserved; selecting

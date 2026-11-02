@@ -1,6 +1,7 @@
 """Optional object tracking in the procedure's process, independent of robot control."""
 from __future__ import annotations
 
+import hashlib
 import math
 import time
 from collections import deque
@@ -110,6 +111,8 @@ class EdgeTAM:
         self._index = 0
         self._size = None
         self._camera = None
+        # Shared only by forks of these weights/processor; one capture, no temporal state.
+        self._features: dict = {}
         self._load(device, model_path)
 
     def _load(self, device, model_path):
@@ -143,7 +146,7 @@ class EdgeTAM:
         return self
 
     def fork(self) -> EdgeTAM:
-        """Independent target history sharing loaded weights. Serialize calls across these instances."""
+        """Independent target history sharing weights and one capture's encoding. Serialize calls."""
         self._check_open()
         child = copy(self)
         child._session = child._last = child._size = child._camera = None
@@ -159,6 +162,7 @@ class EdgeTAM:
             return
         self._closed = True
         self._session = self._last = self._model = self._processor = None
+        self._features = {}             # other live forks retain their shared entry
         if self.device == "mps":
             self._torch.mps.empty_cache()
         elif self.device == "cuda":
@@ -231,11 +235,22 @@ class EdgeTAM:
 
     def _infer(self, frame: Frame) -> Observation:
         model, processor = self._check_open()
+        assert self._session is not None
         try:
             with self._torch.inference_mode():
                 inputs = processor(images=frame.image, return_tensors="pt").to(self.device)
+                # Capture identity avoids conflating successive identical images. The digest
+                # also prevents an incorrectly reused id from serving another image's features.
+                key = (frame.camera, frame.id, frame.image.mode, frame.image.size,
+                       hashlib.sha256(frame.image.tobytes()).digest(), self.device, self._dtype)
+                if self._features.get("key") == key:
+                    self._session.cache.cache_vision_features(self._index, self._features["value"])
                 result = model(inference_session=self._session, frame_idx=self._index,
                                frame=inputs.pixel_values[0].to(self._dtype))
+                features = self._session.cache.get_vision_features(self._index)
+                self._features.clear()
+                if features is not None:
+                    self._features.update(key=key, value=features)
                 w, h = frame.image.size
                 masks = processor.post_process_masks(
                     [result.pred_masks], original_sizes=[[h, w]], binarize=False)[0]
@@ -246,6 +261,7 @@ class EdgeTAM:
                 return self._last
         except BaseException:
             self._session = self._last = None      # a partially advanced session cannot be reused
+            self._features.clear()
             raise
 
 

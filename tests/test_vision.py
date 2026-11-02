@@ -243,6 +243,31 @@ def test_mcp_exposes_explicit_rgb_mode(daemon):
     assert result.structured_content["space"] == "image" and result.structured_content["valid"]
 
 
+def test_rgb_association_diagnostics_describe_change_without_claiming_identity(daemon):
+    d, c = daemon
+    d.cameras["synthetic"] = Synthetic()
+    tracker = Tracker()
+
+    def update(target, frame):
+        box = tuple(tracker.boxes[target])
+        mask = rectangle(list(box), frame.image.size)
+        center = ((box[0] + box[2] - 1) / 2, (box[1] + box[3] - 1) / 2)
+        return Observation(frame.camera, frame.id, frame.timestamp, box, center, mask, 15)
+
+    tracker.update = update
+    tracking = Tracking(c, tracker)
+    frame = c.frame("synthetic")
+    tracking.select(frame.id, "block", box=[30, 30, 50, 50], space="image")
+    tracker.boxes["block"] = [40, 30, 60, 50]
+    (changed,) = tracking.observe(["block"])
+    assert changed["motion"]["mask_iou"] == pytest.approx(1 / 3)
+    assert changed["motion"]["center_delta_px"] == [10, 0]
+    assert changed["motion"]["area_ratio"] == 1
+    assert changed["motion"]["camera_motion_compensated"] is False
+    assert changed["identity_verified"] is False
+    assert changed["captured_at"] > frame.timestamp
+
+
 def test_failed_or_lost_targets_are_dropped_and_their_measurements_withdrawn(daemon, monkeypatch):
     d, c = daemon
     d.cameras["synthetic"] = Synthetic()
