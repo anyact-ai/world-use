@@ -178,6 +178,64 @@ and checks that range every tick, including checkpoint waits. Put intentional
 opening outside that sequence. See the [block example](../examples/pick-place#check-a-grip-before-carrying)
 for composing measured checks with an independent visual check.
 
+### Bounded manipulation procedures
+
+`world_use.procedures.grasp(execute, observe, approach=..., close=..., check=..., lift=...)` composes
+arrival at a chosen pose, close, measured grip check, bounded test lift and second check. `place(execute,
+observe, move=..., release=..., withdraw=..., check=...)` composes measured arrival, release,
+an opening check and withdrawal. Each command is a dictionary passed unchanged to `execute`,
+which must validate it, use the adapter's normal control path and return an `Outcome`.
+`observe()` returns fresh policy-visible evidence. Both functions run in the procedure process,
+never on the control tick, and return stage outcomes plus before/after observations.
+
+The adapter must enforce arrival before closing or releasing, count every internal step, and
+monitor expected opening during lift/carry. These functions stop on the first non-success outcome;
+they never automatically open, retreat or retry after uncertainty. The caller inspects the evidence
+and chooses a bounded recovery explicitly. Command completion is returned with
+`completion_verified=False`: finger consistency and image overlap do not establish retention or support.
+Native termination and observation errors propagate immediately without subsequent motion.
+
+Bind RGB procedures to `object_target="cup"` and, for placement,
+`destination_target="shelf"`. The observer then returns `targets`, a list of current
+tracking results with `target` and `valid` fields. Missing or lost bindings refuse
+before the first command and stop at subsequent observation checkpoints. Results retain `intent` and,
+without an assessor, report `assessment="unknown"`:
+the policy must compare the intended object's appearance and before/after motion,
+then judge retention or placement from fresh views. A tracker follows the selected
+region; the policy owns identity, spatial semantics and any corrective action.
+Bindings are optional for callers that supply another observation contract.
+
+Pass `assess(checkpoint, observations)` to make observations control continuation. Grasp calls it at
+`before_close`, `before_lift` and `after`; place calls it at `before_release` and `after` withdrawal.
+Each checkpoint captures a fresh observation and rechecks the bound selections first. The callback
+receives independent copies of the observation history and returns an `Outcome`: only `done` permits
+the next stage. Use `stopped` for unknown evidence or `surprise` for a measured mismatch. Assessor errors
+propagate without further motion. Assessments should inspect evidence; choose corrective actions after
+the procedure returns, through the normal executor. No automatic retry, release or resumption occurs.
+An assessor's pass does not refresh evidence: retain the source measurement requirements on subsequent
+commands so the executor checks their age and validity again when motion starts.
+
+For example, a calibrated-depth placement assessor can compare the measured object's position with its
+destination before release, then compare its released position after withdrawal. The
+[perception example](../examples/perception) uses that contract and explicitly chooses a new bounded
+approach after a failed position check. RGB-only callers must have the policy assess identity and spatial
+relations; mask overlap alone cannot establish them. All successful caller checks yield
+`assessment="passed_caller_checks"`, with their individual outcomes recorded, while
+`completion_verified=False` remains explicit: those checks do not certify physical support.
+
+Use `world_use.procedures.feedback(outcome)` for a compact policy report: stage statuses, the current
+checkpoint and next stage, the latest assessment, and at most two observations. The grasp reference is
+the observation before lifting, when available, so co-motion can be judged. A failed command retains
+its attempted command and measured feedback. `next_stage` describes what has not completed; it is not a
+resume token or permission to resend the whole procedure. The caller owns recovery and motor power.
+Archive `outcome.to_dict()` separately for the complete command, observation and assessment history.
+
+Async tool clients can `await async_place(...)` with awaitable `execute` and `observe`; its assessor
+can be synchronous or awaitable. It uses the same stages and checks. Cancellation prevents later stages,
+but cannot cancel a command already accepted by a remote executor: reconcile that job and motor power.
+Do not put a whole synchronous procedure in a background thread that could keep issuing commands after
+its caller is cancelled.
+
 ### Collision bounds
 
 Declare conservative boxes in the `tool_link` frame for tools and fingers that

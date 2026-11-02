@@ -325,6 +325,18 @@ def test_simulated_depth_measurement_guards_runs_without_rehearsal(daemon):
         c.run({"do": "gripper", "aperture_mm": 65}, requires=requires, check=False)
 
 
+def test_bright_orange_face_is_selected_at_its_center_despite_red_clipping():
+    from world_use.examples.perception import seen
+
+    image = Image.new("RGB", (80, 80), "gray")
+    # A lit face from the failed transport frame: the old R/G cut selected its
+    # darker edge alone and moved the inferred grasp offset by centimetres.
+    image.paste((255, 164, 74), (20, 20, 60, 50))
+    image.paste((255, 150, 65), (20, 20, 60, 23))
+    point, _ = seen(image)
+    assert point == pytest.approx([39.5, 34.5], abs=1)
+
+
 def test_the_example_checks_lift_and_placement_from_measurements():
     from world_use.examples.perception import TARGET, lifted, placed
 
@@ -356,4 +368,4 @@ def test_the_example_measures_moves_and_measures_again(tmp_path):
         assert result.get("reason"), details
     assert "block" not in json.loads((tmp_path / "session.json").read_text())["initial"]["world"]["boxes"]
     files = [Path(tmp_path / "perception" / m["id"]) for m in result["measurements"]]
-    assert len(files) == 5 and all(f.with_suffix(".png").is_file() and f.with_suffix(".npz").is_file() for f in files)
+    assert len(files) >= 6 and all(f.with_suffix(".png").is_file() and f.with_suffix(".npz").is_file() for f in files)

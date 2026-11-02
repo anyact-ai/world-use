@@ -18,9 +18,11 @@ import numpy as np
 from PIL import Image
 
 from .. import Kernel, RealClock, World, bodies, cameras
+from ..behaviors import Outcome
 from ..config import load_workcell
 from ..daemon import Daemon, apply_workcell, session_identity
 from ..mcp_server import build
+from ..procedures import async_place
 from ..recorder import save_summary
 from .pick_place import TARGET, success
 
@@ -33,9 +35,12 @@ MAX_AGE_S = 45                      # how old a measurement a phase may rely on,
 def seen(image) -> tuple[list[float], list[int]] | None:
     """The middle of the block's lit top face and the box around the whole block, judged by colour alone: the
     block is orange, its top face the brightest orange. No simulator data is used."""
-    rgb = np.asarray(image.convert("RGB")).astype(float)
-    orange = (rgb[..., 0] > 65) & (rgb[..., 0] > 1.6 * rgb[..., 1]) & (rgb[..., 1] > 1.3 * rgb[..., 2])
-    ys, xs = np.nonzero(orange & (rgb[..., 0] > 200))
+    hsv = np.asarray(image.convert("HSV")).astype(float)
+    # Red-channel clipping changes R/G enough to select only the face's edge.
+    # Hue/saturation preserve the whole orange face under that lighting change.
+    hue = hsv[..., 0] * 360 / 255
+    orange = (hue >= 10) & (hue <= 45) & (hsv[..., 1] > 128) & (hsv[..., 2] > 65)
+    ys, xs = np.nonzero(orange & (hsv[..., 2] > 200))
     if len(xs) < 16:
         return None
     point = [float(np.median(xs)), float(np.median(ys))]
@@ -71,9 +76,9 @@ async def procedure(server, evaluate, *, tracking=False) -> dict:
     async def tool(which, /, **arguments):
         return (await server.call_tool(which, arguments)).structured_content
 
-    async def measure() -> dict | None:
+    async def measure(*, face=False) -> dict | None:
         """The block measured in a new frame: at its middle pixel, or by the tracker after the first selection."""
-        if tracking and results["measurements"]:
+        if tracking and results["measurements"] and not face:
             m = (await tool("observe_targets", targets=["block"]))["measurements"][0]
         else:
             reply = await server.call_tool("camera_frame", dict(camera="overhead", depth=True))
@@ -83,10 +88,15 @@ async def procedure(server, evaluate, *, tracking=False) -> dict:
                 return None
             point, box = block
             frame = reply.structured_content["frame"]
-            m = await (tool("select_target", frame=frame, target="block", box=box) if tracking
-                       else tool("measure_pixels", frame=frame, target="block", point=point))
+            if face:
+                x, y = map(int, point)
+                m = await tool("measure_pixels", frame=frame, target="block", point=point,
+                               plane=dict(box=[x - 3, y - 3, x + 4, y + 4], max_error_m=.001))
+            else:
+                m = await (tool("select_target", frame=frame, target="block", box=box) if tracking
+                           else tool("measure_pixels", frame=frame, target="block", point=point))
         results["measurements"].append({key: m.get(key) for key in ("id", "valid", "reason", "surface_center",
-                                                                     "from_tool", "tracking")})
+                                                                     "from_tool", "tracking", "plane")})
         return m if m["valid"] else None
 
     async def run(plan, relies_on=None):
@@ -95,6 +105,10 @@ async def procedure(server, evaluate, *, tracking=False) -> dict:
         results["outcomes"].append(outcome)
         if outcome["status"] != "done":
             raise RuntimeError(outcome.get("incident") or f"phase {outcome['status']}")
+        detail = dict(outcome["outcome"])
+        if last := detail.pop("last_step", None):
+            detail["data"] = {**detail.get("data", {}), "last_step": last}
+        return Outcome(**detail)
 
     await tool("policy")
     status = await tool("status")
@@ -133,15 +147,67 @@ async def procedure(server, evaluate, *, tracking=False) -> dict:
         # The block keeps its offset from the tool, so with the tool here its top is above the target's.
         to = TARGET + [0, 0, SIZE[2] / 2] - np.asarray(after["from_tool"])
         await run(dict(do="move_to", to=at(to[0], to[1], here[2])), after)
-        # Use the measured placement height; a fixed relative descent can release above the tray.
-        await run([dict(do="move_to", to=at(*to)), dict(do="gripper", aperture_mm=65),
-                   dict(do="line", up=.08)], after)
-        final = await measure()
-        aperture = (await tool("status"))["gripper"]["aperture_mm"]
-        results["placement"] = "pass" if final and placed(final, aperture) else "fail"
-        if results["placement"] != "pass":
-            results["reason"] = ("the released block did not pass the camera placement check" if final
-                                 else "the released block is not measurable")
+        work = np.asarray((await tool("world"))["frames"]["work"]["T"])
+        async def placement():
+            latest, target = after, to
+            correction = None
+
+            async def observe():
+                nonlocal latest
+                latest = await measure(face=True)
+                if latest is None:
+                    raise RuntimeError("the top face is not measurable; no further placement stage is authorized")
+                status = await tool("status")
+                return dict(measurement=latest, aperture_mm=status["gripper"]["aperture_mm"])
+
+            async def execute(command):
+                return await run(command, latest)
+
+            def assess(checkpoint, observations):
+                nonlocal correction
+                observation = observations[checkpoint]
+                measured = observation["measurement"]
+                if checkpoint == "after":
+                    passed = placed(measured, observation["aperture_mm"])
+                    results["placement"] = "pass" if passed else "fail"
+                    return Outcome("done" if passed else "surprise", "placement",
+                                   "released-object camera check passed" if passed else "released-object check failed")
+                normal = np.asarray(measured["plane"]["normal"]) @ work[:3, :3]
+                normal *= 1 if normal[2] >= 0 else -1
+                if normal[2] < .8:
+                    return Outcome("stopped", "placement", "the measured face contradicts the upright assumption",
+                                   observed=normal.tolist())
+                center = np.asarray(measured["surface_center"]) - normal * SIZE[2] / 2
+                error = TARGET - center
+                passed = np.linalg.norm(error) < .003
+                correction = None if passed else error
+                return Outcome("done" if passed else "surprise", "placement", "measured object position before release",
+                               expected=dict(center=TARGET.tolist(), tolerance_m=.003), observed=center.tolist(),
+                               hint=("lift above the known clear tray before correcting; do not release yet"
+                                     if not passed else ""))
+
+            results["procedures"] = []
+            for attempt in range(3):
+                correction = None
+                outcome = await async_place(execute, observe, assess=assess,
+                                move=dict(do="seq", steps=[dict(do="move_to", to=at(*target)), dict(do="settle")]),
+                                release=dict(do="gripper", aperture_mm=65),
+                                check=dict(do="check_grip", expect_mm=[60, 70]), withdraw=dict(do="line", up=.08))
+                results["procedures"].append(outcome.to_dict())
+                if outcome.ok:
+                    return
+                if (outcome.data["checkpoint"] != "before_release" or correction is None or attempt == 2
+                        or np.linalg.norm(correction) > .03):
+                    raise RuntimeError(outcome.message)
+                # The failed procedure cancelled release. The task explicitly chooses
+                # a bounded correction using current geometry, then a new approach.
+                here = np.asarray((await tool("status"))["tool"]["work"])
+                target = here + correction
+                await execute(dict(do="line", up=.06))
+                high = (await tool("status"))["tool"]["work"][2]
+                await execute(dict(do="move_to", to=at(target[0], target[1], high)))
+
+        await placement()
     except Exception as e:
         results["reason"] = str(e)
         # An open gripper retreats directly. If it may hold the block, set it on the known tray before opening.

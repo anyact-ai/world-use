@@ -161,13 +161,40 @@ adds two tools. `select_target(frame, target, point|box)` selects an object in a
 the same measurements as `measure_pixels`, with `tracking` set to `tracked` or `lost`.
 
 An agent often thinks for longer than the tracker accepts a picture's age (15 s). A selection made in such
-a picture is followed into a new picture before it is measured. A target the tracker loses is dropped, and
+a picture is followed into a new picture before it is measured. A target the tracker loses is retired, and
 the measurements made of it are withdrawn: a run that requires one stops before its next step. Select it
-again to continue. The tracker follows up to four targets and runs one request at a time; selecting a name
+again to continue. Repeated observations of that name return the retained loss instead of erasing the
+unresolved target; Python callers can enumerate `Tracking.lost` alongside active `Tracking.targets`.
+The tracker follows up to four targets and runs one request at a time; selecting a name
 again withdraws its previous measurements. A stopped provider withdraws all its targets. Each target keeps 256
 measurement IDs; before forgetting an older one, it withdraws it too, including from already accepted jobs.
 Nothing tracks in the background. In Python, `Tracking(client, TrackerProcess())` from
 `world_use.tracking` and `world_use.vision_worker` offers the same `select` and `observe`.
+
+Targets observing the same camera capture share one image encoding, while their prompts, masks and temporal
+histories remain independent. The cache holds one capture and is scoped to the loaded model and processor;
+camera, capture identity and image content must agree. Reading an existing capture again must preserve its
+`Frame.id` and monotonic `timestamp`. A new capture gets a new identity even when its pixels are unchanged.
+Reusing features never refreshes evidence age, and repeated frames do not advance tracking history.
+
+For an RGB camera without depth, select with `space="image"`. The same observe tool then returns
+native-pixel bounds, centre and mask area, with camera, frame identity, monotonic `captured_at` and age.
+Consecutive observations also report centre displacement, mask-area ratio and mask intersection-over-union
+(`motion.mask_iou`), referencing the earlier frame. These
+are image changes, not velocity or object motion in metres; camera motion and occlusion can change them.
+`camera_motion_compensated=False` makes that limitation explicit. A low overlap is a reason to inspect the
+RGB and reassess association, not proof of a wrong identity or a calibrated confidence score.
+`dominant_region` describes the largest connected mask component, including its bounds and centre,
+with `other_area_px` and `components` exposing disconnected predictions. A few isolated pixels can
+otherwise make the full mask's bounding box span unrelated objects. The raw mask is preserved; selecting
+the largest region does not establish that it is the intended object.
+The default `space="world"` preserves the metric RGB-D contract. Reselecting a target in either mode
+withdraws its earlier metric measurements.
+
+Image results have no measurement `id` and cannot satisfy `run(requires=...)`. A tracked mask does not
+verify object identity, retention, or support. Inspect the RGB and reacquire a lost target explicitly;
+do not interpret a new mask after loss as proof that it is the same object. Task programs can record
+the returned image evidence alongside their commands using the existing task recorder.
 
 ## Records
 
