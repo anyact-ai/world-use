@@ -21,7 +21,7 @@ from run import SOURCE, episode, runtime_manifest, source_hashes
 
 class Scripted(AzureBudget):
     def __init__(self, folder):
-        self.driver = self.world = self.reference = None
+        self.driver = self.world = self.reference = self.script = None
         self.requests = []
         super().__init__(folder, key="offline-test-key", inner=httpx.MockTransport(self.respond))
 
@@ -42,21 +42,54 @@ class Scripted(AzureBudget):
             ]
             name, args = commands[index - 1]
         else:
-            # Pixel fixtures are used only by this synthetic policy, never by paid runs.
-            captures = self.world.context()["captures"]
-            frame = next(c["frame"] for c in captures if c["camera"] == "agentview")
-            state = self.driver.observation.state["eef_state"]
-            approach = dict(zip(("x", "y", "z"), map(float, state[:3]), strict=True))
-            lift = {**approach, "z": approach["z"] + 0.04}
-            commands = [
-                ("select_target", dict(target="fixture_object", frame=frame, box=[95, 120, 125, 161])),
-                ("select_target", dict(target="fixture_support", frame=frame, box=[0, 110, 58, 193])),
-                ("observe_targets", {}),
-                ("grasp", dict(object_target="fixture_object", approach=approach, lift=lift, expect_grip_mm=[5, 70])),
-                ("move_to", dict(targets={"gripper": 0.0})),
-                ("give_up", dict(reason="Offline empty-grasp check complete.", hindsight="none")),
-            ]
-            name, args = commands[index - 1]
+            # Pixel and pose fixtures for task 0, state 0 serve only this synthetic policy, never paid runs.
+            if self.script is None:
+                captures = self.world.context()["captures"]
+                frame = next(c["frame"] for c in captures if c["camera"] == "agentview")
+                state = self.driver.observation.state["eef_state"]
+                here = dict(zip(("x", "y", "z"), map(float, state[:3]), strict=True))
+                soup, tomato = dict(x=-0.1002, y=-0.152), dict(x=-0.1173, y=0.0557)
+
+                def grasp(at):
+                    return (
+                        "grasp",
+                        dict(
+                            object_target="fixture_object",
+                            approach={**at, "z": 0.49},
+                            lift={**at, "z": 0.53},
+                            expect_grip_mm=[50, 75],
+                        ),
+                    )
+
+                self.script = [
+                    ("select_target", dict(target="fixture_object", frame=frame, box=[95, 120, 125, 161])),
+                    ("select_target", dict(target="fixture_support", frame=frame, box=[0, 110, 58, 193])),
+                    ("observe_targets", {}),
+                    # Closing in free air: nothing between the fingers.
+                    (
+                        "grasp",
+                        dict(
+                            object_target="fixture_object",
+                            approach=here,
+                            lift={**here, "z": here["z"] + 0.04},
+                            expect_grip_mm=[5, 70],
+                        ),
+                    ),
+                    ("move_to", dict(targets={"gripper": 0.0})),
+                    # A reversal issued while the arm still trails its last command.
+                    ("move_to", dict(targets={"z": 0.55})),
+                    ("move_to", dict(targets={"z": 0.62})),
+                    # The selected region is the tomato sauce; this grasp lifts the soup instead.
+                    ("move_to", dict(targets={**soup, "z": 0.62})),
+                    grasp(soup),
+                    ("move_to", dict(targets={"gripper": 0.0})),
+                    ("move_to", dict(targets={"z": 0.62})),
+                    ("move_to", dict(targets={**tomato, "z": 0.62})),
+                    grasp(tomato),
+                    ("give_up", dict(reason="Offline procedure checks complete.", hindsight="none")),
+                ]
+            name, args = self.script[index - 1]
+            args = dict(args)
             args["note"] = "Synthetic offline fixture; no task-completion claim."
         return httpx.Response(
             200,
@@ -177,22 +210,40 @@ def main():
         augmented = episode(
             args.output / "world_use", "world_use", transport, initial_expected=rebuilt["initial_observation_sha256"]
         )
-        assert augmented["calls"] == 6
+        assert augmented["calls"] == len(transport.script)
         assert augmented["status"] == "give_up" and not augmented["success"]
         outcomes = [
             json.loads(line) for line in (args.output / "world_use/execution/world-use.jsonl").read_text().splitlines()
         ]
         assert all(o["valid"] for o in outcomes[:2])
-        grasp = next(o for o in outcomes if o.get("procedure") == "grasp")
-        assert grasp["status"] in ("stopped", "surprise")
-        assert grasp["stages"][-1]["stage"] == "close"
-        assert grasp["observations"]["after"]["aperture_mm"] < 5
-        assert "test_lift" not in [s["stage"] for s in grasp["stages"]]
+        empty, wrong, held = (o for o in outcomes if o.get("procedure") == "grasp")
+        # An empty hand is reported at rest, fully closed, before the settling bound and before any lift.
+        closed = empty["last_command"]["outcome"]["data"]
+        assert empty["status"] == "surprise" and empty["stages"][-1]["stage"] == "close"
+        assert closed["gripper"] == "reached_end" and closed["executed_steps"] < 31
+        assert empty["observations"]["after"]["aperture_mm"] < 5
         actual_steps = [
             json.loads(line) for line in (args.output / "world_use/execution/steps.jsonl").read_text().splitlines()
         ]
         assert len(actual_steps) == augmented["steps"]
-        assert not any(s["source"] == "grasp_test_lift" for s in actual_steps)
+        before_reselection = actual_steps[: empty["observations"]["after"]["env_step"]]
+        assert not any(s["source"] == "grasp_test_lift" for s in before_reselection)
+        # The reversed move's last applied command differs from the request, and the feedback says so.
+        (reversal,) = (
+            o["data"]
+            for o in outcomes
+            if not o.get("data", {}).get("applied", {}).get("last_command_reached_request", True)
+        )
+        last = actual_steps[reversal["env_step"] - 1]
+        offset = float(np.linalg.norm(np.subtract(last["requested"][:3], last["approved"][:3])))
+        assert offset > 0.005 and abs(reversal["applied"]["last_command_position_offset_m"] - offset) < 1e-3
+        # The same selected region across two real lifts: left behind, then carried by the hand.
+        for grasp, unchanged in ((wrong, True), (held, False)):
+            assert [s["status"] for s in grasp["stages"]] == ["done"] * 5 and grasp["checkpoint"] == "after"
+            evidence = grasp["assessments"][-1]["outcome"]
+            assert evidence["kind"] == "lift_evidence" and evidence["data"]["unchanged"] is unchanged
+        assert wrong["status"] == "surprise" and held["status"] == "done"
+        assert held["assessment"] == "passed_caller_checks" and not held["completion_verified"]
         # Selection and repeated observation share the actual simulator capture.
         assert outcomes[0]["frame"] == outcomes[1]["frame"]
         observed = outcomes[2]["targets"]
@@ -203,6 +254,11 @@ def main():
             baseline=rebuilt,
             world_use=augmented,
             empty_grasp_stopped_before_lift=True,
+            applied_command_offset_reported_m=offset,
+            lift_evidence=dict(
+                left_behind=wrong["assessments"][-1]["outcome"]["data"],
+                carried=held["assessments"][-1]["outcome"]["data"],
+            ),
             initial_observations_identical=True,
             repeated_capture_regions_identical=True,
         )

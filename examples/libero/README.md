@@ -21,7 +21,24 @@ placement interpretation. A placement pauses before release and needs a one-use
 decision tied to the unchanged observations. Image overlap and finger opening do
 not certify object identity, support or task completion.
 
-A procedure stage repeats its final native pose for at most 20 more
+## Conditions
+
+Three conditions must stay distinguishable in any comparison:
+
+- **Raw Sol**: the baseline arm. This tree does not change what it executes or is
+  told; validation compares its approved actions and measured states with upstream.
+  Neither arm receives the upstream rollout's `approver: N step(s) modified`
+  observation line. Restoring it would be a new raw condition.
+- **Frozen World Use**: commit `ffaaaf6`, whose `native.py`, `world_tools.py` and
+  `run.py` have SHA-256 prefixes `ad8b8fab`, `a21a23f8` and `90a9cfc5`. Evidence
+  produced with it belongs to that source.
+- **Candidate World Use**: this tree, recorded as
+  `settling-comotion-candidate-20261115`. It has no paid result. Its differences
+  from the frozen runner are the three below. The commit that adds the region
+  comparison changes nothing else the arm executes, so its parent is the settling
+  and applied-command change alone, for a single-factor comparison.
+
+**Settling.** A procedure stage repeats its final native pose for at most 20 more
 steps, all counted toward the 900-step limit. It uses the library's `Settling`
 check and returns as soon as the measurements settle the question. The arm has
 `arrived` after three consecutive samples within 12 mm and 0.12 rotation-column
@@ -33,16 +50,49 @@ otherwise `still_moving`. A stable opening outside the policy's expected range i
 a measured surprise, not a failure to converge. No wait concludes while an approver
 is still changing what is applied, and an opening hand is not judged until its
 command ramp has finished: the fingers do not move until the ramp passes their
-position. The previous runner judged stability from single-step aperture changes
+position. The frozen runner judged stability from single-step aperture changes
 inside the expected range, so an empty or unexpectedly wide grasp used the whole
 bound and reported non-convergence.
 
-The native per-step limit is measured from the previous applied command, while
-each move interpolates from the measured pose. A move issued
+**Applied commands.** The native per-step limit is measured from the previous
+applied command, while each move interpolates from the measured pose. A move issued
 while the arm still trails its last command can therefore end short of its request.
 World Use results now carry `applied` whenever the approvers changed a command,
 with the distance from the last applied command to the request. Raw moves retain
 native interpolation and are not extended.
+
+**Region comparison.** When the object was selected in `agentview`, its tracked
+region is compared across the test lift and across a vertical approach to a release
+pose, using the existing procedure assessment hooks. The hand must have travelled
+at least 1.5 cm vertically and at most 2 cm sideways between the two observations.
+A region that kept at least 0.9 mask overlap and shifted less than 0.3 image
+heights per metre of that travel did not move with the hand: `grasp` returns a
+surprise after the lift, and `place` issues no release receipt. The hand then
+holds something else or nothing, or the selection sits on another object. A region
+that changed is not confirmation, and a wrist selection is not compared. The rule
+assumes a static camera that does not look along the vertical. A straight-down
+view only rescales a lifted object, so such a camera must not be compared.
+
+These thresholds were chosen on development evidence, not held-out data: 43
+scripted real-simulator, real-EdgeTAM episodes over tasks 0, 1, 4, 6 and 7 and
+initial states 0 and 1, with simulator ground truth. Every lift there was a 4 cm
+request measuring 2.8 to 3.5 cm, so shorter travel rests on the scaling above, not
+on separate measurements. The place approach was exercised in two further scripted
+episodes only: a held object received its receipt, and a region left behind
+across a 5.4 cm descent did not. All 9 selected regions whose
+object stayed behind were flagged and none of the 9 that were lifted. Over every
+tracked `agentview` region, 41 of 50 that stayed were unchanged; the other 9 had
+drifted onto the passing hand or changed through occlusion, which the rule leaves
+unflagged. One of 20 lifted objects was flagged: its point prompt had landed on
+the carton occluding it, so the tracked region was not the object.
+
+The same rule was run once on the library's own MuJoCo block scene, with a
+different arm, object and renderer. Two oblique views of a gripped, lifted block
+changed (overlap 0.27 and 0.53, shift 12 px). Of two oblique views of a block left
+behind, one was unchanged and one changed through hand occlusion. The overhead
+view kept 0.86 overlap with under 1 px of shift for a 3.7 cm lift, which is why it
+is excluded. [region-evidence.jsonl](region-evidence.jsonl) holds every row of
+both checks; all of it is simulated.
 
 The native terminal hold step is executed and counted. No physics parameters or
 success predicates are altered.
@@ -95,6 +145,14 @@ snapshot as `libero/libero/assets` inside the simulator installation. Download t
 pinned EdgeTAM snapshot into `HF_HOME` before enabling offline mode. Both runtime
 installs must preserve the inherited proxy and CA settings.
 
+If the CPU PyTorch index is unreachable, the same `torch` and `torchvision`
+versions from PyPI run on CPU; the runtime manifest then records the extra CUDA
+packages. If Xet downloads are blocked, set `HF_HUB_DISABLE_XET=1` for the snapshot
+downloads. EdgeTAM also loads `config.json` from `timm/repvit_m1.dist_in1k`
+(revision `55e64695f26bb1711730f916e557b464fb46478d` when last rebuilt), which is
+not part of its pinned snapshot: load the tracker once online before enabling
+offline mode.
+
 The explicit preparation above documents the reconstruction; it has not been
 packaged as a separately tested clean-machine installer. The validation below
 tests the actual installed runtime and refuses a failed or stale validation.
@@ -116,12 +174,16 @@ export OPENBLAS_NUM_THREADS=1
   --output /workspace/libero-validation
 ```
 
-Validation runs transport and release-admission regressions, compares the rebuilt
-baseline's approved actions and measured states against upstream `evaluate`, and
-exercises actual EdgeTAM and LIBERO with synthetic policy responses. It verifies
-identical initial observations, repeated-capture tracking and an empty grasp
-stopping before lift. No model requests leave the mock transport, and no task
-success is claimed. Pixel fixtures exist only in `validate.py`.
+Validation runs the runner's regressions, compares the rebuilt baseline's approved
+actions and measured states against upstream `evaluate`, and exercises actual
+EdgeTAM and LIBERO with synthetic policy responses. It verifies identical initial
+observations and repeated-capture tracking. An empty grasp must stop before lift
+with the hand reported fully closed, a reversed move must report the offset of its
+last applied command, and one selected region must be flagged when another object
+is lifted and pass when its own object is. No model requests leave the mock
+transport, and no task success is claimed. Pixel and pose fixtures exist only in
+`validate.py`. `PYTHONPATH` must name the `src` folder of the World Use tree under
+test when the library is not installed in the agent environment.
 
 ## Run the authorized pilot
 
@@ -133,8 +195,14 @@ Do not store credentials in this repository or pass them on a command line.
 /workspace/libero-runtime/agent-env/bin/python examples/libero/run.py \
   --validation /workspace/libero-validation/validation.json \
   --output /workspace/libero-paid-pilot \
+  --authorization "<the user's own words approving this scope>" \
   --execute-paid-rollouts
 ```
+
+The authorization is recorded verbatim in `protocol.json`. An approval given for
+an earlier runner or scope does not cover this one. The committed
+`validation.json` records an offline validation of this source in one runtime; a
+paid run needs a validation made in its own runtime.
 
 Admission checks exact source and installed-runtime fingerprints. A small live
 image/function-call probe precedes both episodes. The campaign has a $15

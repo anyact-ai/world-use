@@ -30,6 +30,13 @@ intended object followed. Aperture alone does not establish identity or retentio
 place returns BEFORE opening, with fresh views and a one-use release checkpoint. Inspect
 the object and support geometry in those views; call release_placement only when the pose
 is suitable. Otherwise choose a correction. Motion or reselection invalidates the receipt.
+Select the object you will grasp or place in an agentview capture when it is clearly visible there.
+That camera does not move, so its selected region is compared across the test lift and across a
+place move that is vertical to within 2 cm. A region that stayed in place while the hand moved
+returns surprise: the hand holds something else or nothing, or the selection sits on another
+object, and place issues no release checkpoint. A region that changed is reported as assessment
+passed_caller_checks; that is not confirmation of identity or retention. A lift too short to
+compare returns stopped after its stages are done. A wrist selection gets no such comparison.
 Measured results name what was observed. arm: arrived; not_approaching (the remaining offset
 stopped shrinking, as contact or an unreachable pose causes); still_converging. gripper:
 reached_end (fully closed or open, nothing between the fingers); stopped_apart; still_moving.
@@ -40,6 +47,51 @@ end short: last_command_position_offset_m is the distance from the final applied
 request, and repeating the move covers it.
 Tool completion is not task success. Use fresh camera evidence to decide the next action.
 """
+
+
+# A camera that does not move and does not look along the vertical, so vertical travel of a held
+# object shifts its image. The wrist camera rises with the hand; a straight-down view only rescales.
+FIXED_CAMERAS = frozenset({"agentview"})
+TRAVEL_M = 0.015  # shorter vertical hand travel is not compared
+SIDEWAYS_M = 0.02  # nor is travel with more sideways motion: only vertical travel was measured
+UNCHANGED_IOU = 0.9
+# Image heights a region may shift per metre of vertical hand travel and still count as unchanged.
+# In the recorded lifts held objects shifted at least 0.64 and untouched ones at most 0.18.
+UNCHANGED_SHIFT_PER_M = 0.3
+
+
+def region_evidence(target, before, after):
+    """Did a selected region stay put while the hand measurably rose or sank?
+
+    Compares two consecutive procedure observations in one of FIXED_CAMERAS. Returns
+    None when they cannot be compared. An unchanged region did not travel with the hand:
+    the hand holds something else or nothing, or the selection sits on another object.
+    A changed one establishes nothing, since occlusion and tracking drift change regions
+    too. Identity and retention stay the policy's judgement.
+    """
+    old = next((t for t in before.get("targets", []) if t.get("target") == target), None)
+    new = next((t for t in after.get("targets", []) if t.get("target") == target), None)
+    if old is None or new is None or new.get("camera") not in FIXED_CAMERAS:
+        return None
+    motion = new.get("motion") or {}
+    moved = np.subtract(after["eef_state"][:3], before["eef_state"][:3])
+    travel = float(moved[2])
+    if (
+        abs(travel) < TRAVEL_M
+        or np.linalg.norm(moved[:2]) > SIDEWAYS_M
+        or motion.get("from_frame") != old.get("frame")
+        or motion.get("mask_iou") is None
+    ):
+        return None
+    shift = float(np.hypot(*motion["center_delta_px"]))
+    limit = UNCHANGED_SHIFT_PER_M * abs(travel) * new["size"][1]
+    return dict(
+        camera=new["camera"],
+        hand_vertical_travel_m=round(travel, 4),
+        mask_iou=round(motion["mask_iou"], 3),
+        center_shift_px=round(shift, 2),
+        unchanged=bool(motion["mask_iou"] >= UNCHANGED_IOU and shift <= limit),
+    )
 
 
 def schema(name, description, properties, required):
@@ -221,6 +273,38 @@ class WorldTools:
                 delta = np.array([args["lift"][k] - args["approach"][k] for k in ("x", "y", "z")])
                 if not (0.03 <= delta[2] <= 0.05 and np.linalg.norm(delta[:2]) <= 0.005):
                     raise ValueError("test lift must be vertical 3-5 cm, with at most 5 mm lateral displacement")
+
+                def lifted(checkpoint, observations):
+                    if checkpoint != "after":
+                        return Outcome("done", "not_assessed", "the region is compared after the test lift")
+                    facts = region_evidence(args["object_target"], observations["before_lift"], observations["after"])
+                    if facts is None:
+                        return Outcome(
+                            "stopped",
+                            "lift_evidence",
+                            "the selected region could not be compared across the lift",
+                            hint="judge from both cameras whether the intended object followed",
+                        )
+                    if facts["unchanged"]:
+                        return Outcome(
+                            "surprise",
+                            "lift_evidence",
+                            "the selected region stayed in place while the hand rose",
+                            facts,
+                            "a region that moves with the hand",
+                            dict(mask_iou=facts["mask_iou"], center_shift_px=facts["center_shift_px"]),
+                            "the hand may hold something else or nothing, or the selection may sit on another "
+                            "object; the gripper is still closed. Inspect both cameras, then reselect or regrasp",
+                        )
+                    return Outcome(
+                        "done",
+                        "lift_evidence",
+                        "the selected region changed during the lift; identity and retention remain unverified",
+                        facts,
+                    )
+
+                # Only a selection in a camera that does not move can show the region staying behind.
+                tracked = self.tracking.targets.get(args["object_target"], {}).get("camera") in FIXED_CAMERAS
                 outcome = procedures.grasp(
                     self.driver.execute,
                     self.observe,
@@ -229,6 +313,7 @@ class WorldTools:
                     close=self._move({"gripper": 1}, "grasp_close", expected=grip),
                     check=dict(kind="check_grip", expect_mm=grip),
                     lift=self._move(args["lift"], "grasp_test_lift", monitor=grip),
+                    assess=lifted if tracked else None,
                 )
                 return self._result(procedures.feedback(outcome))
             if call.name == "place":
@@ -239,6 +324,21 @@ class WorldTools:
 
                 def pause(checkpoint, observations):
                     if checkpoint == "before_release":
+                        facts = region_evidence(
+                            args["object_target"], observations["before"], observations["before_release"]
+                        )
+                        if facts and facts["unchanged"]:
+                            return Outcome(
+                                "surprise",
+                                "carry_evidence",
+                                "the selected object region stayed in place while the hand travelled",
+                                facts,
+                                "a region that moves with the hand",
+                                dict(mask_iou=facts["mask_iou"], center_shift_px=facts["center_shift_px"]),
+                                "no release checkpoint was issued: the hand may not hold the selected object, or "
+                                "the selection may sit on another object. Inspect both cameras, then reselect "
+                                "or regrasp",
+                            )
                         self.pending = dict(
                             id=uuid.uuid4().hex,
                             fingerprint=fingerprint(self.driver.observation),

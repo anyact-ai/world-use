@@ -213,6 +213,9 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--validation", type=Path, required=True)
     parser.add_argument("--execute-paid-rollouts", action="store_true")
+    parser.add_argument(
+        "--authorization", required=True, help="the user's own words approving this exact paid scope; recorded verbatim"
+    )
     args = parser.parse_args()
     if not args.execute_paid_rollouts:
         parser.error("paid calls require --execute-paid-rollouts")
@@ -229,7 +232,7 @@ def main():
     os.umask(0o077)
     args.output.mkdir(parents=True, exist_ok=False)
     protocol = dict(
-        runner="reconstructed-20261110",
+        runner="settling-comotion-candidate-20261115",
         historical_comparison=False,
         model=MODEL,
         effort="low",
@@ -248,7 +251,7 @@ def main():
         price_assumptions=RATES,
         offline_validation=checks,
         source_sha256=source_hashes(),
-        authorization="User: all right now let's rerun on the benchmark to see if world use makes it any better",
+        authorization=args.authorization,
     )
     (args.output / "protocol.json").write_text(json.dumps(protocol, indent=2))
     transport = AzureBudget(args.output / "api", key=key)

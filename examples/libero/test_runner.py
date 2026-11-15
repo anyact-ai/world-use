@@ -133,9 +133,11 @@ class FakeDriver:
         self.tools = SimpleNamespace(execute=lambda *a: SimpleNamespace(error=None))
         self.commands = []
         self.output = []
+        self.pose = dict(x=0.0, y=0.0, z=0.5)
 
     def execute(self, command):
         self.commands.append(command)
+        self.pose.update({k: v for k, v in command.get("targets", {}).items() if k in self.pose})
         return Outcome("done", command["kind"], "fixture measured check")
 
     def record(self, *args):
@@ -145,23 +147,40 @@ class FakeDriver:
         pass
 
     def measure(self):
-        return {"aperture_mm": 40}
+        return {"aperture_mm": 40, "eef_state": list(self.pose.values())}
 
 
 def call(name, **args):
     return ToolCall(id="test", name=name, arguments=json.dumps(dict(note="Fixture observation.", **args)))
 
 
-def tools_fixture():
+def tools_fixture(camera=None, **motion):
     # Exercise the real procedure and adapter without inventing a physical grasp.
     tools = object.__new__(WorldTools)
     tools.driver = FakeDriver()
     tools.native = tools.driver.tools
     tools.pending = tools.latest = None
+    captures = iter(range(100))
+
+    def observe(names):
+        if camera is None:
+            return [dict(target=n, valid=True) for n in names]
+        # Each observation is a new capture whose region is compared with the previous one.
+        index = next(captures)
+        return [
+            dict(
+                target=n,
+                valid=True,
+                camera=camera,
+                frame=str(index),
+                size=[256, 256],
+                motion=dict(from_frame=str(index - 1), **motion),
+            )
+            for n in names
+        ]
+
     tools.tracking = SimpleNamespace(
-        targets={"object": {}, "support": {}},
-        lost={},
-        observe=lambda names: [dict(target=n, valid=True) for n in names],
+        targets={"object": {"camera": camera}, "support": {"camera": camera}}, lost={}, observe=observe
     )
     return tools
 
@@ -223,6 +242,79 @@ def test_release_refuses_changed_evidence_without_opening(change):
     )
     assert json.loads(result.note)["status"] in ("refused", "stopped")
     assert len(tools.driver.commands) == count
+
+
+STAYED = dict(mask_iou=0.97, center_delta_px=[0.3, -0.5])
+MOVED = dict(mask_iou=0.5, center_delta_px=[1.0, -9.0])
+
+
+def grasp(tools):
+    pose = dict(x=0.0, y=0.0, z=0.5)
+    request = call("grasp", object_target="object", approach=pose, lift={**pose, "z": 0.54}, expect_grip_mm=[20, 60])
+    return json.loads(tools.execute(request, tools.driver.observation).note)
+
+
+@pytest.mark.parametrize(
+    ("camera", "motion", "status", "assessment"),
+    [
+        ("agentview", STAYED, "surprise", "unknown"),
+        ("agentview", MOVED, "done", "passed_caller_checks"),
+        # The wrist camera rises with the hand, so a held object's region stays put there.
+        ("wrist", STAYED, "done", "unknown"),
+    ],
+)
+def test_grasp_reports_a_selected_region_that_stayed_behind_the_lift(camera, motion, status, assessment):
+    tools = tools_fixture(camera, **motion)
+    result = grasp(tools)
+    assert (result["status"], result["assessment"]) == (status, assessment)
+    # The lift already ran; the finding adds no opening, retreat or retry.
+    assert [s["stage"] for s in result["stages"]][-2:] == ["test_lift", "check_after_lift"]
+    assert tools.driver.commands[-1]["kind"] == "check_grip"
+    if status == "surprise":
+        assert result["checkpoint"] == "after" and result["observed"] == dict(mask_iou=0.97, center_shift_px=0.58)
+
+
+def test_a_lift_too_small_to_compare_is_not_judged(monkeypatch):
+    tools = tools_fixture("agentview", **STAYED)
+    execute = tools.driver.execute
+    monkeypatch.setattr(tools.driver, "execute", lambda c: execute({**c, "targets": {}}))
+    result = grasp(tools)
+    assert result["status"] == "stopped" and "could not be compared" in result["message"]
+
+
+def test_a_grasp_that_stops_before_its_lift_reports_no_lift_evidence(monkeypatch):
+    tools = tools_fixture("agentview", **MOVED)
+    execute = tools.driver.execute
+    refuse = Outcome("surprise", "move", "fixture: nothing between the fingers")
+    monkeypatch.setattr(tools.driver, "execute", lambda c: refuse if c.get("stage") == "grasp_close" else execute(c))
+    result = grasp(tools)
+    assert result["status"] == "surprise" and result["stages"][-1]["stage"] == "close"
+    assert all(a["outcome"]["kind"] != "lift_evidence" for a in result["assessments"])
+
+
+@pytest.mark.parametrize(
+    ("motion", "move", "issued"),
+    [
+        (STAYED, {"z": 0.45}, False),
+        (MOVED, {"z": 0.45}, True),
+        # Only a vertical approach is compared: sideways travel was never measured.
+        (STAYED, {"x": 0.1, "z": 0.45}, True),
+    ],
+)
+def test_place_issues_a_release_receipt_unless_the_region_stayed_behind_a_vertical_approach(motion, move, issued):
+    tools = tools_fixture("agentview", **motion)
+    request = call(
+        "place",
+        object_target="object",
+        destination_target="support",
+        move=move,
+        withdraw={"z": 0.55},
+        expect_grip_mm=[5, 70],
+    )
+    result = json.loads(tools.execute(request, tools.driver.observation).note)
+    assert (tools.pending is not None) == issued
+    assert result["status"] == ("stopped" if issued else "surprise")
+    assert [c.get("stage") for c in tools.driver.commands] == ["place_approach"]
 
 
 class Hand(LiberoEmbodiment):
