@@ -30,6 +30,14 @@ intended object followed. Aperture alone does not establish identity or retentio
 place returns BEFORE opening, with fresh views and a one-use release checkpoint. Inspect
 the object and support geometry in those views; call release_placement only when the pose
 is suitable. Otherwise choose a correction. Motion or reselection invalidates the receipt.
+Measured results name what was observed. arm: arrived; not_approaching (the remaining offset
+stopped shrinking, as contact or an unreachable pose causes); still_converging. gripper:
+reached_end (fully closed or open, nothing between the fingers); stopped_apart; still_moving.
+aperture_change_mm is the last step's change: nonzero means the fingers were measured in motion.
+applied appears when the native approvers changed your commands. Their per-step limit is measured
+from the previous applied command, so a move issued while the arm still trails that command can
+end short: last_command_position_offset_m is the distance from the final applied command to your
+request, and repeating the move covers it.
 Tool completion is not task success. Use fresh camera evidence to decide the next action.
 """
 

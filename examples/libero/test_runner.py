@@ -1,4 +1,4 @@
-"""Distinct execution, release-admission, capture, and spending regressions."""
+"""Distinct execution, settling, release-admission, capture, and spending regressions."""
 
 import json
 from dataclasses import replace
@@ -8,9 +8,10 @@ import httpx
 import numpy as np
 import pytest
 from budget import BASE_URL, MODEL, AzureBudget, BudgetStop
-from inspect_robots.types import Observation
+from inspect_robots.types import Observation, StepResult
 from inspect_robots_agent._llm import ToolCall
-from native import Frames, fingerprint
+from inspect_robots_libero.embodiment import LiberoEmbodiment
+from native import Driver, Frames, fingerprint
 from world_tools import WorldTools
 
 from world_use.behaviors import Outcome
@@ -222,3 +223,130 @@ def test_release_refuses_changed_evidence_without_opening(change):
     )
     assert json.loads(result.note)["status"] in ("refused", "stopped")
     assert len(tools.driver.commands) == count
+
+
+class Hand(LiberoEmbodiment):
+    """The published hand and arm timing without a simulator.
+
+    The hand's command state moves 0.125 per step toward whichever end the request is
+    past, and the fingers follow it until an object stops them. The arm trails its
+    command, so a move issued straight after another starts from a pose the last
+    command has already left behind.
+    """
+
+    def __init__(self, *, object_mm=None, finger_gain=0.5, floor_z=None, arm_gain=0.3, ramp=0.125):
+        super().__init__(task_id=0, output_dir="unused")
+        self.pos, self.command, self.half_mm = np.array([0.0, 0.0, 0.6]), 0.0, 40.0
+        self.object_mm, self.finger_gain, self.floor_z = object_mm, finger_gain, floor_z
+        self.arm_gain, self.ramp = arm_gain, ramp
+        self.last = dict(steps=0)
+
+    def observation(self):
+        rot = [1.0, 0.0, 0.0, 0.0, -1.0, 0.0]
+        return Observation(
+            images={"agentview": np.full((4, 4, 3), self.last["steps"] % 251, dtype=np.uint8)},
+            state={
+                "eef_state": np.concatenate([self.pos, rot, [self.command]]),
+                "gripper_qpos": np.array([self.half_mm, -self.half_mm]) / 1000,
+            },
+        )
+
+    def step(self, action):
+        data = np.asarray(action.data, dtype=float)
+        self.pos = self.pos + self.arm_gain * (data[:3] - self.pos)
+        if self.floor_z is not None:
+            self.pos[2] = max(self.pos[2], self.floor_z)
+        self.command = float(np.clip(self.command + self.ramp * np.sign(2 * data[9] - 1), 0, 1))
+        half = self.half_mm + self.finger_gain * (40 * (1 - self.command) - self.half_mm)
+        if self.object_mm is not None:
+            half = max(half, self.object_mm / 2)
+        self.half_mm = float(half)
+        self.last = dict(steps=self.last["steps"] + 1)
+        return StepResult(self.observation(), reward=0.0, terminated=False, info={"success": False})
+
+
+def driver(tmp_path, **hand):
+    env = Hand(**hand)
+    return Driver(env, env.observation(), tmp_path / "execution")
+
+
+def stage(targets, name, **extra):
+    return dict(kind="move", targets=targets, stage=name, settle_steps=20, **extra)
+
+
+@pytest.mark.parametrize(
+    ("object_mm", "status", "gripper"),
+    [(None, "surprise", "reached_end"), (55, "surprise", "stopped_apart"), (30, "done", "stopped_apart")],
+)
+def test_close_returns_a_stable_hand_with_its_measured_opening(tmp_path, object_mm, status, gripper):
+    d = driver(tmp_path, object_mm=object_mm)
+    out = d.execute(stage({"gripper": 1}, "grasp_close", expect_mm=[20, 40]))
+    assert (out.status, out.data["gripper"]) == (status, gripper)
+    assert out.data["aperture_mm"] == pytest.approx(object_mm or 0, abs=2)
+    assert abs(out.data["aperture_change_mm"]) < 0.5
+    # A hand at rest ends the wait; only motion still under way may use the whole bound.
+    assert out.data["executed_steps"] < 31
+    if status == "surprise":
+        assert out.expected == [20, 40] and out.observed == out.data["aperture_mm"]
+
+
+def test_a_hand_still_moving_at_the_bound_is_not_reported_as_stable(tmp_path):
+    d = driver(tmp_path, finger_gain=0.01)
+    out = d.execute(stage({"gripper": 1}, "grasp_close", expect_mm=[20, 78]))
+    assert out.status == "stopped" and out.data["gripper"] == "still_moving"
+    assert out.data["aperture_change_mm"] < 0 and out.data["executed_steps"] == 31
+
+
+def test_an_opening_hand_is_not_judged_before_its_command_ramp_ends(tmp_path):
+    # A slow ramp leaves the fingers resting on the object well into the wait. That pause is not a stop.
+    d = driver(tmp_path, object_mm=50, ramp=0.05)
+    assert d.execute(stage({"gripper": 1}, "grasp_close", expect_mm=[40, 60])).ok
+    out = d.execute(stage({"gripper": 0}, "place_release", expect_mm=[70, 85]))
+    assert out.ok and out.data["gripper"] == "reached_end" and out.data["aperture_mm"] > 77
+
+
+def test_a_blocked_arm_returns_early_as_not_approaching(tmp_path):
+    d = driver(tmp_path, floor_z=0.5)
+    out = d.execute(stage({"z": 0.47}, "grasp_approach"))
+    assert out.status == "surprise" and out.data["arm"] == "not_approaching"
+    assert out.observed["position_error_m"] == pytest.approx(0.03, abs=1e-3)
+    assert out.data["executed_steps"] < 13 + 10
+
+
+def test_feedback_separates_the_request_from_the_command_the_approvers_applied(tmp_path):
+    d = driver(tmp_path)
+    first = d.execute(dict(kind="move", targets={"z": 0.5}, stage="move_to"))
+    assert "applied" not in first.data and first.data["arm"] == "not_checked"
+    # The arm still trails its last command, so the per-step limit, measured from that
+    # command, holds every step of a reversed move back.
+    lag = d.observation.state["eef_state"][2] - 0.5
+    assert lag > 0.01
+    raw = d.execute(dict(kind="move", targets={"z": 0.6}, stage="move_to"))
+    applied = raw.data["applied"]
+    assert raw.ok and "short of the request" in raw.message
+    assert applied["reasons"] == ["delta_clamped"] and not applied["last_command_reached_request"]
+    assert applied["last_command_position_offset_m"] == pytest.approx(0.6 - d.last_action.data[2], abs=1e-4)
+    assert applied["last_command_position_offset_m"] > 0.01
+
+
+def test_settling_judges_arrival_only_against_a_fully_applied_request(tmp_path):
+    d = driver(tmp_path, arm_gain=0.2)
+    d.execute(dict(kind="move", targets={"z": 0.5}, stage="move_to"))
+    # Holding the measured pose is within tolerance at once, but the approvers need several
+    # steps to bring the trailing command back to it, and the arm keeps sinking meanwhile.
+    here = float(d.observation.state["eef_state"][2])
+    assert here - d.last_action.data[2] > 0.03
+    out = d.execute(stage({"z": here}, "grasp_approach"))
+    assert out.ok and out.data["arm"] == "arrived"
+    assert out.data["applied"]["changed_steps"] and out.data["applied"]["last_command_reached_request"]
+
+
+def test_an_unrequested_gripper_entry_is_not_reported_as_a_shortfall(tmp_path):
+    d = driver(tmp_path, object_mm=30)
+    d.execute(stage({"gripper": 1}, "grasp_close", expect_mm=[20, 40]))
+    d.execute(dict(kind="move", targets={"gripper": 0}, stage="move_to"))
+    # The opening command is still ramping, so the next move's unnamed gripper entry is
+    # mid-ramp and gets limited. The hand keeps opening either way.
+    out = d.execute(dict(kind="move", targets={"z": 0.61}, stage="move_to"))
+    assert out.data["applied"]["changed_steps"] and out.data["applied"]["last_command_reached_request"]
+    assert "short of the request" not in out.message

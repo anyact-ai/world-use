@@ -21,12 +21,31 @@ placement interpretation. A placement pauses before release and needs a one-use
 decision tied to the unchanged observations. Image overlap and finger opening do
 not certify object identity, support or task completion.
 
-Procedure settling repeats a chosen native pose for at most 20 additional steps,
-stopping after three converged samples. It uses a 12 mm position tolerance, 0.12
-rotation-column tolerance and 0.3 mm aperture-change tolerance. All these steps
-count toward the same 900-step limit. Raw moves retain native interpolation.
-The native terminal hold step is also executed and counted. No physics parameters
-or success predicates are altered.
+A procedure stage repeats its final native pose for at most 20 more
+steps, all counted toward the 900-step limit. It uses the library's `Settling`
+check and returns as soon as the measurements settle the question. The arm has
+`arrived` after three consecutive samples within 12 mm and 0.12 rotation-column
+error; it is `not_approaching` once that offset stops shrinking over four
+intervals; otherwise it is `still_converging` at the bound. The fingers have
+`reached_end` within 2 mm of fully closed or 3 mm of fully open, have
+`stopped_apart` once they travel less than 0.3 mm over four intervals, and are
+otherwise `still_moving`. A stable opening outside the policy's expected range is
+a measured surprise, not a failure to converge. No wait concludes while an approver
+is still changing what is applied, and an opening hand is not judged until its
+command ramp has finished: the fingers do not move until the ramp passes their
+position. The previous runner judged stability from single-step aperture changes
+inside the expected range, so an empty or unexpectedly wide grasp used the whole
+bound and reported non-convergence.
+
+The native per-step limit is measured from the previous applied command, while
+each move interpolates from the measured pose. A move issued
+while the arm still trails its last command can therefore end short of its request.
+World Use results now carry `applied` whenever the approvers changed a command,
+with the distance from the last applied command to the request. Raw moves retain
+native interpolation and are not extended.
+
+The native terminal hold step is executed and counted. No physics parameters or
+success predicates are altered.
 
 ## Rebuild the runtime
 

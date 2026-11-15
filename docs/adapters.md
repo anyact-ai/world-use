@@ -81,6 +81,12 @@ without extending the deadline. A full window with at least three measurements
 is needed for a stall, and slow progress projected to arrive before the deadline
 keeps its remaining time. This checker sends no commands and changes no controller.
 
+A hand that closes on an object has no target opening to arrive at. Give the checker its
+travel toward the commanded end instead: `"arrived"` then means the fingers met nothing,
+`"stalled"` means they stopped apart, and `"timeout"` means they were still moving. Compare
+the settled opening with the expected range afterwards. The
+[LIBERO runner](../examples/libero/native.py) settles its arm and fingers this way.
+
 ## Describe the robot
 
 Copy [planar.toml](../examples/adapters/planar.toml) and substitute your measured
