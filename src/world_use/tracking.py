@@ -9,7 +9,10 @@ from __future__ import annotations
 from collections import deque
 from contextlib import suppress
 
+import numpy as np
+
 from .client import Client
+from .vision import dominant_region
 
 
 class Tracking:
@@ -18,21 +21,24 @@ class Tracking:
     def __init__(self, client: Client, tracker):
         self.client, self.tracker = client, tracker
         self.targets: dict[str, dict] = {}
+        self.lost: dict[str, dict] = {}
 
-    def select(self, frame: str, target: str, *, point=None, box=None) -> dict:
+    def select(self, frame: str, target: str, *, point=None, box=None, space="world") -> dict:
         """Select target by a point or box in a frame the agent looked at, and measure it. A seed older than the
         tracker accepts (an agent's thinking time can do that) is followed into a new frame before measuring."""
         if not isinstance(target, str) or not 0 < len(target) <= 128:
             raise ValueError("target must be a name of 1..128 characters")
         if (point is None) == (box is None):
             raise ValueError("select with exactly one point or box")
+        if space not in ("world", "image"):
+            raise ValueError("space must be world or image")
         source = self.client.frame(id=frame)
         if target in self.targets:
             self._lose(target, "reselected")
         try:
             observation = self.tracker.select(target, source, **(dict(point=point) if box is None else dict(box=box)))
             if observation.status == "stale":
-                source = self.client.frame(source.camera, depth=source.depth is not None)
+                source = self.client.frame(source.camera, depth=source.depth is not None and space == "world")
                 observation = self.tracker.update(target, source)
         except BaseException:
             with suppress(Exception):
@@ -41,7 +47,9 @@ class Tracking:
                 for name in list(self.targets):
                     self._lose(name, "the tracker stopped during selection")
             raise
-        self.targets[target] = dict(camera=source.camera, depth=source.depth is not None, measured=deque(maxlen=256))
+        self.targets[target] = dict(camera=source.camera, depth=source.depth is not None and space == "world",
+                                    space=space, measured=deque(maxlen=256))
+        self.lost.pop(target, None)
         return self._measure(target, source, observation)
 
     def observe(self, targets: list[str]) -> list[dict]:
@@ -49,11 +57,12 @@ class Tracking:
         if not isinstance(targets, list) or not targets or len(set(targets)) != len(targets):
             raise ValueError("targets must be a nonempty list of distinct names")
         for name in targets:
-            if name not in self.targets:
+            if name not in self.targets and name not in self.lost:
                 raise ValueError(f"no selected target {name!r}: select it first")
         frames, results = {}, []
         for name in targets:
-            if name not in self.targets:          # a tracker that stopped took every target with it
+            if name in self.lost:
+                results.append(dict(self.lost[name]))
                 continue
             key = self.targets[name]["camera"], self.targets[name]["depth"]
             if key not in frames:
@@ -64,7 +73,9 @@ class Tracking:
                 if getattr(e, "rule", "") == "busy":
                     raise
                 lost = list(self.targets) if not getattr(self.tracker, "ready", True) else [name]
-                results += [self._lose(target, str(e)) for target in lost]
+                for target in lost:
+                    self._lose(target, str(e))
+                results.append(dict(self.lost[name]))
                 continue
             results.append(self._measure(name, frames[key], observation))
         return results
@@ -73,6 +84,32 @@ class Tracking:
         if observation.status != "tracked":
             return dict(self._lose(name, f"the tracker reports {observation.status}; select it again"),
                         frame=frame.id)
+        if self.targets[name]["space"] == "image":
+            # Image evidence has no metric measurement id and cannot satisfy run(requires=...).
+            result = dict(target=name, space="image", valid=True, tracking="tracked", frame=frame.id,
+                        camera=frame.camera, size=list(frame.image.size), age_s=observation.age_s,
+                        captured_at=frame.timestamp,
+                        bbox=observation.bbox, center=observation.center,
+                        area_px=int(observation.mask.sum()) if observation.mask is not None else None,
+                        identity_verified=False, geometry_verified=False)
+            if observation.mask is not None:
+                result["dominant_region"] = dominant_region(observation.mask)
+            previous = self.targets[name].get("image")
+            if previous and previous["frame"] != frame.id and previous["center"] and result["center"]:
+                result["motion"] = dict(from_frame=previous["frame"],
+                    center_delta_px=np.subtract(result["center"], previous["center"]).tolist(),
+                    area_ratio=result["area_px"] / previous["area_px"] if previous["area_px"] else None,
+                    camera_motion_compensated=False)
+                prior_mask = self.targets[name].get("mask")
+                if prior_mask is not None and observation.mask is not None:
+                    union = np.count_nonzero(prior_mask | observation.mask)
+                    result["motion"]["mask_iou"] = (float(np.count_nonzero(prior_mask & observation.mask) / union)
+                                                    if union else None)
+            elif previous and previous["frame"] == frame.id and "motion" in previous:
+                result["motion"] = dict(previous["motion"])
+            self.targets[name]["image"] = result
+            self.targets[name]["mask"] = observation.mask
+            return result
         measurement = self.client.measure(frame, mask=observation.mask, target=name)
         history = self.targets[name]["measured"]
         if len(history) == history.maxlen:
@@ -90,8 +127,11 @@ class Tracking:
         withdrawn = list(state["measured"]) if state else []
         if withdrawn:
             self.client.withdraw(withdrawn, f"tracking lost {name!r}")
-        return dict(target=name, tracking="lost", valid=False, reason=why, withdrawn=withdrawn)
+        result = dict(target=name, tracking="lost", valid=False, reason=why, withdrawn=withdrawn)
+        self.lost[name] = result
+        return dict(result)
 
     def close(self):
         self.targets.clear()
+        self.lost.clear()
         self.tracker.close()

@@ -18,9 +18,11 @@ import numpy as np
 from PIL import Image
 
 from .. import Kernel, RealClock, World, bodies, cameras
+from ..behaviors import Outcome
 from ..config import load_workcell
 from ..daemon import Daemon, apply_workcell, session_identity
 from ..mcp_server import build
+from ..procedures import async_place
 from ..recorder import save_summary
 from .pick_place import TARGET, success
 
@@ -103,6 +105,10 @@ async def procedure(server, evaluate, *, tracking=False) -> dict:
         results["outcomes"].append(outcome)
         if outcome["status"] != "done":
             raise RuntimeError(outcome.get("incident") or f"phase {outcome['status']}")
+        detail = dict(outcome["outcome"])
+        if last := detail.pop("last_step", None):
+            detail["data"] = {**detail.get("data", {}), "last_step": last}
+        return Outcome(**detail)
 
     await tool("policy")
     status = await tool("status")
@@ -141,38 +147,67 @@ async def procedure(server, evaluate, *, tracking=False) -> dict:
         # The block keeps its offset from the tool, so with the tool here its top is above the target's.
         to = TARGET + [0, 0, SIZE[2] / 2] - np.asarray(after["from_tool"])
         await run(dict(do="move_to", to=at(to[0], to[1], here[2])), after)
-        # Transport and set-down can change the grasp offset. Check the object
-        # at release height, where support has straightened it, before opening.
-        # Corrections lift above the tray before moving sideways; no re-grasp.
         work = np.asarray((await tool("world"))["frames"]["work"]["T"])
-        for attempt in range(3):
-            await run([dict(do="move_to", to=at(*to)), dict(do="settle")], after)
-            at_release = await measure(face=True)
-            if at_release is None:
-                raise RuntimeError("the top face is not measurable before release")
-            normal = np.asarray(at_release["plane"]["normal"]) @ work[:3, :3]
-            normal *= 1 if normal[2] >= 0 else -1
-            if normal[2] < .8:
-                raise RuntimeError("the measured face no longer supports the upright-block assumption")
-            center = np.asarray(at_release["surface_center"]) - normal * SIZE[2] / 2
-            error = TARGET - center
-            if np.linalg.norm(error) < .003:
-                break
-            if attempt == 2 or np.linalg.norm(error) > .03:
-                raise RuntimeError("placement did not converge within three bounded visual corrections")
-            here = np.asarray((await tool("status"))["tool"]["work"])
-            to = here + error
-            await run(dict(do="line", up=.06), at_release)
-            high = (await tool("status"))["tool"]["work"][2]
-            await run(dict(do="move_to", to=at(to[0], to[1], high)), at_release)
-            after = at_release
-        await run([dict(do="gripper", aperture_mm=65), dict(do="line", up=.08)], at_release)
-        final = await measure()
-        aperture = (await tool("status"))["gripper"]["aperture_mm"]
-        results["placement"] = "pass" if final and placed(final, aperture) else "fail"
-        if results["placement"] != "pass":
-            results["reason"] = ("the released block did not pass the camera placement check" if final
-                                 else "the released block is not measurable")
+        async def placement():
+            latest, target = after, to
+            correction = None
+
+            async def observe():
+                nonlocal latest
+                latest = await measure(face=True)
+                if latest is None:
+                    raise RuntimeError("the top face is not measurable; no further placement stage is authorized")
+                status = await tool("status")
+                return dict(measurement=latest, aperture_mm=status["gripper"]["aperture_mm"])
+
+            async def execute(command):
+                return await run(command, latest)
+
+            def assess(checkpoint, observations):
+                nonlocal correction
+                observation = observations[checkpoint]
+                measured = observation["measurement"]
+                if checkpoint == "after":
+                    passed = placed(measured, observation["aperture_mm"])
+                    results["placement"] = "pass" if passed else "fail"
+                    return Outcome("done" if passed else "surprise", "placement",
+                                   "released-object camera check passed" if passed else "released-object check failed")
+                normal = np.asarray(measured["plane"]["normal"]) @ work[:3, :3]
+                normal *= 1 if normal[2] >= 0 else -1
+                if normal[2] < .8:
+                    return Outcome("stopped", "placement", "the measured face contradicts the upright assumption",
+                                   observed=normal.tolist())
+                center = np.asarray(measured["surface_center"]) - normal * SIZE[2] / 2
+                error = TARGET - center
+                passed = np.linalg.norm(error) < .003
+                correction = None if passed else error
+                return Outcome("done" if passed else "surprise", "placement", "measured object position before release",
+                               expected=dict(center=TARGET.tolist(), tolerance_m=.003), observed=center.tolist(),
+                               hint=("lift above the known clear tray before correcting; do not release yet"
+                                     if not passed else ""))
+
+            results["procedures"] = []
+            for attempt in range(3):
+                correction = None
+                outcome = await async_place(execute, observe, assess=assess,
+                                move=dict(do="seq", steps=[dict(do="move_to", to=at(*target)), dict(do="settle")]),
+                                release=dict(do="gripper", aperture_mm=65),
+                                check=dict(do="check_grip", expect_mm=[60, 70]), withdraw=dict(do="line", up=.08))
+                results["procedures"].append(outcome.to_dict())
+                if outcome.ok:
+                    return
+                if (outcome.data["checkpoint"] != "before_release" or correction is None or attempt == 2
+                        or np.linalg.norm(correction) > .03):
+                    raise RuntimeError(outcome.message)
+                # The failed procedure cancelled release. The task explicitly chooses
+                # a bounded correction using current geometry, then a new approach.
+                here = np.asarray((await tool("status"))["tool"]["work"])
+                target = here + correction
+                await execute(dict(do="line", up=.06))
+                high = (await tool("status"))["tool"]["work"][2]
+                await execute(dict(do="move_to", to=at(target[0], target[1], high)))
+
+        await placement()
     except Exception as e:
         results["reason"] = str(e)
         # An open gripper retreats directly. If it may hold the block, set it on the known tray before opening.

@@ -1,8 +1,10 @@
 """Optional object tracking in the procedure's process, independent of robot control."""
 from __future__ import annotations
 
+import hashlib
 import math
 import time
+from collections import deque
 from copy import copy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,6 +17,46 @@ from .cameras import Frame
 MODEL = "facebook/EdgeTAM"
 REVISION = "f3a09791b2343c0733d456d08d73771d9363b69a"
 TRANSFORMERS_VERSION = "5.15.1"
+
+
+def dominant_region(mask: np.ndarray) -> dict:
+    """Largest 8-connected predicted region, with discarded area made explicit.
+
+    Tiny disconnected predictions can make the full mask's bounding box span the
+    image. Preserve the raw mask; these statistics describe only its largest
+    component, not a corrected segmentation or a verified object identity.
+    """
+    pixels = np.asarray(mask, dtype=bool)
+    if pixels.ndim != 2:
+        raise ValueError("mask must be two-dimensional")
+    pending = pixels.copy()
+    h, w = pixels.shape
+    largest = []
+    components = 0
+    for y, x in zip(*np.nonzero(pixels), strict=True):
+        if not pending[y, x]:
+            continue
+        components += 1
+        todo = deque([(int(y), int(x))])
+        pending[y, x] = False
+        region = []
+        while todo:
+            r, c = todo.popleft()
+            region.append((r, c))
+            for nr in range(max(0, r - 1), min(h, r + 2)):
+                for nc in range(max(0, c - 1), min(w, c + 2)):
+                    if pending[nr, nc]:
+                        pending[nr, nc] = False
+                        todo.append((nr, nc))
+        if len(region) > len(largest):
+            largest = region
+    if not largest:
+        return dict(bbox=None, center=None, area_px=0, other_area_px=0, components=0)
+    points = np.asarray(largest)
+    lo, hi = points.min(axis=0), points.max(axis=0) + 1
+    return dict(bbox=[int(lo[1]), int(lo[0]), int(hi[1]), int(hi[0])],
+                center=points[:, ::-1].mean(axis=0).tolist(), area_px=len(largest),
+                other_area_px=int(pixels.sum()) - len(largest), components=components)
 
 
 @dataclass(frozen=True)
@@ -69,6 +111,8 @@ class EdgeTAM:
         self._index = 0
         self._size = None
         self._camera = None
+        # Shared only by forks of these weights/processor; one capture, no temporal state.
+        self._features: dict = {}
         self._load(device, model_path)
 
     def _load(self, device, model_path):
@@ -102,7 +146,7 @@ class EdgeTAM:
         return self
 
     def fork(self) -> EdgeTAM:
-        """Independent target history sharing loaded weights. Serialize calls across these instances."""
+        """Independent target history sharing weights and one capture's encoding. Serialize calls."""
         self._check_open()
         child = copy(self)
         child._session = child._last = child._size = child._camera = None
@@ -118,6 +162,7 @@ class EdgeTAM:
             return
         self._closed = True
         self._session = self._last = self._model = self._processor = None
+        self._features = {}             # other live forks retain their shared entry
         if self.device == "mps":
             self._torch.mps.empty_cache()
         elif self.device == "cuda":
@@ -190,11 +235,22 @@ class EdgeTAM:
 
     def _infer(self, frame: Frame) -> Observation:
         model, processor = self._check_open()
+        assert self._session is not None
         try:
             with self._torch.inference_mode():
                 inputs = processor(images=frame.image, return_tensors="pt").to(self.device)
+                # Capture identity avoids conflating successive identical images. The digest
+                # also prevents an incorrectly reused id from serving another image's features.
+                key = (frame.camera, frame.id, frame.image.mode, frame.image.size,
+                       hashlib.sha256(frame.image.tobytes()).digest(), self.device, self._dtype)
+                if self._features.get("key") == key:
+                    self._session.cache.cache_vision_features(self._index, self._features["value"])
                 result = model(inference_session=self._session, frame_idx=self._index,
                                frame=inputs.pixel_values[0].to(self._dtype))
+                features = self._session.cache.get_vision_features(self._index)
+                self._features.clear()
+                if features is not None:
+                    self._features.update(key=key, value=features)
                 w, h = frame.image.size
                 masks = processor.post_process_masks(
                     [result.pred_masks], original_sizes=[[h, w]], binarize=False)[0]
@@ -205,6 +261,7 @@ class EdgeTAM:
                 return self._last
         except BaseException:
             self._session = self._last = None      # a partially advanced session cannot be reused
+            self._features.clear()
             raise
 
 
