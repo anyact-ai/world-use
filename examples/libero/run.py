@@ -66,14 +66,6 @@ def runtime_manifest():
     )
 
 
-class WorldPolicy(LLMAgentPolicy):
-    def act(self, observation):
-        self._messages.append(
-            dict(role="user", content="World Use current capture references: " + json.dumps(self._toolset.context()))
-        )
-        return super().act(observation)
-
-
 def episode(folder, arm, transport, *, task_id=0, state=0, initial_expected=None):
     if state == 2:
         raise ValueError("reserved held-out state 2 is outside this development pilot")
@@ -99,8 +91,7 @@ def episode(folder, arm, transport, *, task_id=0, state=0, initial_expected=None
             raise RuntimeError("initial scene already succeeds")
         driver = Driver(env, obs, folder / "execution", deadline=min(transport.deadline, time.monotonic() + 1800))
         # Both arms use the published policy, template, image eviction and native tools.
-        cls = WorldPolicy if arm == "world_use" else LLMAgentPolicy
-        policy = cls(
+        policy = LLMAgentPolicy(
             model=MODEL,
             base_url=BASE_URL,
             api_key_env="FOUNDRY_API_KEY",
@@ -232,7 +223,7 @@ def main():
     os.umask(0o077)
     args.output.mkdir(parents=True, exist_ok=False)
     protocol = dict(
-        runner="settling-comotion-candidate-20261115",
+        runner="world-use-candidate-20261116",
         historical_comparison=False,
         model=MODEL,
         effort="low",

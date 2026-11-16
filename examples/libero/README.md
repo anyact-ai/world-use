@@ -32,11 +32,11 @@ Three conditions must stay distinguishable in any comparison:
 - **Frozen World Use**: commit `ffaaaf6`, whose `native.py`, `world_tools.py` and
   `run.py` have SHA-256 prefixes `ad8b8fab`, `a21a23f8` and `90a9cfc5`. Evidence
   produced with it belongs to that source.
-- **Candidate World Use**: this tree, recorded as
-  `settling-comotion-candidate-20261115`. It has no paid result. Its differences
-  from the frozen runner are the three below. The commit that adds the region
-  comparison changes nothing else the arm executes, so its parent is the settling
-  and applied-command change alone, for a single-factor comparison.
+- **Candidate World Use**: this tree, recorded as `world-use-candidate-20261116`.
+  It has no paid result. Its differences from the frozen runner are the four
+  below, each introduced by its own commit so that an earlier commit can be run as
+  a narrower condition: settling with applied commands, then the region
+  comparison, then the briefer results and merged selection.
 
 **Settling.** A procedure stage repeats its final native pose for at most 20 more
 steps, all counted toward the 900-step limit. It uses the library's `Settling`
@@ -93,6 +93,20 @@ behind, one was unchanged and one changed through hand occlusion. The overhead
 view kept 0.86 overlap with under 1 px of shift for a 3.7 cm lift, which is why it
 is excluded. [region-evidence.jsonl](region-evidence.jsonl) holds every row of
 both checks; all of it is simulated.
+
+**Briefer results and fewer calls.** Each World Use turn used to add about five
+times the text of a raw turn, and every later request carries it again. The policy
+now receives a brief copy of each result: no state vector the observation message
+already shows, no capture identifiers, rounded numbers, the latest observation
+only, and no sentence for a plain completed move. The full result still goes to
+`world-use.jsonl`. Selections name a camera's current image, so the per-turn
+message listing capture identifiers is gone, and `grasp` and `place` accept the
+selection in the same call. On the validator's 14-call episode a grasp result
+fell from about 5,000 characters to 1,000, a move result from 600 to 140, and
+context growth from about 2,500 characters per call to 900. A raw turn adds about
+500. The system prompt and tool schemas remain about 4,000 characters larger than
+the raw arm's. These are character counts from recorded mock requests, not billed
+tokens, and say nothing about how many calls a model needs.
 
 The native terminal hold step is executed and counted. No physics parameters or
 success predicates are altered.

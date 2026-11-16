@@ -230,17 +230,16 @@ class Driver:
             state = self.observation.state["eef_state"]
             return [float(np.linalg.norm(state[:3] - target[:3])), float(np.max(np.abs(state[3:9] - target[3:9])))]
 
-        def report(arm, gripper=None):
+        def report(arm=None, gripper=None):
             pos_error, rot_error = errors()
             data = dict(
                 self.measure(),
                 executed_steps=self.steps - before,
                 position_error_m=pos_error,
                 rotation_column_error=rot_error,
-                arm=arm,
             )
-            if gripper:
-                data["gripper"] = gripper
+            # A raw move checks no arrival, so it reports none.
+            data.update({k: v for k, v in (("arm", arm), ("gripper", gripper)) if v})
             if (applied := self.applied(target, before)) is not None:
                 data["applied"] = applied
             return data
@@ -268,7 +267,7 @@ class Driver:
         settle = command.get("settle_steps", 0)
         if not settle:
             self.record_observation()
-            data = report("not_checked")
+            data = report()
             message = "native commands executed; inspect measured result"
             if "applied" in data and not data["applied"]["last_command_reached_request"]:
                 message = "native commands executed, but the approvers held the last command short of the request"

@@ -17,35 +17,33 @@ from world_use.behaviors import Outcome
 from world_use.tracking import Tracking
 from world_use.vision_worker import TrackerProcess
 
-DOCS = """World Use additions: select named regions by pixel point or box in an available
-RGB capture, then observe their tracked regions. You own object identity and all spatial
-reasoning. EdgeTAM tracks regions only; it supplies no depth, metric position or semantic
-confirmation. Tracking motion in the wrist camera also includes camera motion.
-grasp and place execute your chosen poses with measured checks and early returns. Every
-interpolation and settling step uses the native controller and counts toward the 900-step
-episode limit. They never choose an object, grasp pose, support height or recovery for you.
-Before a grasp, select the intended object. Choose its expected measured finger opening
-range in millimetres. Inspect both raw cameras after the short lift to judge whether the
-intended object followed. Aperture alone does not establish identity or retention.
-place returns BEFORE opening, with fresh views and a one-use release checkpoint. Inspect
-the object and support geometry in those views; call release_placement only when the pose
-is suitable. Otherwise choose a correction. Motion or reselection invalidates the receipt.
-Select the object you will grasp or place in an agentview capture when it is clearly visible there.
-That camera does not move, so its selected region is compared across the test lift and across a
-place move that is vertical to within 2 cm. A region that stayed in place while the hand moved
-returns surprise: the hand holds something else or nothing, or the selection sits on another
-object, and place issues no release checkpoint. A region that changed is reported as assessment
-passed_caller_checks; that is not confirmation of identity or retention. A lift too short to
-compare returns stopped after its stages are done. A wrist selection gets no such comparison.
-Measured results name what was observed. arm: arrived; not_approaching (the remaining offset
-stopped shrinking, as contact or an unreachable pose causes); still_converging. gripper:
-reached_end (fully closed or open, nothing between the fingers); stopped_apart; still_moving.
-aperture_change_mm is the last step's change: nonzero means the fingers were measured in motion.
-applied appears when the native approvers changed your commands. Their per-step limit is measured
-from the previous applied command, so a move issued while the arm still trails that command can
-end short: last_command_position_offset_m is the distance from the final applied command to your
-request, and repeating the move covers it.
-Tool completion is not task success. Use fresh camera evidence to decide the next action.
+DOCS = """World Use additions. You own object identity, poses and every decision. EdgeTAM only
+follows the image regions you select: no depth, no metric position, no confirmation of what a
+region is.
+select_target binds a name to a pixel point or box in the current image of one camera. grasp and
+place take the same selection as select and select_destination, which saves a call. Select in
+agentview when the object is clearly visible there. That camera does not move, so the region is
+compared across the test lift and across a place move that is vertical to within 2 cm. A region
+that stayed in place while the hand moved returns surprise: the hand holds something else or
+nothing, or the selection sits on another object, and place issues no release checkpoint. A
+region that changed (assessment passed_caller_checks) is not confirmation. A lift too short to
+compare returns stopped after its stages are done. Wrist selections are not compared, and wrist
+regions also move with the camera.
+grasp runs your approach pose, closes, checks the measured opening against your expected range
+in millimetres, test-lifts 3-5 cm and checks again. It stops at the first failed check and never
+carries, opens, retreats or retries. Judge from both cameras whether the intended object followed.
+place moves to your release pose with the grip monitored and returns BEFORE opening with a
+one-use checkpoint. Inspect the views, then call release_placement to open and withdraw, or
+correct the pose. Any motion or reselection voids the checkpoint.
+Every interpolation and settling step counts toward the 900-step episode limit.
+Results report measurements. arm: arrived; not_approaching (the remaining offset stopped
+shrinking, as contact or an unreachable pose causes); still_converging. gripper: reached_end
+(fully closed or open, nothing between the fingers); stopped_apart; still_moving. A nonzero
+aperture_change_mm means the fingers were measured in motion. applied appears when the native
+approvers changed your commands: their per-step limit is measured from the previous applied
+command, so a move issued while the arm still trails it can end short, and repeating the move
+covers the rest.
+Tool completion is not task success. Decide the next action from fresh camera evidence.
 """
 
 
@@ -94,6 +92,67 @@ def region_evidence(target, before, after):
     )
 
 
+# Left out of the policy's copy of a result: identifiers it never uses, state the observation
+# message already shows, and constants the tool documentation states once.
+OMITTED = frozenset(
+    {
+        "eef_state",
+        "env_step",
+        "frame",
+        "from_frame",
+        "captured_at",
+        "age_s",
+        "space",
+        "size",
+        "tracking",
+        "kind",
+        "identity_verified",
+        "geometry_verified",
+        "dominant_region",
+        "camera_motion_compensated",
+        "command",
+        "intent",
+        "policy_note",
+    }
+)
+
+
+def brief(value):
+    """The policy's copy of a result: the same facts without the keys above and without float noise.
+
+    The episode record keeps the full result.
+    """
+    if isinstance(value, dict):
+        return {k: brief(v) for k, v in value.items() if k not in OMITTED and v not in (None, [], {}, "")}
+    if isinstance(value, (list, tuple)):
+        return [brief(v) for v in value]
+    if isinstance(value, float):
+        return round(value, 4 if abs(value) < 10 else 1) + 0.0  # no negative zero
+    return value
+
+
+def procedure_brief(feedback):
+    """Procedure feedback for the policy: stage statuses, the latest view of its own targets, the deciding facts."""
+    told = dict(feedback, stages={s["stage"]: s["status"] for s in feedback["stages"]})
+    name, latest = list(feedback["observations"].items())[-1]
+    bound = set(feedback["intent"].values())
+    told["observations"] = {
+        name: dict(latest, targets=[t for t in latest.get("targets", []) if t.get("target") in bound])
+    }
+    told["assessments"] = [
+        dict(
+            checkpoint=a["checkpoint"], **{k: v for k, v in a["outcome"].items() if k in ("status", "message", "data")}
+        )
+        for a in feedback["assessments"]
+        if a["outcome"]["kind"] != "not_assessed"
+    ]
+    last = told.pop("last_command", None)
+    # A command that failed carries its measurements; one that passed before a failed assessment adds nothing.
+    if last and last["outcome"]["status"] != "done":
+        told["last_command"] = dict(stage=last["stage"], **last["outcome"].get("data", {}))
+    return told
+
+
 def schema(name, description, properties, required):
     return dict(
         type="function",
@@ -114,18 +173,22 @@ RANGE = dict(
     maxItems=2,
     description="Expected measured finger separation [min,max] in mm, with 2 <= min < max <= 78.",
 )
+SELECTION = dict(
+    type="object",
+    description="A region in one camera's current image: {camera, point: [x, y]} or {camera, box: [x0, y0, x1, y1]}.",
+)
 SCHEMAS = [
     schema(
         "select_target",
-        "Bind your object identity claim to a point or box in a visible RGB capture.",
+        "Bind your object identity claim to a point or box in the current image of one camera.",
         dict(
             target=TEXT,
-            frame=TEXT,
+            camera=TEXT,
             point=dict(type="array", items=dict(type="number"), minItems=2, maxItems=2),
             box=dict(type="array", items=dict(type="number"), minItems=4, maxItems=4),
             note=TEXT,
         ),
-        ["target", "frame", "note"],
+        ["target", "camera", "note"],
     ),
     schema(
         "observe_targets",
@@ -136,25 +199,34 @@ SCHEMAS = [
     schema(
         "grasp",
         "Execute your grasp approach, close, check measured opening, and test lift by 3-5 cm. "
-        "Stops on failed evidence or measured checks; does not carry automatically.",
-        dict(object_target=TEXT, approach=TARGETS, lift=TARGETS, expect_grip_mm=RANGE, note=TEXT),
+        "Stops on failed evidence or measured checks; does not carry automatically. "
+        "select binds object_target first, in the same call.",
+        dict(object_target=TEXT, select=SELECTION, approach=TARGETS, lift=TARGETS, expect_grip_mm=RANGE, note=TEXT),
         ["object_target", "approach", "lift", "expect_grip_mm", "note"],
     ),
     schema(
         "place",
         "Move to your chosen release pose while monitoring grip, then return BEFORE opening "
-        "so you can inspect fresh views. Withdrawal is only executed after a separate release decision.",
+        "so you can inspect fresh views. Withdrawal is only executed after a separate release decision. "
+        "select_destination binds destination_target first, in the same call.",
         dict(
-            object_target=TEXT, destination_target=TEXT, move=TARGETS, withdraw=TARGETS, expect_grip_mm=RANGE, note=TEXT
+            object_target=TEXT,
+            destination_target=TEXT,
+            select_destination=SELECTION,
+            move=TARGETS,
+            withdraw=TARGETS,
+            expect_grip_mm=RANGE,
+            note=TEXT,
         ),
         ["object_target", "destination_target", "move", "withdraw", "expect_grip_mm", "note"],
     ),
     schema(
         "release_placement",
-        "Approve the inspected placement and open/withdraw. Receipt is valid "
-        "once, only while the observed images, robot state and target selections remain unchanged.",
-        dict(checkpoint=TEXT, placement_evidence=TEXT, note=TEXT),
-        ["checkpoint", "placement_evidence", "note"],
+        "Approve the inspected placement and open/withdraw. Receipt is valid once, only while the "
+        "observed images, robot state and target selections remain unchanged. State the placement "
+        "evidence you saw in note.",
+        dict(checkpoint=TEXT, note=TEXT),
+        ["checkpoint", "note"],
     ),
 ]
 
@@ -167,7 +239,6 @@ class WorldTools:
             driver.frames, tracker or TrackerProcess(device="cpu", max_age_s=1800, timeout_s=90, startup_timeout_s=120)
         )
         self.pending = None
-        self.latest = None
 
     def schemas(self):
         return self.native.schemas() + copy.deepcopy(SCHEMAS)
@@ -185,27 +256,32 @@ class WorldTools:
         self.driver.record("tracking.jsonl", result)
         return result
 
-    def context(self):
+    def _select(self, target, where):
+        if not isinstance(where, dict):
+            raise ValueError("a selection names a camera and a point or box")
         self.driver.frames.sync(self.driver.observation)
-        return dict(
-            captures=[
-                dict(camera=k, frame=v.id, captured_at=v.timestamp, size=list(v.image.size))
-                for k, v in self.driver.frames.current.items()
-            ],
-            pending_release=self.pending["id"] if self.pending else None,
+        current = self.driver.frames.current
+        if where.get("camera") not in current:
+            raise ValueError(f"camera must be one of {sorted(current)}")
+        return self.tracking.select(
+            current[where["camera"]].id, target, point=where.get("point"), box=where.get("box"), space="image"
         )
 
-    def _result(self, data):
-        self.latest = data
+    def _result(self, data, told=None):
+        """Record the full result and return the policy its brief copy."""
         self.driver.record("world-use.jsonl", data)
         self.driver.record_observation()
         # This marker returns control to the episode loop without a simulator step.
         return ToolResult(
-            note=json.dumps(data),
+            note=json.dumps(brief(data if told is None else told), separators=(",", ":")),
             chunk=ActionChunk(
                 actions=[Action(data=self.driver.observation.state["eef_state"].copy(), meta={"runner_no_step": True})]
             ),
         )
+
+    def _procedure(self, outcome):
+        feedback = procedures.feedback(outcome)
+        return self._result(feedback, procedure_brief(feedback))
 
     def _move(self, targets, stage, *, monitor=None, expected=None):
         return dict(kind="move", targets=targets, stage=stage, settle_steps=20, monitor_mm=monitor, expect_mm=expected)
@@ -254,13 +330,18 @@ class WorldTools:
                 result = self.driver.execute(
                     dict(kind="move", targets=args.get("targets"), note=args["note"], stage="move_to")
                 )
-                return self._result(result.feedback())
+                # The observation that follows shows the state. A completed move whose last command
+                # reached the request needs no sentence and no account of how the approvers got there.
+                plain = result.ok and result.data.get("applied", {}).get("last_command_reached_request", True)
+                told = dict(status=result.status, **result.data)
+                if plain:
+                    told.pop("applied", None)
+                else:
+                    told["message"] = result.message
+                return self._result(result.feedback(), told)
             if call.name == "select_target":
                 self.pending = None
-                value = self.tracking.select(
-                    args["frame"], args["target"], point=args.get("point"), box=args.get("box"), space="image"
-                )
-                return self._result(value)
+                return self._result(self._select(args["target"], args))
             if call.name == "observe_targets":
                 return self._result(self.observe())
             if call.name == "grasp":
@@ -273,6 +354,8 @@ class WorldTools:
                 delta = np.array([args["lift"][k] - args["approach"][k] for k in ("x", "y", "z")])
                 if not (0.03 <= delta[2] <= 0.05 and np.linalg.norm(delta[:2]) <= 0.005):
                     raise ValueError("test lift must be vertical 3-5 cm, with at most 5 mm lateral displacement")
+                if "select" in args:
+                    self._select(args["object_target"], args["select"])
 
                 def lifted(checkpoint, observations):
                     if checkpoint != "after":
@@ -315,12 +398,14 @@ class WorldTools:
                     lift=self._move(args["lift"], "grasp_test_lift", monitor=grip),
                     assess=lifted if tracked else None,
                 )
-                return self._result(procedures.feedback(outcome))
+                return self._procedure(outcome)
             if call.name == "place":
                 self.pending = None
                 grip = self._range(args["expect_grip_mm"])
                 for key in ("move", "withdraw"):
                     self._validate_pose(args[key])
+                if "select_destination" in args:
+                    self._select(args["destination_target"], args["select_destination"])
 
                 def pause(checkpoint, observations):
                     if checkpoint == "before_release":
@@ -353,12 +438,9 @@ class WorldTools:
                     return Outcome("done", "after", "inspect placement; completion unverified")
 
                 outcome = self._place(args, self._move(args["move"], "place_approach", monitor=grip), pause)
-                return self._result(procedures.feedback(outcome))
+                return self._procedure(outcome)
             if call.name == "release_placement":
                 pending, self.pending = self.pending, None
-                evidence = args["placement_evidence"]
-                if not isinstance(evidence, str) or not 1 <= len(evidence.strip()) <= 2000:
-                    raise ValueError("provide a bounded explanation of the observed placement evidence")
                 if (
                     pending is None
                     or args["checkpoint"] != pending["id"]
@@ -367,12 +449,17 @@ class WorldTools:
                     raise ValueError("release checkpoint is missing, stale or consumed")
 
                 def approved(checkpoint, observations):
-                    return Outcome("done", "policy_assessment", evidence, dict(verified=False, checkpoint=checkpoint))
+                    return Outcome(
+                        "done",
+                        "policy_assessment",
+                        "released on the policy's recorded decision",
+                        dict(verified=False, policy_note=args["note"]),
+                    )
 
                 outcome = self._place(
                     pending["args"], dict(kind="confirm_state", fingerprint=pending["fingerprint"]), approved
                 )
-                return self._result(procedures.feedback(outcome))
+                return self._procedure(outcome)
             raise ValueError("unknown tool")
         except (KeyError, ValueError, TypeError) as exc:
             return self._result(dict(status="refused", message=str(exc)))

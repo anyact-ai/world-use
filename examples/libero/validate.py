@@ -44,13 +44,11 @@ class Scripted(AzureBudget):
         else:
             # Pixel and pose fixtures for task 0, state 0 serve only this synthetic policy, never paid runs.
             if self.script is None:
-                captures = self.world.context()["captures"]
-                frame = next(c["frame"] for c in captures if c["camera"] == "agentview")
                 state = self.driver.observation.state["eef_state"]
                 here = dict(zip(("x", "y", "z"), map(float, state[:3]), strict=True))
                 soup, tomato = dict(x=-0.1002, y=-0.152), dict(x=-0.1173, y=0.0557)
 
-                def grasp(at):
+                def grasp(at, **select):
                     return (
                         "grasp",
                         dict(
@@ -58,12 +56,14 @@ class Scripted(AzureBudget):
                             approach={**at, "z": 0.49},
                             lift={**at, "z": 0.53},
                             expect_grip_mm=[50, 75],
+                            **select,
                         ),
                     )
 
+                tomato_box = dict(camera="agentview", box=[95, 120, 125, 161])
                 self.script = [
-                    ("select_target", dict(target="fixture_object", frame=frame, box=[95, 120, 125, 161])),
-                    ("select_target", dict(target="fixture_support", frame=frame, box=[0, 110, 58, 193])),
+                    ("select_target", dict(target="fixture_object", **tomato_box)),
+                    ("select_target", dict(target="fixture_support", camera="agentview", box=[0, 110, 58, 193])),
                     ("observe_targets", {}),
                     # Closing in free air: nothing between the fingers.
                     (
@@ -85,7 +85,8 @@ class Scripted(AzureBudget):
                     ("move_to", dict(targets={"gripper": 0.0})),
                     ("move_to", dict(targets={"z": 0.62})),
                     ("move_to", dict(targets={**tomato, "z": 0.62})),
-                    grasp(tomato),
+                    # Reselecting in the grasp call itself must bind the same region.
+                    grasp(tomato, select=tomato_box),
                     ("give_up", dict(reason="Offline procedure checks complete.", hindsight="none")),
                 ]
             name, args = self.script[index - 1]

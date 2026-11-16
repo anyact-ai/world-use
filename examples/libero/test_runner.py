@@ -179,8 +179,12 @@ def tools_fixture(camera=None, **motion):
             for n in names
         ]
 
+    tools.selected = []
     tools.tracking = SimpleNamespace(
-        targets={"object": {"camera": camera}, "support": {"camera": camera}}, lost={}, observe=observe
+        targets={"object": {"camera": camera}, "support": {"camera": camera}},
+        lost={},
+        observe=observe,
+        select=lambda frame, target, **where: tools.selected.append((frame, target, where)) or dict(target=target),
     )
     return tools
 
@@ -206,9 +210,7 @@ def pause(tools):
 def test_release_stops_for_inspection_then_continues_once_without_approach():
     tools = tools_fixture()
     receipt = pause(tools)
-    release = call(
-        "release_placement", checkpoint=receipt, placement_evidence="Fixture approval, not physical evidence."
-    )
+    release = call("release_placement", checkpoint=receipt)
     result = tools.execute(release, tools.driver.observation)
     assert json.loads(result.note)["status"] == "done"
     assert [c.get("stage", c["kind"]) for c in tools.driver.commands] == [
@@ -237,9 +239,7 @@ def test_release_refuses_changed_evidence_without_opening(change):
     else:
         tools.tracking.observe = lambda names: [dict(target=n, valid=n != "object") for n in names]
     count = len(tools.driver.commands)
-    result = tools.execute(
-        call("release_placement", checkpoint=receipt, placement_evidence="Fixture."), tools.driver.observation
-    )
+    result = tools.execute(call("release_placement", checkpoint=receipt), tools.driver.observation)
     assert json.loads(result.note)["status"] in ("refused", "stopped")
     assert len(tools.driver.commands) == count
 
@@ -248,9 +248,11 @@ STAYED = dict(mask_iou=0.97, center_delta_px=[0.3, -0.5])
 MOVED = dict(mask_iou=0.5, center_delta_px=[1.0, -9.0])
 
 
-def grasp(tools):
+def grasp(tools, **extra):
     pose = dict(x=0.0, y=0.0, z=0.5)
-    request = call("grasp", object_target="object", approach=pose, lift={**pose, "z": 0.54}, expect_grip_mm=[20, 60])
+    request = call(
+        "grasp", object_target="object", approach=pose, lift={**pose, "z": 0.54}, expect_grip_mm=[20, 60], **extra
+    )
     return json.loads(tools.execute(request, tools.driver.observation).note)
 
 
@@ -268,7 +270,7 @@ def test_grasp_reports_a_selected_region_that_stayed_behind_the_lift(camera, mot
     result = grasp(tools)
     assert (result["status"], result["assessment"]) == (status, assessment)
     # The lift already ran; the finding adds no opening, retreat or retry.
-    assert [s["stage"] for s in result["stages"]][-2:] == ["test_lift", "check_after_lift"]
+    assert list(result["stages"])[-2:] == ["test_lift", "check_after_lift"]
     assert tools.driver.commands[-1]["kind"] == "check_grip"
     if status == "surprise":
         assert result["checkpoint"] == "after" and result["observed"] == dict(mask_iou=0.97, center_shift_px=0.58)
@@ -288,8 +290,49 @@ def test_a_grasp_that_stops_before_its_lift_reports_no_lift_evidence(monkeypatch
     refuse = Outcome("surprise", "move", "fixture: nothing between the fingers")
     monkeypatch.setattr(tools.driver, "execute", lambda c: refuse if c.get("stage") == "grasp_close" else execute(c))
     result = grasp(tools)
-    assert result["status"] == "surprise" and result["stages"][-1]["stage"] == "close"
-    assert all(a["outcome"]["kind"] != "lift_evidence" for a in result["assessments"])
+    assert result["status"] == "surprise" and list(result["stages"])[-1] == "close"
+    assert "assessments" not in result
+
+
+def test_the_policy_gets_a_brief_copy_and_the_record_keeps_everything():
+    tools = tools_fixture("agentview", **MOVED)
+    pose = dict(x=0.0, y=0.0, z=0.5)
+    request = call("grasp", object_target="object", approach=pose, lift={**pose, "z": 0.54}, expect_grip_mm=[20, 60])
+    note = tools.execute(request, tools.driver.observation).note
+    told = json.loads(note)
+    (recorded,) = (row for name, row in tools.driver.output if name == "world-use.jsonl")
+    # Both observations, state vectors and capture identifiers stay on disk only.
+    assert list(recorded["observations"]) == ["before_lift", "after"] and list(told["observations"]) == ["after"]
+    assert "eef_state" in recorded["observations"]["after"] and "eef_state" not in note and "frame" not in note
+    assert told["status"] == recorded["status"] and told["assessment"] == recorded["assessment"]
+    assert told["assessments"][0]["data"] == recorded["assessments"][-1]["outcome"]["data"]
+    # Only the procedure's own target is repeated; the destination stays in the record.
+    assert [t["target"] for t in told["observations"]["after"]["targets"]] == ["object"]
+    assert len(recorded["observations"]["after"]["targets"]) == 2 and len(note) < 1000
+
+
+def test_a_selection_in_the_grasp_call_binds_the_target_before_any_motion():
+    tools = tools_fixture("agentview", **MOVED)
+    result = grasp(tools, select=dict(camera="agentview", box=[10, 20, 30, 40]))
+    frame = tools.driver.frames.current["agentview"].id
+    where = dict(point=None, box=[10, 20, 30, 40], space="image")
+    assert result["status"] == "done" and tools.selected == [(frame, "object", where)]
+    count = len(tools.driver.commands)
+    refused = grasp(tools, select=dict(camera="overhead", point=[1, 2]))
+    assert refused["status"] == "refused" and "agentview" in refused["message"]
+    assert len(tools.driver.commands) == count and len(tools.selected) == 1
+
+
+def test_a_plain_move_result_carries_no_sentence_and_a_shortfall_does(monkeypatch):
+    tools = tools_fixture()
+    plain = json.loads(tools.execute(call("move_to", targets={"z": 0.6}), tools.driver.observation).note)
+    assert plain == {"status": "done"}
+    short = Outcome(
+        "done", "move", "held short", dict(aperture_mm=40.0, applied=dict(last_command_reached_request=False))
+    )
+    monkeypatch.setattr(tools.driver, "execute", lambda command: short)
+    told = json.loads(tools.execute(call("move_to", targets={"z": 0.7}), tools.driver.observation).note)
+    assert told["message"] == "held short" and told["applied"] == {"last_command_reached_request": False}
 
 
 @pytest.mark.parametrize(
@@ -408,7 +451,7 @@ def test_a_blocked_arm_returns_early_as_not_approaching(tmp_path):
 def test_feedback_separates_the_request_from_the_command_the_approvers_applied(tmp_path):
     d = driver(tmp_path)
     first = d.execute(dict(kind="move", targets={"z": 0.5}, stage="move_to"))
-    assert "applied" not in first.data and first.data["arm"] == "not_checked"
+    assert "applied" not in first.data and "arm" not in first.data
     # The arm still trails its last command, so the per-step limit, measured from that
     # command, holds every step of a reversed move back.
     lag = d.observation.state["eef_state"][2] - 0.5
