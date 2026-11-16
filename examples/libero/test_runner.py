@@ -274,8 +274,8 @@ def test_grasp_reports_a_selected_region_that_stayed_behind_the_lift(camera, mot
         assert result["checkpoint"] == "after" and result["observed"] == dict(mask_iou=0.97, center_shift_px=0.58)
 
 
-def wrist_scene(tools, thing, visible=lambda looks: True):
-    """A fixed point seen by the wrist camera of the fixture's hand, which starts 20 cm above it."""
+def wrist_scene(tools, thing, visible=lambda looks: True, half=0.0):
+    """A fixed point, or a level square of that half-width, seen by the wrist camera of the fixture's hand."""
     driver, looks = tools.driver, []
     driver.pose.update(z=0.65)
 
@@ -290,6 +290,13 @@ def wrist_scene(tools, thing, visible=lambda looks: True):
             return [dict(target=n, valid=False, tracking="lost") for n in names]
         u, v = (float(c) for c in wrist_view(eef()).project(thing)[0][0])
         box = [u - 10, 255 - v - 15, u + 10, 255 - v + 15]
+        if half:
+            # The tracker reports the part inside the image: its box and that part's centre.
+            corners = [thing + [dx, dy, 0] for dx in (-half, half) for dy in (-half, half)]
+            px = np.array([wrist_view(eef()).project(c)[0][0] for c in corners], dtype=float)
+            box = [*np.clip(px.min(axis=0), 0, 255), *np.clip(px.max(axis=0), 0, 255)]
+            box = [box[0], 255 - box[3], box[2], 255 - box[1]]
+            u, v = (box[0] + box[2]) / 2, 255 - (box[1] + box[3]) / 2
         return [dict(target=n, valid=True, camera="wrist", center=[u, 255 - v], bbox=box) for n in names]
 
     tools.tracking.observe = look
@@ -360,6 +367,39 @@ def test_a_region_straight_below_the_hand_is_still_placed_from_two_looks():
     result = grasp(tools)
     assert result["status"] == "done" and result["centred"]["moves"] <= 2
     assert [result["centred"][k] for k in "xy"] == pytest.approx(thing[:2], abs=5e-3)
+
+
+def test_a_region_cut_off_by_the_image_border_is_placed_only_from_looks_at_all_of_it():
+    tools = tools_fixture()
+    thing = np.array([0.22, 0.0, 0.45])
+    wrist_scene(tools, thing, half=0.09)
+    found = json.loads(tools.execute(call("locate", target="object"), tools.driver.observation).note)["located"]
+    # The first look sees only the near part, whose centre is not the square's.
+    assert [found[k] for k in "xyz"] == pytest.approx(thing, abs=5e-3)
+    assert found["extent_mm"] == pytest.approx([180, 180], abs=6)
+
+
+@pytest.mark.parametrize(("stalls", "status"), [(1, "done"), (2, "surprise")])
+def test_one_centring_move_that_stops_short_still_brings_a_new_look(stalls, status):
+    tools = tools_fixture()
+    thing = np.array([0.07, -0.04, 0.45])
+    wrist_scene(tools, thing)
+    execute, short = tools.driver.execute, []
+
+    def reach(command):
+        outcome = execute(command)
+        if command.get("stage") == "locate" and len(short) < stalls:
+            short.append(command)
+            return Outcome("surprise", "move", "fixture: past the arm's reach", dict(arm="not_approaching"))
+        return outcome
+
+    tools.driver.execute = reach
+    found = json.loads(tools.execute(call("locate", target="object"), tools.driver.observation).note)
+    assert found["status"] == status
+    if status == "done":
+        assert [found["located"][k] for k in "xy"] == pytest.approx(thing[:2], abs=5e-3)
+    else:
+        assert len(tools.driver.commands) == 2
 
 
 def test_a_region_missing_from_the_wrist_view_stops_before_any_descent():

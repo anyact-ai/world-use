@@ -213,8 +213,52 @@ turned 45 degrees clears that carton and lifted the box in four of four trials,
 in 158 to 189 steps, most of them the fingers turning the box before they hold
 it.
 
+**Looks at the whole region.** The pairs at `b61545e`, tasks 0 and 7, were the
+first to favour the candidate: the World Use arm succeeded in both, in 13 and 15
+calls, where raw Sol took 49 calls on task 7 and on task 0 declared the task done
+after 58 calls with the wrong object in the basket. Both World Use episodes
+still used 762 and 818 of their 900 steps on five and six placements. `locate`
+had been given the basket at the edge of the wrist image and returned a centre
+within 2 cm but a size 1.5 times too large: the centre of a region that the
+image border cuts off moves as more of it comes into view, so the looks did not
+agree on a depth. The policy then released 7 to 9 cm from the centre, onto the
+rim.
+
+A region is now placed only from looks that contain all of it. Looks at a
+cut-off region lead the hand toward it, in one move to where the look meets a
+plane a quarter metre below the camera, and one centring move that stops short
+of an unreachable first guess no longer ends the search. The docs advise
+releasing the first of two objects a fifth of the container's longer extent to
+one side of its centre and the second to the other side. Scripted from the start
+pose that way, tasks 0 and 7 located the basket within 6.4 mm in 63 and 69 steps
+and satisfied the success check after 9 calls and 478 and 456 steps.
+
 The native terminal hold step is executed and counted. No physics parameters or
 success predicates are altered.
+
+## Paid results
+
+[paid-results.jsonl](paid-results.jsonl) has one row per arm of every paid pair,
+with the commit that produced it, how the episode ended, calls, counted steps,
+wall time, tokens and estimated cost at the assumed prices. The raw arm is the
+same condition at every commit; the World Use arm is the tree at that commit.
+All pairs so far are development state 0. Wall times were not controlled for
+other load on the machine.
+
+| commit | task | arm | ended | calls | steps | est. USD |
+|---|---|---|---|---|---|---|
+| `6d73def` | 0 | raw | success | 49 | 653 | 0.66 |
+| `6d73def` | 0 | World Use | gave up | 21 | 331 | 0.20 |
+| `da32947` | 0 | raw | success | 44 | 557 | 0.50 |
+| `da32947` | 0 | World Use | step limit | 23 | 900 | 0.24 |
+| `b61545e` | 0 | raw | claimed done, not successful | 58 | 727 | 0.96 |
+| `b61545e` | 0 | World Use | success | 13 | 762 | 0.10 |
+| `b61545e` | 7 | raw | success | 49 | 531 | 0.63 |
+| `b61545e` | 7 | World Use | success | 15 | 818 | 0.12 |
+
+These are single episodes. The two earlier World Use failures are what the
+sections above were written from, so the later successes on the same task and
+state are not independent evidence; held-out state 2 has not been run.
 
 ## Rebuild the runtime
 

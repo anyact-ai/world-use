@@ -65,7 +65,10 @@ BEFORE opening with a one-use checkpoint. Its descent_ended_above_request_m tell
 the surface you meant from one on something higher, such as a rim. Choose a travel_z that clears
 everything on the way, the destination's rim included, by more than the held object hangs below
 the fingertips. Inspect the views, then call release_placement to open and withdraw, or correct
-the pose. Any motion or reselection voids the checkpoint.
+the pose. Any motion or reselection voids the checkpoint. Two objects for one container go side
+by side along its longer extent: release the first a fifth of that extent to one side of the
+located centre and the second a fifth to the other side, so neither lands on the other or on
+a wall.
 Every interpolation and settling step counts toward the 900-step episode limit; one clean pick
 and place takes about 200.
 Results report measurements. arm: arrived; stopped_on_contact (above_request_m is how far above
@@ -97,7 +100,8 @@ WRIST_FOCAL_PX, WRIST_SIZE = 166.8128, 256
 WRIST_IN_TOOL = np.array([[-1.0, 0, 0, 0], [0, -1.0, 0, 0.05], [0, 0, 1.0, -0.097], [0, 0, 0, 1.0]])
 BASELINE_M = 0.03  # least distance between two looks at a region before its depth is trusted
 SIDESTEP_M = 0.045  # a step that leaves the looks that far apart even when the arm arrives short
-CENTRE_MOVES = 4
+CENTRE_MOVES = 5
+CUT_OFF_DROP_M = 0.25
 CLOSE_STEPS = 120
 
 
@@ -376,12 +380,18 @@ class WorldTools:
         and the region is placed where the rays meet. Returns its position, or the Outcome
         that stopped the search. Every move is a counted, settled native move with open fingers.
         """
-        rays, moves, fix = [], 0, None
+        rays, moves, stalls, fix, whole = [], 0, 0, None, False
         while True:
             seen = next((t for t in self.observe()["targets"] if t["target"] == name), {})
             state = self.driver.observation.state["eef_state"]
             visible = seen.get("valid") is True and bool(seen.get("center"))
-            if visible:
+            x0, y0, x1, y1 = seen.get("bbox") or [0] * 4
+            entire = visible and min(x0, y0) > 0 and max(x1, y1) < WRIST_SIZE - 1
+            if entire and not whole:
+                # The centre of a region the image border cut off is not the region's centre. Those
+                # looks led the hand here; the position comes from looks at all of it.
+                rays, fix, whole = [], None, True
+            if entire or (visible and not whole):
                 rays.append(wrist_ray(state, seen["center"]))
                 if max(float(np.linalg.norm(a - b)) for a, _ in rays for b, _ in rays) >= BASELINE_M:
                     fix = nearest_point(rays)
@@ -394,11 +404,12 @@ class WorldTools:
                         return dict(found, region="lost after these looks")
                     u, v = wrist_view(state).project(fix)[0][0]
                     found["pixel"] = [round(float(u)), round(WRIST_SIZE - 1 - float(v))]
-                    x0, y0, x1, y1 = seen.get("bbox") or [0] * 4
-                    if min(x0, y0) > 0 and max(x1, y1) < WRIST_SIZE - 1:
+                    if entire:
                         # A whole region seen from above: its box scales with the camera's height over it.
                         scale = 1000 * (rays[-1][0][2] - fix[2]) / WRIST_FOCAL_PX
                         found["extent_mm"] = [round((x1 - x0) * scale), round((y1 - y0) * scale)]
+                    elif not whole:
+                        found["region"] = "cut off by the image border in every look"
                     return found
                 goal = fix[:2]
             elif not visible:
@@ -414,19 +425,25 @@ class WorldTools:
                     "stopped", "centre", "the region could not be placed from the wrist views", dict(moves=moves)
                 )
             else:
-                # One look: head for where it meets the assumed height, or with no height to
-                # assume just far enough toward the region for a second look.
+                # One look gives a direction. Head for where it meets an assumed height: a little
+                # above the lowest height a grasp allows, or a quarter metre below the camera for
+                # a region the image border cuts off. A whole region with no height to assume
+                # needs only a second look from a sidestep away.
                 origin, direction = rays[-1]
+                drop = origin[2] - floor_z - 0.05 if floor_z is not None else None if whole else CUT_OFF_DROP_M
                 toward, step = direction[:2], SIDESTEP_M
-                if floor_z is not None:
-                    toward = (origin + direction * ((floor_z + 0.05 - origin[2]) / direction[2]))[:2] - state[:2]
+                if drop is not None:
+                    toward = (origin - direction * (drop / direction[2]))[:2] - state[:2]
                     step = max(float(np.linalg.norm(toward)), SIDESTEP_M)
                 distance = float(np.linalg.norm(toward))
                 goal = state[:2] + (toward / distance if distance > 1e-6 else np.array([1.0, 0.0])) * step
             moved = self.driver.execute(self._move(dict(x=float(goal[0]), y=float(goal[1]), gripper=0), stage))
-            if not moved.ok:
-                return moved
             moves += 1
+            if not moved.ok:
+                # A goal past the arm's reach, as a first guess can be, still brings a new look.
+                stalls += 1
+                if stalls > 1 or moved.data.get("arm") != "not_approaching":
+                    return moved
 
     def _result(self, data, told=None):
         """Record the full result and return the policy its brief copy."""
