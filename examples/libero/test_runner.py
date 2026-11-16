@@ -134,10 +134,13 @@ class FakeDriver:
         self.commands = []
         self.output = []
         self.pose = dict(x=0.0, y=0.0, z=0.5)
+        self.steps = 0
 
     def execute(self, command):
         self.commands.append(command)
+        self.steps += command["kind"] == "move"
         self.pose.update({k: v for k, v in command.get("targets", {}).items() if k in self.pose})
+        self.pose["z"] += command.get("rise_m") or 0
         return Outcome("done", command["kind"], "fixture measured check")
 
     def record(self, *args):
@@ -159,7 +162,7 @@ def tools_fixture(camera=None, **motion):
     tools = object.__new__(WorldTools)
     tools.driver = FakeDriver()
     tools.native = tools.driver.tools
-    tools.pending = tools.latest = None
+    tools.pending = tools.seen = None
     captures = iter(range(100))
 
     def observe(names):
@@ -226,7 +229,7 @@ def test_release_stops_for_inspection_then_continues_once_without_approach():
     assert len(tools.driver.commands) == count
 
 
-@pytest.mark.parametrize("change", ["pixels", "state", "motion", "loss"])
+@pytest.mark.parametrize("change", ["pixels", "state", "motion"])
 def test_release_refuses_changed_evidence_without_opening(change):
     tools = tools_fixture()
     receipt = pause(tools)
@@ -234,10 +237,8 @@ def test_release_refuses_changed_evidence_without_opening(change):
         tools.driver.observation.images["agentview"][0, 0, 0] = 5
     elif change == "state":
         tools.driver.observation.state["eef_state"][0] = 0.02
-    elif change == "motion":
-        tools.execute(call("move_to", targets={"z": 0.7}), tools.driver.observation)
     else:
-        tools.tracking.observe = lambda names: [dict(target=n, valid=n != "object") for n in names]
+        tools.execute(call("move_to", targets={"z": 0.7}), tools.driver.observation)
     count = len(tools.driver.commands)
     result = tools.execute(call("release_placement", checkpoint=receipt), tools.driver.observation)
     assert json.loads(result.note)["status"] in ("refused", "stopped")
@@ -260,7 +261,8 @@ def grasp(tools, **extra):
     ("camera", "motion", "status", "assessment"),
     [
         ("agentview", STAYED, "surprise", "unknown"),
-        ("agentview", MOVED, "done", "passed_caller_checks"),
+        # A region that moved is no confirmation, so the grasp reports as it would unassessed.
+        ("agentview", MOVED, "done", "unknown"),
         # The wrist camera rises with the hand, so a held object's region stays put there.
         ("wrist", STAYED, "done", "unknown"),
     ],
@@ -279,9 +281,43 @@ def test_grasp_reports_a_selected_region_that_stayed_behind_the_lift(camera, mot
 def test_a_lift_too_small_to_compare_is_not_judged(monkeypatch):
     tools = tools_fixture("agentview", **STAYED)
     execute = tools.driver.execute
-    monkeypatch.setattr(tools.driver, "execute", lambda c: execute({**c, "targets": {}}))
+    monkeypatch.setattr(tools.driver, "execute", lambda c: execute({**c, "rise_m": 0.01} if c.get("rise_m") else c))
     result = grasp(tools)
-    assert result["status"] == "stopped" and "could not be compared" in result["message"]
+    assert result["status"] == "done" and result["assessment"] == "unknown" and "assessments" not in result
+
+
+def test_a_region_hidden_by_the_hand_does_not_stop_the_grasp():
+    tools = tools_fixture("agentview", **MOVED)
+    looks = []
+    observe = tools.tracking.observe
+
+    def lost_after_first_look(names):
+        looks.append(tools.driver.steps)
+        if len(looks) == 1:
+            return observe(names)
+        return [dict(target=n, valid=False, tracking="lost", reason="the tracker reports lost") for n in names]
+
+    tools.tracking.observe = lost_after_first_look
+    result = grasp(tools)
+    # The tracker is asked before the approach and after the lift only, and its loss is reported, not fatal.
+    assert looks == [0, 3] and result["status"] == "done" and result["assessment"] == "unknown"
+    assert result["observations"]["after"]["targets"] == [
+        dict(target="object", valid=False, reason="the tracker reports lost")
+    ]
+    assert tools.driver.commands[-1]["kind"] == "check_grip"
+
+
+def test_a_lost_region_is_reported_and_blocks_neither_grasp_nor_place():
+    tools = tools_fixture("agentview", **MOVED)
+    tools.tracking.observe = lambda names: [dict(target=n, valid=False, tracking="lost") for n in names]
+    grasped = grasp(tools)
+    assert grasped["status"] == "done" and grasped["observations"]["after"]["targets"] == [
+        dict(target="object", valid=False)
+    ]
+    # The grip itself is measured; the destination is optional evidence as well.
+    request = call("place", object_target="object", move={"z": 0.45}, withdraw={"z": 0.55}, expect_grip_mm=[5, 70])
+    placed = json.loads(tools.execute(request, tools.driver.observation).note)
+    assert placed["status"] == "stopped" and placed["checkpoint"] == "before_release" and tools.pending
 
 
 def test_a_grasp_that_stops_before_its_lift_reports_no_lift_evidence(monkeypatch):
@@ -295,7 +331,7 @@ def test_a_grasp_that_stops_before_its_lift_reports_no_lift_evidence(monkeypatch
 
 
 def test_the_policy_gets_a_brief_copy_and_the_record_keeps_everything():
-    tools = tools_fixture("agentview", **MOVED)
+    tools = tools_fixture("agentview", **STAYED)
     pose = dict(x=0.0, y=0.0, z=0.5)
     request = call("grasp", object_target="object", approach=pose, lift={**pose, "z": 0.54}, expect_grip_mm=[20, 60])
     note = tools.execute(request, tools.driver.observation).note
@@ -369,10 +405,10 @@ class Hand(LiberoEmbodiment):
     command has already left behind.
     """
 
-    def __init__(self, *, object_mm=None, finger_gain=0.5, floor_z=None, arm_gain=0.3, ramp=0.125):
+    def __init__(self, *, object_mm=None, finger_gain=0.5, floor_z=None, arm_gain=0.3, ramp=0.125, shove=0.0):
         super().__init__(task_id=0, output_dir="unused")
         self.pos, self.command, self.half_mm = np.array([0.0, 0.0, 0.6]), 0.0, 40.0
-        self.object_mm, self.finger_gain, self.floor_z = object_mm, finger_gain, floor_z
+        self.object_mm, self.finger_gain, self.floor_z, self.shove = object_mm, finger_gain, floor_z, shove
         self.arm_gain, self.ramp = arm_gain, ramp
         self.last = dict(steps=0)
 
@@ -389,8 +425,9 @@ class Hand(LiberoEmbodiment):
     def step(self, action):
         data = np.asarray(action.data, dtype=float)
         self.pos = self.pos + self.arm_gain * (data[:3] - self.pos)
-        if self.floor_z is not None:
-            self.pos[2] = max(self.pos[2], self.floor_z)
+        if self.floor_z is not None and self.pos[2] < self.floor_z:
+            self.pos[2] = self.floor_z
+            self.pos[0] += self.shove  # an obstacle that deflects the hand sideways
         self.command = float(np.clip(self.command + self.ramp * np.sign(2 * data[9] - 1), 0, 1))
         half = self.half_mm + self.finger_gain * (40 * (1 - self.command) - self.half_mm)
         if self.object_mm is not None:
@@ -417,8 +454,9 @@ def test_close_returns_a_stable_hand_with_its_measured_opening(tmp_path, object_
     d = driver(tmp_path, object_mm=object_mm)
     out = d.execute(stage({"gripper": 1}, "grasp_close", expect_mm=[20, 40]))
     assert (out.status, out.data["gripper"]) == (status, gripper)
-    assert out.data["aperture_mm"] == pytest.approx(object_mm or 0, abs=2)
-    assert abs(out.data["aperture_change_mm"]) < 0.5
+    assert out.data["aperture_mm"] == pytest.approx(object_mm or 0, abs=3)
+    # Empty fingers creep over their last millimetres; they are at their end, not still closing.
+    assert abs(out.data["aperture_change_mm"]) < (1 if gripper == "reached_end" else 0.3)
     # A hand at rest ends the wait; only motion still under way may use the whole bound.
     assert out.data["executed_steps"] < 31
     if status == "surprise":
@@ -446,6 +484,29 @@ def test_a_blocked_arm_returns_early_as_not_approaching(tmp_path):
     assert out.status == "surprise" and out.data["arm"] == "not_approaching"
     assert out.observed["position_error_m"] == pytest.approx(0.03, abs=1e-3)
     assert out.data["executed_steps"] < 13 + 10
+
+
+@pytest.mark.parametrize(
+    ("shove", "status", "arm"), [(0.0, "done", "stopped_on_contact"), (0.01, "surprise", "not_approaching")]
+)
+def test_only_contact_directly_above_the_pose_ends_a_descent_that_allows_it(tmp_path, shove, status, arm):
+    d = driver(tmp_path, floor_z=0.5, shove=shove)
+    out = d.execute(stage({"z": 0.47}, "grasp_approach", contact_ok=True))
+    assert (out.status, out.data["arm"]) == (status, arm)
+    if out.ok:
+        assert out.data["above_request_m"] == pytest.approx(0.03, abs=2e-3)
+        # The next stage rises from where the hand stopped, not from the height it asked for.
+        lift = d.execute(stage({}, "grasp_test_lift", rise_m=0.04))
+        assert lift.ok and d.observation.state["eef_state"][2] == pytest.approx(0.54, abs=0.012)
+
+
+def test_a_level_first_approach_is_over_the_pose_before_it_descends(tmp_path):
+    d = driver(tmp_path)
+    out = d.execute(stage({"x": 0.1, "z": 0.5}, "grasp_approach", above_first=True))
+    rows = [json.loads(line) for line in (d.output / "steps.jsonl").read_text().splitlines()]
+    descent = next(i for i, row in enumerate(rows) if row["approved"][2] < 0.6 - 1e-9)
+    assert abs(rows[descent - 1]["state"]["eef_state"][0] - 0.1) <= 0.012
+    assert out.ok and out.data["executed_steps"] == len(rows) and out.data["position_error_m"] <= 0.012
 
 
 def test_feedback_separates_the_request_from_the_command_the_approvers_applied(tmp_path):

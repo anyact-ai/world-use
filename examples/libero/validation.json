@@ -4,12 +4,12 @@
   "source_sha256": {
     "agent-requirements.txt": "dc865f41059c163718c91bb0ccd7f712b849c8f03d8a982e362a201eb94ccc70",
     "budget.py": "3e3feabf6b1a60d2f187d4b2b807201dd818a65dbed583a3b93dd0d828216500",
-    "native.py": "4ff9b8fea12d806e3ec33be502ca4c9ed60edfa0e996abd7f5c5bb09a5edbcb9",
+    "native.py": "f5583ca3e04d8081a464fe5e59c8d54a1ee2f0b3215c452e57103b4c6c55c7d2",
     "run.py": "ff0adf13db815a48f642cca3375a6d29228b46b85ef75bf4f89c746ff0104891",
     "sim-requirements.txt": "dbaec293790695dedabd929bc9b9a75c074a8ce827308fa66d331924b8f0b996",
-    "test_runner.py": "58b4c26f5c910be892a172b1c8129493d713dcd8a4e8b1b4eaa1bc3c39879e2b",
-    "validate.py": "96180a1c4109946ce85ccdf14b3101d05aba9410268b7cb200ba3173a926ff76",
-    "world_tools.py": "cbff2e800c17d717d1f82a833ebac81a5a6649e6a4107916d569807518259bac"
+    "test_runner.py": "73e495bd0b8f684917a8047662bb9dcae2bc078bf989e0964a6d0fb786abe55a",
+    "validate.py": "f5afc2894a385effc0684cfc270cad530adaf70bf60e9bda8b9be9c5f3efb196",
+    "world_tools.py": "7ee4694019f79b406698390f0e894663ffd95b5890f15511585f2267b81bdb73"
   },
   "real_simulator": true,
   "real_edgetam": true,
@@ -257,7 +257,7 @@
       "inspect_robots_agent._tools": "a4f24a4edca742f4d3dc34f919fbc07680fd7b71c0913843bc194b84f934491d",
       "inspect_robots_agent.policy": "8ca484e0dd551d905e171a3fc09098ce0f44585ab7c32ae060f1b816cf70da97",
       "inspect_robots_libero.embodiment": "c6f9c6793808b29dd3fa1289f9b996ead52176661e79644c7473edea0677b40a",
-      "world_use.procedures": "754ee5b9bbe186d716bc9332452a6d25bfcc00a16ad6b1a516eed1d7da6154d7",
+      "world_use.procedures": "baf5d5e803d4fa029b2ede1573fb46d564837952976bd7cea86f4c90ca4d3457",
       "world_use.tracking": "580607701338ba14c4d6fe7e45098c2daf79a6b2dc076be1058676c102754742",
       "world_use.vision": "4eae54612af034c9170d2fc40c25e412e7735fb8bd371e52a0edf49118040410",
       "native_simulator_worker": "f934adb6d0ee86c7f19f728fc1b6bccf7a12ff73a3ab0ce845cf63634bfdafd7"
@@ -284,7 +284,7 @@
     "calls": 4,
     "estimated_usd": 0.0048,
     "budget_charge_usd": 0.0050000000000000044,
-    "wall_seconds": 14.065803731000187
+    "wall_seconds": 20.92400489900001
   },
   "world_use": {
     "arm": "world_use",
@@ -294,29 +294,23 @@
     "status": "give_up",
     "initial_observation_sha256": "0384bdf083bd225b3cf30238f18f7b49d05ae4cb64bc97e85262513c3a79d469",
     "instruction": "put both the alphabet soup and the tomato sauce in the basket",
-    "steps": 203,
+    "steps": 211,
     "calls": 14,
     "estimated_usd": 0.0168,
     "budget_charge_usd": 0.017500000000000016,
-    "wall_seconds": 80.36726018100012
+    "wall_seconds": 104.46804833200031
   },
   "empty_grasp_stopped_before_lift": true,
   "applied_command_offset_reported_m": 0.019999999999999907,
   "lift_evidence": {
     "left_behind": {
       "camera": "agentview",
-      "hand_vertical_travel_m": 0.0332,
-      "mask_iou": 0.98,
-      "center_shift_px": 0.22,
+      "hand_vertical_travel_m": 0.0351,
+      "mask_iou": 0.991,
+      "center_shift_px": 0.14,
       "unchanged": true
     },
-    "carried": {
-      "camera": "agentview",
-      "hand_vertical_travel_m": 0.0352,
-      "mask_iou": 0.478,
-      "center_shift_px": 10.45,
-      "unchanged": false
-    }
+    "carried_mask_iou": 0.563894523326572
   },
   "initial_observations_identical": true,
   "repeated_capture_regions_identical": true

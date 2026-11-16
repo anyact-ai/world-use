@@ -33,18 +33,18 @@ Three conditions must stay distinguishable in any comparison:
   `run.py` have SHA-256 prefixes `ad8b8fab`, `a21a23f8` and `90a9cfc5`. Evidence
   produced with it belongs to that source.
 - **Candidate World Use**: this tree, recorded as `world-use-candidate-20261116`.
-  It has no paid result. Its differences from the frozen runner are the four
-  below, each introduced by its own commit so that an earlier commit can be run as
-  a narrower condition: settling with applied commands, then the region
-  comparison, then the briefer results and merged selection.
+  It has no paid result. Its differences from the frozen runner are the five
+  below, introduced by separate commits so that an earlier commit can be run as a
+  narrower condition: settling with applied commands, then the region comparison,
+  then the briefer results and merged selection, then the contact-terminated grasp.
 
-**Settling.** A procedure stage repeats its final native pose for at most 20 more
-steps, all counted toward the 900-step limit. It uses the library's `Settling`
+**Settling.** Each leg of a procedure stage repeats its final native pose for at
+most 20 more steps, all counted toward the 900-step limit. It uses the library's `Settling`
 check and returns as soon as the measurements settle the question. The arm has
 `arrived` after three consecutive samples within 12 mm and 0.12 rotation-column
 error; it is `not_approaching` once that offset stops shrinking over four
 intervals; otherwise it is `still_converging` at the bound. The fingers have
-`reached_end` within 2 mm of fully closed or 3 mm of fully open, have
+`reached_end` within 3 mm of fully closed or open, have
 `stopped_apart` once they travel less than 0.3 mm over four intervals, and are
 otherwise `still_moving`. A stable opening outside the policy's expected range is
 a measured surprise, not a failure to converge. No wait concludes while an approver
@@ -63,13 +63,16 @@ native interpolation and are not extended.
 
 **Region comparison.** When the object was selected in `agentview`, its tracked
 region is compared across the test lift and across a vertical approach to a release
-pose, using the existing procedure assessment hooks. The hand must have travelled
-at least 1.5 cm vertically and at most 2 cm sideways between the two observations.
+pose, using the existing procedure assessment hooks. For a grasp the region seen
+before the approach is compared with the region after the lift. The hand must have
+travelled at least 1.5 cm vertically and at most 2 cm sideways over the lift or
+the place move.
 A region that kept at least 0.9 mask overlap and shifted less than 0.3 image
 heights per metre of that travel did not move with the hand: `grasp` returns a
 surprise after the lift, and `place` issues no release receipt. The hand then
 holds something else or nothing, or the selection sits on another object. A region
-that changed is not confirmation, and a wrist selection is not compared. The rule
+that changed concludes nothing and leaves the assessment unknown, and a wrist
+selection is not compared. The rule
 assumes a static camera that does not look along the vertical. A straight-down
 view only rescales a lifted object, so such a camera must not be compared.
 
@@ -93,6 +96,35 @@ behind, one was unchanged and one changed through hand occlusion. The overhead
 view kept 0.86 overlap with under 1 px of shift for a 3.7 cm lift, which is why it
 is excluded. [region-evidence.jsonl](region-evidence.jsonl) holds every row of
 both checks; all of it is simulated.
+
+**A grasp that does not need the height.** Given the true object centre and a
+height estimated from its mask, the earlier `grasp` lifted 3 of 18 objects over
+all ten tasks: nine approaches were blocked on the way down, two grasps stopped
+only because the hand had hidden the tracked region, and two closed on nothing.
+`grasp` and `place` now move level to above the pose and descend straight down.
+The requested z is the lowest height allowed: a descent that contact stops
+directly above the pose is accepted, the hand closes there, and the test lift
+rises from where it stopped. The selected region is looked at before the approach
+and after the lift, not while the hand hides it, and a lost region is reported
+instead of stopping the procedure. A region that moved no longer counts as a
+passed check; only one that stayed behind changes the result. Asking for 5 mm
+above the table at the same 18 true centres, the grasp lifted 10: all six can
+attempts and all four flat-box attempts. The four mugs, two moka pots, the bowl
+and the book still failed, because a centre grasp from above is the wrong grasp
+for them. The policy text now says to take hollow objects by the rim just below
+its top; two scripted rim grasps of a mug at its true centre lifted it, while ten
+rim attempts placed from the footprint centre with a low z all failed, so that
+grasp needs the rim located well. A successful grasp took 52 to 61 counted steps
+against 42 to 44 before.
+
+Tracking is now evidence and no longer a precondition. A scripted run of task 0
+with true positions placed the first can, then had its second `place` refused
+because the tracker had lost the held can during the carry. With an unselected or
+lost region reported instead, the same script satisfied LIBERO's success check
+after 11 tool calls and 367 steps: two grasps that select in the call, two
+placements, one release and six moves. [grasp-evidence.jsonl](grasp-evidence.jsonl)
+holds every attempt. These are scripted, privileged diagnostics of the tools, not
+of a model using them.
 
 **Briefer results and fewer calls.** Each World Use turn used to add about five
 times the text of a raw turn, and every later request carries it again. The policy

@@ -22,7 +22,7 @@ from world_use.checks import Settling
 HZ = 20
 ARM_TOLERANCE = (0.012, 0.12)  # metres, largest rot6d column difference
 OPEN_MM = 80.0  # both fingers at their 0.04 m travel limit
-CLOSED_END_MM = 2.0  # the smallest opening a policy may expect; at or below it nothing is held
+CLOSED_END_MM = 3.0  # empty fingers creep from here toward 1.4 mm; at or below it nothing is held
 OPEN_END_MM = 3.0  # the fingers creep over the last millimetres to their open limit
 GRIP_STOP_MM = 0.3  # less travel than this over a settling window is a stop, not motion
 WINDOW_S = 3.5 / HZ  # four 20 Hz intervals, clear of a sample boundary
@@ -185,6 +185,11 @@ class Driver:
         It returns as soon as the measurements settle the question: the arm arrived
         or stopped short, the fingers reached their end or stopped apart. Motion still
         under way at the bound is reported as such, not as a stable result.
+
+        A stage may ask for three things a raw move does not do. above_first moves level
+        to above the pose and settles there before descending, so the hand comes straight
+        down. contact_ok accepts a descent that contact stopped directly above the pose.
+        rise_m replaces the target height with the measured height plus that rise.
         """
         kind = command["kind"]
         if kind == "confirm_state":
@@ -208,7 +213,16 @@ class Driver:
             )
         if kind != "move":
             raise ValueError("unknown command")
-        targets = command["targets"]
+        targets, started = command["targets"], self.steps
+        if command.get("rise_m") is not None:
+            targets = {**targets, "z": float(self.observation.state["eef_state"][2]) + command["rise_m"]}
+        if command.get("above_first") and "z" in targets and len(targets) > 1:
+            level = {k: v for k, v in targets.items() if k != "z"}
+            first = self.execute(
+                {**command, "targets": level, "above_first": False, "contact_ok": False, "rise_m": None}
+            )
+            if not first.ok:
+                return first
         result = self.tools.execute(
             ToolCall(
                 id="native",
@@ -221,7 +235,7 @@ class Driver:
         )
         if result.error:
             return Outcome("refused", kind, result.error)
-        before = self.steps
+        before = started
         stage = command.get("stage", kind)
         monitored = command.get("monitor_mm")
         target, final = result.target, result.chunk.actions[-1]
@@ -306,6 +320,16 @@ class Driver:
                 break
         self.record_observation()
         later = "inspect and choose another command; later stages did not run"
+        if arm_state == "stalled" and command.get("contact_ok"):
+            state = self.observation.state["eef_state"]
+            level = float(np.linalg.norm(state[:2] - target[:2]))
+            above = float(state[2] - target[2])
+            # Stopped over the pose with only height left to go: the palm met the object or the
+            # fingertips met the table. A hand pushed aside is still a failed approach.
+            if level <= ARM_TOLERANCE[0] and errors()[1] <= ARM_TOLERANCE[1] and above > 0:
+                data = report("stopped_on_contact")
+                data["above_request_m"] = round(above, 4)
+                return Outcome("done", kind, "the descent met contact above the requested height", data)
         if arm_state != "arrived":
             stalled = arm_state == "stalled"
             data = report("not_approaching" if stalled else "still_converging")

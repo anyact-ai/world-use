@@ -239,12 +239,14 @@ def main():
         offset = float(np.linalg.norm(np.subtract(last["requested"][:3], last["approved"][:3])))
         assert offset > 0.005 and abs(reversal["applied"]["last_command_position_offset_m"] - offset) < 1e-3
         # The same selected region across two real lifts: left behind, then carried by the hand.
-        for grasp, unchanged in ((wrong, True), (held, False)):
+        for grasp in (wrong, held):
             assert [s["status"] for s in grasp["stages"]] == ["done"] * 5 and grasp["checkpoint"] == "after"
-            evidence = grasp["assessments"][-1]["outcome"]
-            assert evidence["kind"] == "lift_evidence" and evidence["data"]["unchanged"] is unchanged
-        assert wrong["status"] == "surprise" and held["status"] == "done"
-        assert held["assessment"] == "passed_caller_checks" and not held["completion_verified"]
+        left = wrong["assessments"][-1]["outcome"]
+        assert wrong["status"] == "surprise" and left["kind"] == "lift_evidence" and left["data"]["unchanged"]
+        # A region that moved proves nothing, so the held grasp reports as an unassessed one does.
+        carried = next(t for t in held["observations"]["after"]["targets"] if t["target"] == "fixture_object")["motion"]
+        assert held["status"] == "done" and held["assessment"] == "unknown" and not held["completion_verified"]
+        assert carried["mask_iou"] < 0.9 and all(a["outcome"]["kind"] == "not_assessed" for a in held["assessments"])
         # Selection and repeated observation share the actual simulator capture.
         assert outcomes[0]["frame"] == outcomes[1]["frame"]
         observed = outcomes[2]["targets"]
@@ -256,10 +258,7 @@ def main():
             world_use=augmented,
             empty_grasp_stopped_before_lift=True,
             applied_command_offset_reported_m=offset,
-            lift_evidence=dict(
-                left_behind=wrong["assessments"][-1]["outcome"]["data"],
-                carried=held["assessments"][-1]["outcome"]["data"],
-            ),
+            lift_evidence=dict(left_behind=left["data"], carried_mask_iou=carried["mask_iou"]),
             initial_observations_identical=True,
             repeated_capture_regions_identical=True,
         )
