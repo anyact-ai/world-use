@@ -239,13 +239,46 @@ success predicates are altered.
 
 ## Paid results
 
+At `c418a71` the three basket tasks, 0, 1 and 7, were each run on development
+states 0 and 1, one matched pair per task and state:
+
+| | raw Sol | World Use |
+|---|---|---|
+| episodes that satisfied the success check | 2 of 6 | 6 of 6 |
+| how the others ended | gave up 3, claimed done 1 | |
+| model calls, total and median | 260, 43.5 | 71, 12.5 |
+| counted steps | 3,651 | 3,659 |
+| input and output tokens | 1,841,150 and 25,654 | 390,582 and 6,371 |
+| estimated cost at the assumed prices | $3.30 | $0.42 |
+| wall time | 2,914 s | 2,140 s |
+
+On the two pairs in which both arms succeeded, the World Use arm used 74% fewer
+calls and 79% fewer input tokens, and 16% more steps.
+
+What this does not show:
+
+- Each cell is one episode. Sol's raw outcomes on task 0 state 0 across four runs
+  were two successes, one false completion and one give-up.
+- These states are the ones the tools were developed on. Task 0 state 0 had been
+  run with three earlier versions of the World Use arm, which failed twice, and
+  tasks 1 and 7 once each. Held-out state 2 has not been run.
+- The other seven LIBERO-10 tasks have not been run. They need mugs, a bowl,
+  moka pots and a book grasped, and drawers, a stove knob and a microwave door
+  operated, none of which a paid run has tried. In scripted trials at `c418a71`
+  ([grasp-evidence.jsonl](grasp-evidence.jsonl)) a grasp offset by the object's
+  half-width lifted one mug in 5 of 6 attempts and the other in none of 6, a
+  moka pot in 3 of 6, and the bowl in none of 3.
+- The World Use arm is told the wrist camera's mount and the hand's dimensions.
+  The raw arm is not.
+
 [paid-results.jsonl](paid-results.jsonl) has one row per arm of every paid pair,
 with the commit that produced it, how the episode ended, calls, counted steps,
 wall time, tokens and estimated cost at the assumed prices. The raw arm is the
 same condition at every commit; the World Use arm is the tree at that commit.
 Wall times were not controlled for other load on the machine. A pair in which
 the transport refused a request has one row, for the arm that was running, and
-no result for either arm.
+no result for either arm. All pairs together cost an estimated $10.09, $15.42
+at the conservative rate the transport reserves.
 
 | commit | task | state | arm | ended | calls | steps | est. USD |
 |---|---|---|---|---|---|---|---|
@@ -261,8 +294,15 @@ no result for either arm.
 | `72d0fca` | 1 | 0 | raw | stopped by the spending guard | 60 | 828 | 1.05 |
 | `72d0fca` | 1 | 1 | raw | step limit | 52 | 900 | 0.75 |
 | `72d0fca` | 1 | 1 | World Use | success | 11 | 708 | 0.07 |
-
-These are single episodes on development states. The two earlier World Use
-failures on task 0 are what the sections above were written from, so later
-successes on that task and state are not independent evidence. Held-out state 2
-has not been run.
+| `c418a71` | 0 | 0 | raw | gave up | 54 | 744 | 0.82 |
+| `c418a71` | 0 | 0 | World Use | success | 13 | 610 | 0.08 |
+| `c418a71` | 0 | 1 | raw | claimed done, not successful | 36 | 522 | 0.37 |
+| `c418a71` | 0 | 1 | World Use | success | 13 | 576 | 0.08 |
+| `c418a71` | 1 | 0 | raw | gave up | 53 | 669 | 0.79 |
+| `c418a71` | 1 | 0 | World Use | success | 12 | 650 | 0.07 |
+| `c418a71` | 1 | 1 | raw | success | 34 | 462 | 0.32 |
+| `c418a71` | 1 | 1 | World Use | success | 13 | 784 | 0.08 |
+| `c418a71` | 7 | 0 | raw | success | 51 | 641 | 0.68 |
+| `c418a71` | 7 | 0 | World Use | success | 9 | 497 | 0.04 |
+| `c418a71` | 7 | 1 | raw | gave up | 32 | 613 | 0.32 |
+| `c418a71` | 7 | 1 | World Use | success | 11 | 542 | 0.06 |
