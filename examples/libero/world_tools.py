@@ -15,6 +15,7 @@ from native import ARM_TOLERANCE, fingerprint
 from world_use import procedures
 from world_use.behaviors import Outcome
 from world_use.cameras import View
+from world_use.parallax import Look, locate
 from world_use.tracking import Tracking
 from world_use.vision_worker import TrackerProcess
 
@@ -94,44 +95,26 @@ UNCHANGED_SHIFT_PER_M = 0.3
 
 
 # The wrist camera in the tool frame, from the embodiment's camera mount: a 75 degree field of view
-# looking along the approach axis from 5 cm along tool y and 9.7 cm behind the grasp point. The
-# grasp point is therefore not at the image centre. Published wrist images have their rows flipped.
-WRIST_FOCAL_PX, WRIST_SIZE = 166.8128, 256
-WRIST_IN_TOOL = np.array([[-1.0, 0, 0, 0], [0, -1.0, 0, 0.05], [0, 0, 1.0, -0.097], [0, 0, 0, 1.0]])
-BASELINE_M = 0.03  # least distance between two looks at a region before its depth is trusted
-SIDESTEP_M = 0.045  # a step that leaves the looks that far apart even when the arm arrives short
-CENTRE_MOVES = 5
+# looking along the approach axis from 5 cm along tool y and 9.7 cm behind the grasp point, so the
+# grasp point is not at the image centre. Published wrist images have their rows flipped, which the
+# negative focal length and mirrored row offset say.
+WRIST = View(
+    [[-1.0, 0, 0, 0], [0, -1.0, 0, 0.05], [0, 0, 1.0, -0.097], [0, 0, 0, 1.0]], 166.8128, -166.8128, 128, 127, 256, 256
+)
 OPEN_MM = [70, 85]  # fingers this far apart have let go, or made room, even while they still creep
-CUT_OFF_DROP_M = 0.25
-BELOW_CAMERA_M = 0.05  # nearer than this the lens shows only the hand
 CLOSE_STEPS = 120
 SETTLE_STEPS = 40  # raised high above the table the arm needs about 25 steps to stop swinging
 
 
 def wrist_view(eef_state):
-    """The wrist camera as a pinhole view in the world frame, for a measured tool pose."""
+    """The wrist camera, as its published image shows the scene, in the world frame for a measured tool pose."""
     a, b = np.asarray(eef_state[3:6], float), np.asarray(eef_state[6:9], float)
     a = a / np.linalg.norm(a)
     b = b - a * (a @ b)
     b = b / np.linalg.norm(b)
     tool = np.eye(4)
     tool[:3, :3], tool[:3, 3] = np.stack([a, b, np.cross(a, b)], axis=1), eef_state[:3]
-    half = WRIST_SIZE / 2
-    return View(tool @ WRIST_IN_TOOL, WRIST_FOCAL_PX, WRIST_FOCAL_PX, half, half, WRIST_SIZE, WRIST_SIZE)
-
-
-def wrist_ray(eef_state, pixel):
-    """World origin and unit direction of the wrist camera's ray through a published wrist pixel."""
-    view = wrist_view(eef_state)
-    origin = view.T[:3, 3]
-    direction = view.unproject([pixel[0], WRIST_SIZE - 1 - pixel[1]], 1.0) - origin
-    return origin, direction / np.linalg.norm(direction)
-
-
-def nearest_point(rays):
-    """The point closest, in the least-squares sense, to every ray."""
-    normal = [np.eye(3) - np.outer(d, d) for _, d in rays]
-    return np.linalg.solve(sum(normal), sum(n @ o for n, (o, _) in zip(normal, rays, strict=True)))
+    return WRIST.on(tool)
 
 
 def region_evidence(target, reference, after, hand_from=None):
@@ -379,82 +362,36 @@ class WorldTools:
     def _centre(self, name, stage, floor_z=None):
         """Move the hand level until it is over a region tracked in the wrist camera.
 
-        One look fixes only a direction, so the hand looks again from at least BASELINE_M away
-        and the region is placed where the rays meet. Returns its position, or the Outcome
-        that stopped the search. Every move is a counted, settled native move. Given the lowest
-        height a grasp allows, the moves also open the fingers; otherwise they leave them alone.
+        Returns the region's position, or the Outcome that stopped the search. Every move is a
+        counted, settled native move. Given the lowest height a grasp allows, the first move
+        heads for a little above it and the moves also open the fingers; otherwise they leave
+        them alone.
         """
         hand = dict(gripper=0) if floor_z is not None else {}
-        rays, moves, stalls, fix, whole = [], 0, 0, None, False
-        while True:
+
+        def look():
             seen = next((t for t in self.observe()["targets"] if t["target"] == name), {})
             state = self.driver.observation.state["eef_state"]
             visible = seen.get("valid") is True and bool(seen.get("center"))
-            x0, y0, x1, y1 = seen.get("bbox") or [0] * 4
-            entire = visible and min(x0, y0) > 0 and max(x1, y1) < WRIST_SIZE - 1
-            if entire and not whole:
-                # The centre of a region the image border cut off is not the region's centre. Those
-                # looks led the hand here; the position comes from looks at all of it.
-                rays, fix, whole = [], None, True
-            if entire or (visible and not whole):
-                rays.append(wrist_ray(state, seen["center"]))
-                if max(float(np.linalg.norm(a - b)) for a, _ in rays for b, _ in rays) >= BASELINE_M:
-                    fix = nearest_point(rays)
-                    # Looks at a region whose outline changed between them can meet anywhere,
-                    # even behind the camera. What the camera looks down on is below it.
-                    if fix[2] > min(origin[2] for origin, _ in rays) - BELOW_CAMERA_M:
-                        fix = None
-            if fix is not None:
-                # The last look was taken from over the region once the hand has arrived at it. A
-                # region the tracker drops after its position is fixed keeps that position.
-                if not visible or moves >= CENTRE_MOVES or np.linalg.norm(fix[:2] - state[:2]) <= ARM_TOLERANCE[0]:
-                    found = dict(x=float(fix[0]), y=float(fix[1]), z=float(fix[2]), looks=len(rays), moves=moves)
-                    if not visible:
-                        return dict(found, region="lost after these looks")
-                    u, v = wrist_view(state).project(fix)[0][0]
-                    found["pixel"] = [round(float(u)), round(WRIST_SIZE - 1 - float(v))]
-                    if entire:
-                        # A whole region seen from above: its box scales with the camera's height over it.
-                        scale = 1000 * (rays[-1][0][2] - fix[2]) / WRIST_FOCAL_PX
-                        found["extent_mm"] = [round((x1 - x0) * scale), round((y1 - y0) * scale)]
-                    elif not whole:
-                        found["region"] = "cut off by the image border in every look"
-                    return found
-                goal = fix[:2]
-            elif not visible:
-                return Outcome(
-                    "surprise",
-                    "centre",
-                    "the selected region is not visible in the wrist image",
-                    dict(moves=moves),
-                    hint="hover with the object in the wrist view and select it there; later stages did not run",
-                )
-            elif moves >= CENTRE_MOVES:
-                return Outcome(
-                    "stopped", "centre", "the region could not be placed from the wrist views", dict(moves=moves)
-                )
-            else:
-                # One look gives a direction. Head for where it meets an assumed height: a little
-                # above the lowest height a grasp allows, or a quarter metre below the camera for
-                # a region the image border cuts off. A whole region with no height to assume
-                # needs only a second look from a sidestep away.
-                origin, direction = rays[-1]
-                drop = origin[2] - floor_z - 0.05 if floor_z is not None else None if whole else CUT_OFF_DROP_M
-                toward, step = direction[:2], SIDESTEP_M
-                if drop is not None:
-                    toward = (origin - direction * (drop / direction[2]))[:2] - state[:2]
-                    step = max(float(np.linalg.norm(toward)), SIDESTEP_M)
-                distance = float(np.linalg.norm(toward))
-                goal = state[:2] + (toward / distance if distance > 1e-6 else np.array([1.0, 0.0])) * step
-            moved = self.driver.execute(
-                self._move(dict(x=float(goal[0]), y=float(goal[1]), **hand), stage, expected=OPEN_MM if hand else None)
-            )
-            moves += 1
-            if not moved.ok:
-                # A goal past the arm's reach, as a first guess can be, still brings a new look.
-                stalls += 1
-                if stalls > 1 or moved.data.get("arm") != "not_approaching":
-                    return moved
+            return Look(wrist_view(state), state[:3], *((seen["center"], seen.get("bbox")) if visible else ()))
+
+        def move(goal):
+            targets = dict(x=float(goal[0]), y=float(goal[1]), **hand)
+            return self.driver.execute(self._move(targets, stage, expected=OPEN_MM if hand else None))
+
+        found = locate(
+            move,
+            look,
+            camera="wrist",
+            arrive_m=ARM_TOLERANCE[0],
+            assumed_z=None if floor_z is None else floor_z + 0.05,
+        )
+        if not found.ok:
+            return found
+        extent = found.data.pop("extent_m", None)
+        if extent:
+            found.data["extent_mm"] = [round(1000 * side) for side in extent]
+        return found.data
 
     def _result(self, data, told=None):
         """Record the full result and return the policy its brief copy."""

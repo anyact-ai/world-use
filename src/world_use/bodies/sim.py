@@ -221,12 +221,13 @@ class SimBody:
     def render(self, view):
         return self._capture(view, depth=False)[0]
 
-    def capture(self, view):
-        """RGB, optical-z depth and the tool pose from one physics snapshot, without advancing the scene."""
-        (rgb, depth), tool, timestamp = self._capture(view, depth=True)
+    def capture(self, view, *, mounted=False):
+        """RGB, optical-z depth and the tool pose from one physics snapshot, without advancing the scene.
+        A mounted view is given in the tool frame and rendered from that snapshot's tool pose."""
+        (rgb, depth), tool, timestamp = self._capture(view, depth=True, mounted=mounted)
         return rgb, depth, tool, timestamp
 
-    def _capture(self, view, *, depth):
+    def _capture(self, view, *, depth, mounted=False):
         import time
 
         from .mujoco_render import CameraRenderer
@@ -237,6 +238,8 @@ class SimBody:
             mj.mj_copyData(data, model, self.data)
             timestamp = time.monotonic()
             tool = self.chain.fk(self.q).copy()
+            if mounted:
+                view = view.on(tool)
             if self._renderer is None:
                 self._renderer = CameraRenderer()
             renderer = self._renderer

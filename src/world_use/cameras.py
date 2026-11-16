@@ -165,7 +165,11 @@ def unpack(data: str, size: int) -> bytes:
 
 @dataclass(frozen=True)
 class View:
-    """A pinhole camera: its pose in the base frame (x right, y down, z along the view) and its intrinsics."""
+    """A pinhole camera: its pose in the base frame (x right, y down, z along the view) and its intrinsics.
+
+    A negative focal length describes an image published mirrored (fx) or with its rows flipped (fy), so
+    that pixels and points still convert both ways without the caller turning the image first.
+    """
     T: np.ndarray
     fx: float
     fy: float
@@ -180,8 +184,8 @@ class View:
                 or not np.allclose(T[:3, :3].T @ T[:3, :3], np.eye(3), atol=1e-5)
                 or not np.isclose(np.linalg.det(T[:3, :3]), 1, atol=1e-5)):
             raise ValueError("camera pose must be a rigid 4x4 transform")
-        if not np.isfinite([self.fx, self.fy, self.cx, self.cy]).all() or min(self.fx, self.fy) <= 0:
-            raise ValueError("camera intrinsics must be finite with positive focal lengths")
+        if not np.isfinite([self.fx, self.fy, self.cx, self.cy]).all() or not self.fx or not self.fy:
+            raise ValueError("camera intrinsics must be finite with nonzero focal lengths")
         if any(isinstance(v, bool) or not isinstance(v, int) or v <= 0 for v in (self.width, self.height)):
             raise ValueError("camera dimensions must be positive integers")
         T.flags.writeable = False
@@ -223,6 +227,11 @@ class View:
         s = width / self.width
         return View(self.T, self.fx * s, self.fy * s, width / 2 + (self.cx - self.width / 2) * s,
                     height / 2 + (self.cy - self.height / 2) * s, width, height)
+
+    def on(self, parent) -> View:
+        """This view, given in a moving frame such as the tool's, for that frame's pose in the base frame.
+        A camera fixed to the hand is one view in the tool frame and a new base-frame view for each tool pose."""
+        return replace(self, T=np.asarray(parent, float) @ self.T)
 
     def project(self, pts) -> tuple[np.ndarray, np.ndarray]:
         """Pixels of base-frame points, and each point's depth along the view (<= 0 means behind the camera)."""
@@ -378,6 +387,26 @@ class SimCamera(Camera):
         image, distance, tool, timestamp = self.body.capture(self.lens)
         return Frame(image, self.name, timestamp=timestamp, view=view, depth=distance, calibration=revision,
                      tool=tool)
+
+
+class MountedSimCamera(SimCamera):
+    """A simulated camera fixed to the tool. `mount` is its view in the tool frame; each frame carries the
+    base-frame view for the tool pose of the same physics state. The calibration identity stands for the
+    unchanged mount."""
+
+    def __init__(self, name: str, mount: View, body):
+        super().__init__(name, mount, body)
+        self.mount = mount
+
+    def snap(self, k) -> Image.Image:
+        return self.capture(k).image
+
+    def capture(self, k, *, depth=False) -> Frame:
+        image, distance, tool, timestamp = self.body.capture(self.mount, mounted=True)
+        view = self.mount.on(tool)
+        self._calibration = (view, self.calibration_id)
+        return Frame(image, self.name, timestamp=timestamp, view=view, depth=distance if depth else None,
+                     calibration=self.calibration_id, tool=tool)
 
 
 def equirect_dirs(u, v) -> np.ndarray:

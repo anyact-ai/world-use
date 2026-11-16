@@ -196,6 +196,32 @@ verify object identity, retention, or support. Inspect the RGB and reacquire a l
 do not interpret a new mask after loss as proof that it is the same object. Task programs can record
 the returned image evidence alongside their commands using the existing task recorder.
 
+## Positions from a camera on the hand
+
+A camera fixed to the hand measures no depth, but its pose follows from the tool pose in every frame.
+Describe it once as a `View` in the tool frame; `mount.on(tool_pose)` is the base-frame view for a measured
+tool pose. A negative focal length describes an image published mirrored (`fx`) or with its rows flipped
+(`fy`), so pixels and points convert both ways without turning the image.
+
+`world_use.parallax` turns looks at one tracked region into a position. One look fixes a ray;
+`triangulate(looks)` returns the point nearest the rays once two camera positions are 3 cm apart and the
+point lies at least 5 cm in front of every one, and otherwise nothing. `locate(move, look, camera=...,
+arrive_m=...)` is the bounded loop around it: look, move the hand level, look again, until the hand is
+over the point the looks fix. `look()` returns a `Look` (the frame's view, the tool point and the region's
+centre and box in native pixels); `move(xy)` runs through your own executor and returns its `Outcome`.
+Like the [manipulation procedures](adapters.md#bounded-manipulation-procedures) it sends no command
+itself, so it works over the kernel client or another controller. A done result has `x, y, z` in the base
+frame, the looks and moves it took, and `pixel` and `extent_m` when the whole region is in view.
+
+Only looks at the whole region place it once one has been had: the centre of a region the image border
+cuts off is not the region's centre. The result is a position of the region the tracker follows, with the
+tracker's errors in it. It has no measurement `id`, and it is invalidated by the object moving, not by age.
+
+`MountedSimCamera(name, mount, body)` renders such a camera in the simulator from the tool pose of the same
+physics state. [`tests/test_parallax.py`](../tests/test_parallax.py) locates a block with it to within a
+centimetre and picks it up there, with the kernel told nothing about the block. The
+[LIBERO runner](../examples/libero) uses the same functions for a simulated Panda's wrist camera.
+
 ## Records
 
 Each measurement adds one `measurement` event and two files to the run: `perception/<id>.png`, the picture
@@ -212,7 +238,9 @@ but object pose estimation, feature correspondence and grasp selection remain ta
 Calibration accuracy limits every measurement. `requires` checks age, calibration and withdrawal;
 it cannot detect an unobserved scene change.
 
-Workcell camera configuration assumes a fixed camera pose. The kitchen examples provide a custom
+Workcell camera configuration assumes a fixed camera pose; a camera on the hand is constructed in Python.
+The kitchen examples provide a custom
 [wrist camera](../examples/robocasa-lunchbox/sensor_views.py) that captures RGB-D, camera pose and tool pose
 from the same simulation state. Its calibration identity describes the mounting and intrinsics;
-each frame carries the current camera transform. Physical wrist-camera calibration is not implemented.
+each frame carries the current camera transform. Physical wrist-camera calibration is not implemented,
+and a position from parallax is only as good as the mount it is given.

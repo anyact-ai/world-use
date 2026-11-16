@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -63,10 +64,9 @@ class Scripted(AzureBudget):
 
                 def in_wrist(at):
                     # Where the top of a can at this fixture position appears from the measured pose.
-                    u, v = wrist_view(self.driver.observation.state["eef_state"]).project([at["x"], at["y"], 0.51])[0][
-                        0
-                    ]
-                    return dict(camera="wrist", point=[float(u), 255 - float(v)])
+                    view = wrist_view(self.driver.observation.state["eef_state"])
+                    u, v = view.project([at["x"], at["y"], 0.51])[0][0]
+                    return dict(camera="wrist", point=[float(u), float(v)])
 
                 aside = dict(x=tomato["x"] + 0.04, y=tomato["y"] - 0.03)
                 tomato_box = dict(camera="agentview", box=[95, 120, 125, 161])
@@ -192,6 +192,23 @@ def reference(folder, transport):
         env.close()
 
 
+def scripted_fingerprint(folder, steps):
+    """What a change that should not alter behaviour must leave alone in the scripted episode:
+    the commands the simulator applied, every result the policy was told and the prompt it was given."""
+    told = [m["content"] for m in json.loads((folder / "transcript.json").read_text()) if m["role"] == "tool"]
+    applied = [[round(v, 9) for v in step["approved"]] for step in steps]
+
+    def digest(value):
+        return hashlib.sha256(json.dumps(value).encode()).hexdigest()
+
+    return dict(
+        steps=len(steps),
+        applied_commands_sha256=digest(applied),
+        told_results_sha256=digest(told),
+        system_prompt_sha256=hashlib.sha256((folder / "system-prompt.txt").read_bytes()).hexdigest(),
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
@@ -308,6 +325,7 @@ def main():
             wrist_placement_error_m={k: round(v, 4) for k, v in placed.items()},
             initial_observations_identical=True,
             repeated_capture_regions_identical=True,
+            scripted_world_use=scripted_fingerprint(args.output / "world_use", actual_steps),
         )
     finally:
         transport.dispose()

@@ -9,7 +9,7 @@ import pytest
 from world_use import Kernel, VirtualClock, World, bodies, views
 from world_use.bodies.mujoco_scene import mj
 from world_use.bodies.rebot import MANIFEST
-from world_use.cameras import View
+from world_use.cameras import MountedSimCamera, View
 from world_use.config import load_robot, load_workcell
 from world_use.examples.pick_place import pickup, setup
 
@@ -137,6 +137,35 @@ def test_camera_projection_matches_off_axis_intrinsics_and_does_not_step_physics
         assert body.t == 0 and body.data.time == 0
     finally:
         body.close()
+
+
+@pytest.mark.rendering
+def test_a_camera_fixed_to_the_tool_sees_from_wherever_the_tool_is():
+    k, truth = setup()
+    # Looks straight down from 5 cm ahead of the fingertips and 4 cm above them.
+    mount = View([[0, 1, 0, 0.05], [1, 0, 0, 0], [0, 0, -1, 0.04], [0, 0, 0, 1]], 208.5, 208.5, 160, 120, 320, 240)
+    camera = MountedSimCamera("wrist", mount, k.body)
+    top = truth.boxes["block"].pose[:3, 3] + [0, 0, 0.05]
+    try:
+        k.enable()
+        heights = []
+        for rise in (0.14, 0.03):
+            assert k.run({"do": "line", "up": rise}).ok
+            frame = camera.capture(k, depth=True)
+            # The view is the mount carried by the tool pose of the same physics state.
+            np.testing.assert_allclose(frame.view.T, mount.on(frame.tool).T, atol=1e-12)
+            picture = np.asarray(frame.image).astype(float)
+            ys, xs = np.nonzero((picture[..., 0] > 200) & (picture[..., 0] > 1.5 * picture[..., 2]))
+            assert len(xs) > 200
+            (expected,), (depth,) = frame.view.project(top)
+            np.testing.assert_allclose([xs.mean(), ys.mean()], expected, atol=3)
+            assert np.nanmedian(frame.depth[ys, xs]) == pytest.approx(depth, abs=3e-3)
+            heights.append(frame.view.T[2, 3])
+        assert heights[1] - heights[0] == pytest.approx(0.03, abs=5e-3) and camera.calibration_id == frame.calibration
+        with pytest.raises(ValueError, match="mirrored"):
+            k.body.render(View(frame.view.T, -208.5, 208.5, 160, 120, 320, 240))
+    finally:
+        k.close()
 
 
 def test_an_incompatible_gripper_mapping_is_rejected():

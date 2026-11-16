@@ -36,6 +36,8 @@ class CameraRenderer:
     def _render(self, model, data, view, depth):
         if self.closed:
             raise RuntimeError("simulation camera is closed")
+        if view.fx < 0 or view.fy < 0:
+            raise ValueError("the simulator renders no mirrored image: give the lens positive focal lengths")
         size = (view.width, view.height)
         if self.model is not model or self.size != size:
             self._close()

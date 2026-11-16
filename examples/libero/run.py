@@ -38,10 +38,11 @@ MIRRORED = (
 
 
 def source_hashes():
+    """Every file here that decides what a run does. validation.json is the record of these, not one of them."""
     return {
         p.name: hashlib.sha256(p.read_bytes()).hexdigest()
         for p in sorted(SOURCE.iterdir())
-        if p.suffix in (".py", ".txt")
+        if p.suffix in (".py", ".txt", ".toml", ".json") and p.name != "validation.json"
     }
 
 
@@ -50,9 +51,10 @@ def runtime_manifest():
     import inspect_robots_agent.policy as native_policy
     import inspect_robots_libero.embodiment as embodiment
 
-    from world_use import procedures, tracking, vision
+    import world_use
+    from world_use import vision
 
-    modules = (native_tools, native_policy, embodiment, procedures, tracking, vision)
+    modules = (native_tools, native_policy, embodiment)
     package_versions = {d.metadata["Name"]: d.version for d in distributions()}
     simulator = subprocess.check_output(
         [
@@ -65,7 +67,13 @@ def runtime_manifest():
     )
     paths = {m.__name__: Path(m.__file__) for m in modules}
     paths["native_simulator_worker"] = Path(embodiment.__file__).with_name("_worker.py")
+    # The whole library, so a change to any module the tools use invalidates the validation.
+    library = hashlib.sha256()
+    for path in sorted(Path(world_use.__file__).parent.rglob("*.py")):
+        library.update(path.relative_to(Path(world_use.__file__).parent).as_posix().encode())
+        library.update(path.read_bytes())
     return dict(
+        world_use_sha256=library.hexdigest(),
         agent_packages=package_versions,
         simulator_packages=json.loads(simulator),
         installed_source_sha256={name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in paths.items()},
