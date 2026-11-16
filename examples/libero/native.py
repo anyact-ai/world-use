@@ -186,7 +186,8 @@ class Driver:
         or stopped short, the fingers reached their end or stopped apart. Motion still
         under way at the bound is reported as such, not as a stable result.
 
-        A stage may ask for three things a raw move does not do. above_first moves level
+        A stage may ask for four things a raw move does not do. travel_z first rises
+        straight up to that height when the hand is below it. above_first moves level
         to above the pose and settles there before descending, so the hand comes straight
         down. contact_ok accepts a descent that contact stopped directly above the pose.
         rise_m replaces the target height with the measured height plus that rise.
@@ -216,11 +217,14 @@ class Driver:
         targets, started = command["targets"], self.steps
         if command.get("rise_m") is not None:
             targets = {**targets, "z": float(self.observation.state["eef_state"][2]) + command["rise_m"]}
+        legs = {**command, "travel_z": None, "above_first": False, "contact_ok": False, "rise_m": None}
+        travel = command.get("travel_z")
+        if travel is not None and travel - float(self.observation.state["eef_state"][2]) > ARM_TOLERANCE[0]:
+            rise = self.execute({**legs, "targets": {"z": travel}})
+            if not rise.ok:
+                return rise
         if command.get("above_first") and "z" in targets and len(targets) > 1:
-            level = {k: v for k, v in targets.items() if k != "z"}
-            first = self.execute(
-                {**command, "targets": level, "above_first": False, "contact_ok": False, "rise_m": None}
-            )
+            first = self.execute({**legs, "targets": {k: v for k, v in targets.items() if k != "z"}})
             if not first.ok:
                 return first
         result = self.tools.execute(
@@ -333,6 +337,11 @@ class Driver:
         if arm_state != "arrived":
             stalled = arm_state == "stalled"
             data = report("not_approaching" if stalled else "still_converging")
+            if stalled:
+                # Where the hand stopped relative to the request tells a blocked descent from a shove.
+                state = self.observation.state["eef_state"]
+                data["above_request_m"] = round(float(state[2] - target[2]), 4)
+                data["aside_m"] = round(float(np.linalg.norm(state[:2] - target[:2])), 4)
             return Outcome(
                 "surprise" if stalled else "stopped",
                 kind,
@@ -357,10 +366,13 @@ class Driver:
         data = report("arrived", hand and ("reached_end" if hand_state == "arrived" else "stopped_apart"))
         expected = command.get("expect_mm")
         if hand is not None and expected and not expected[0] <= data["aperture_mm"] <= expected[1]:
+            empty = closing and hand_state == "arrived"
             return Outcome(
                 "surprise",
                 kind,
-                "the gripper stopped outside the expected opening",
+                "the fingers closed fully: nothing is between them at this pose"
+                if empty
+                else "the gripper stopped outside the expected opening",
                 data,
                 list(expected),
                 data["aperture_mm"],

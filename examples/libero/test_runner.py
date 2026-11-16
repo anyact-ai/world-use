@@ -12,7 +12,7 @@ from inspect_robots.types import Observation, StepResult
 from inspect_robots_agent._llm import ToolCall
 from inspect_robots_libero.embodiment import LiberoEmbodiment
 from native import Driver, Frames, fingerprint
-from world_tools import WorldTools
+from world_tools import WorldTools, wrist_view
 
 from world_use.behaviors import Outcome
 
@@ -263,8 +263,6 @@ def grasp(tools, **extra):
         ("agentview", STAYED, "surprise", "unknown"),
         # A region that moved is no confirmation, so the grasp reports as it would unassessed.
         ("agentview", MOVED, "done", "unknown"),
-        # The wrist camera rises with the hand, so a held object's region stays put there.
-        ("wrist", STAYED, "done", "unknown"),
     ],
 )
 def test_grasp_reports_a_selected_region_that_stayed_behind_the_lift(camera, motion, status, assessment):
@@ -276,6 +274,77 @@ def test_grasp_reports_a_selected_region_that_stayed_behind_the_lift(camera, mot
     assert tools.driver.commands[-1]["kind"] == "check_grip"
     if status == "surprise":
         assert result["checkpoint"] == "after" and result["observed"] == dict(mask_iou=0.97, center_shift_px=0.58)
+
+
+def wrist_scene(tools, thing, visible=lambda looks: True):
+    """A fixed point seen by the wrist camera of the fixture's hand, which starts 20 cm above it."""
+    driver, looks = tools.driver, []
+    driver.pose.update(z=0.65)
+
+    def eef():
+        # Tool y along world x and the approach axis straight down, as at the start of an episode.
+        return np.array([*driver.pose.values(), 0, 1, 0, 1, 0, 0, 0], dtype=float)
+
+    def look(names):
+        looks.append(driver.steps)
+        driver.observation.state["eef_state"][:] = eef()
+        if not visible(len(looks)):
+            return [dict(target=n, valid=False, tracking="lost") for n in names]
+        u, v = wrist_view(eef()).project(thing)[0][0]
+        return [dict(target=n, valid=True, camera="wrist", center=[float(u), 255 - float(v)]) for n in names]
+
+    tools.tracking.observe = look
+    tools.tracking.targets["object"]["camera"] = "wrist"
+
+
+def test_a_wrist_selection_centres_the_hand_over_the_region_before_descending():
+    tools = tools_fixture()
+    driver, thing = tools.driver, np.array([0.07, -0.04, 0.45])
+    wrist_scene(tools, thing)
+    result = grasp(tools)
+    approach = next(c for c in driver.commands if c.get("stage") == "grasp_approach")
+    assert result["status"] == "done" and [approach["targets"][k] for k in "xy"] == pytest.approx(thing[:2], abs=2e-3)
+    # The region was placed from looks at least 3 cm apart, and the policy is told where it is.
+    assert [c["stage"] for c in driver.commands[:2]] == ["grasp_centre", "grasp_centre"]
+    assert result["centred"]["looks"] >= 2 and result["centred"]["z"] == pytest.approx(0.45, abs=5e-3)
+    # A hand left closed by an earlier attempt opens before it comes down.
+    assert approach["targets"]["gripper"] == 0 and driver.commands[0]["targets"]["gripper"] == 0
+    assert "x" not in driver.commands[-2]["targets"] and driver.commands[-2]["rise_m"] == pytest.approx(0.04)
+
+
+def test_a_region_missing_from_the_wrist_view_stops_before_any_descent():
+    tools = tools_fixture()
+    tools.tracking.observe = lambda names: [dict(target=n, valid=False, tracking="lost") for n in names]
+    tools.tracking.targets["object"]["camera"] = "wrist"
+    result = grasp(tools)
+    assert result["status"] == "surprise" and "wrist image" in result["message"] and not tools.driver.commands
+
+
+def test_a_region_the_tracker_drops_after_it_was_placed_keeps_its_position():
+    tools = tools_fixture()
+    thing = np.array([0.07, -0.04, 0.45])
+    wrist_scene(tools, thing, visible=lambda looks: looks <= 2)
+    result = grasp(tools)
+    approach = next(c for c in tools.driver.commands if c.get("stage") == "grasp_approach")
+    assert result["status"] == "done" and result["centred"]["region"].startswith("lost")
+    assert [approach["targets"][k] for k in "xy"] == pytest.approx(thing[:2], abs=5e-3)
+
+
+def test_locate_reports_where_a_wrist_region_is_without_descending():
+    tools = tools_fixture()
+    thing = np.array([-0.06, 0.09, 0.5])
+    wrist_scene(tools, thing)
+    found = json.loads(tools.execute(call("locate", target="object"), tools.driver.observation).note)
+    assert found["status"] == "done"
+    assert [found["located"][k] for k in "xyz"] == pytest.approx(thing, abs=5e-3)
+    # Every move was level, and the hand ended over the region.
+    assert all(c["stage"] == "locate" and "z" not in c["targets"] for c in tools.driver.commands)
+    assert [tools.driver.pose[k] for k in "xy"] == pytest.approx(thing[:2], abs=5e-3)
+    # A region in the fixed camera gives one direction only and no second look.
+    tools.tracking.targets["object"]["camera"] = "agentview"
+    count = len(tools.driver.commands)
+    refused = json.loads(tools.execute(call("locate", target="object"), tools.driver.observation).note)
+    assert refused["status"] == "refused" and "wrist" in refused["message"] and len(tools.driver.commands) == count
 
 
 def test_a_lift_too_small_to_compare_is_not_judged(monkeypatch):
@@ -396,6 +465,15 @@ def test_place_issues_a_release_receipt_unless_the_region_stayed_behind_a_vertic
     assert [c.get("stage") for c in tools.driver.commands] == ["place_approach"]
 
 
+def test_place_passes_its_travel_height_to_the_approach_and_refuses_one_that_is_not_a_height():
+    tools = tools_fixture()
+    request = dict(object_target="object", move={"x": 0.1, "z": 0.45}, withdraw={"z": 0.7}, expect_grip_mm=[5, 70])
+    tools.execute(call("place", travel_z=0.7, **request), tools.driver.observation)
+    assert tools.driver.commands[0]["travel_z"] == 0.7 and tools.pending
+    refused = json.loads(tools.execute(call("place", travel_z="high", **request), tools.driver.observation).note)
+    assert refused["status"] == "refused" and len(tools.driver.commands) == 1
+
+
 class Hand(LiberoEmbodiment):
     """The published hand and arm timing without a simulator.
 
@@ -484,6 +562,8 @@ def test_a_blocked_arm_returns_early_as_not_approaching(tmp_path):
     assert out.status == "surprise" and out.data["arm"] == "not_approaching"
     assert out.observed["position_error_m"] == pytest.approx(0.03, abs=1e-3)
     assert out.data["executed_steps"] < 13 + 10
+    # Where it stopped relative to the request: held up, not shoved aside.
+    assert out.data["above_request_m"] == pytest.approx(0.03, abs=1e-3) and out.data["aside_m"] == 0
 
 
 @pytest.mark.parametrize(
@@ -507,6 +587,26 @@ def test_a_level_first_approach_is_over_the_pose_before_it_descends(tmp_path):
     descent = next(i for i, row in enumerate(rows) if row["approved"][2] < 0.6 - 1e-9)
     assert abs(rows[descent - 1]["state"]["eef_state"][0] - 0.1) <= 0.012
     assert out.ok and out.data["executed_steps"] == len(rows) and out.data["position_error_m"] <= 0.012
+
+
+def test_a_travel_height_is_reached_before_any_level_motion(tmp_path):
+    d = driver(tmp_path)
+    d.execute(stage({"z": 0.5}, "grasp_approach"))
+    start = len((d.output / "steps.jsonl").read_text().splitlines())
+    out = d.execute(stage({"x": 0.1, "z": 0.52}, "place_approach", travel_z=0.62, above_first=True))
+    rows = [json.loads(line) for line in (d.output / "steps.jsonl").read_text().splitlines()][start:]
+    level = next(i for i, row in enumerate(rows) if row["approved"][0] > 1e-9)
+    assert rows[level - 1]["state"]["eef_state"][2] == pytest.approx(0.62, abs=0.012)
+    # The hand then crossed at that height and only came down over the pose.
+    descent = next(i for i, row in enumerate(rows) if i > level and row["approved"][2] < 0.6)
+    assert abs(rows[descent - 1]["state"]["eef_state"][0] - 0.1) <= 0.012
+    assert out.ok and d.observation.state["eef_state"][2] == pytest.approx(0.52, abs=0.012)
+    # A hand already above the travel height does not come down to it.
+    d.execute(stage({"z": 0.66}, "move"))
+    start = len((d.output / "steps.jsonl").read_text().splitlines())
+    d.execute(stage({"x": 0.0, "z": 0.52}, "place_approach", travel_z=0.62, above_first=True))
+    rows = [json.loads(line) for line in (d.output / "steps.jsonl").read_text().splitlines()][start:]
+    assert rows[0]["approved"][2] == pytest.approx(0.66, abs=0.012) and rows[0]["approved"][0] < 0.1
 
 
 def test_feedback_separates_the_request_from_the_command_the_approvers_applied(tmp_path):

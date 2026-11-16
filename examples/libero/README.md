@@ -34,10 +34,12 @@ Three conditions must stay distinguishable in any comparison:
   `run.py` have SHA-256 prefixes `ad8b8fab`, `a21a23f8` and `90a9cfc5`. Evidence
   produced with it belongs to that source.
 - **Candidate World Use**: this tree, recorded as `world-use-candidate-20261116`.
-  It has no paid result. Its differences from the frozen runner are the five
-  below, introduced by separate commits so that an earlier commit can be run as a
+  Its differences from the frozen runner are described below. They were
+  introduced by separate commits so that an earlier commit can be run as a
   narrower condition: settling with applied commands, then the region comparison,
-  then the briefer results and merged selection, then the contact-terminated grasp.
+  then the briefer results and merged selection, then the contact-terminated
+  grasp, then positions from the wrist camera. A paid result belongs to the
+  commit that produced it.
 
 **Settling.** Each leg of a procedure stage repeats its final native pose for at
 most 20 more steps, all counted toward the 900-step limit. It uses the library's `Settling`
@@ -141,6 +143,39 @@ context growth from about 2,500 characters per call to 900. A raw turn adds abou
 the raw arm's. These are character counts from recorded mock requests, not billed
 tokens, and say nothing about how many calls a model needs.
 
+**Positions from the wrist camera.** The first paid pair, task 0 state 0 at
+`6d73def`, went against the candidate: raw Sol satisfied the success check in 49
+calls and 653 steps, and the World Use arm gave up after 21 calls and five failed
+grasps. Both arms had assumed the grasp point is the centre of the wrist image.
+The wrist camera is mounted 5 cm from the grasp axis, so the point under the
+fingers appears near the top of the image, and both arms' first grasps were about
+5 cm off. Raw Sol worked the offset out after 21 calls and two failed grasps.
+
+A `grasp` whose object was selected in the wrist camera now moves the hand level
+until it is over the region and only then descends. One look gives a direction;
+the hand looks again from at least 3 cm away and the region is placed where the
+rays meet, using the camera's mount on the hand. `locate` does the same without
+descending and returns the position, for a destination the policy will carry
+something to. The mount is a constant of the robot read from its model, not of
+any task, and the raw arm is not told it; the docs given to the World Use arm
+state where the grasp point appears in the wrist image.
+
+Starting 5.4 and 5.8 cm off ten cans and flat boxes, with the object's projected
+centre as the selection, the hand was centred within a median 2.4 mm and at most
+10.7 mm, and 17 of 20 grasps lifted the object
+([centring-evidence.jsonl](centring-evidence.jsonl)). Two failures were the hand
+body landing on a milk carton 8 cm from the cream cheese box, which no vertical
+grasp across that box avoids. In the third the tracker dropped a visible region
+on the last 3 mm correction; a region lost after it was placed now keeps its
+position. `grasp` also opens the fingers before it descends, so it can follow a
+failed attempt directly; `place` takes a `travel_z` and rises to it before moving
+level; and an approach that stalls reports how far above and aside of the request
+the hand stopped. With those changes, scripted runs of tasks 0 and 7 from hovers
+5 cm off every object satisfied the success check after 11 calls and 479 steps:
+one `locate` of the basket within 3.5 mm, two wrist-selected grasps, two
+placements, one release and five moves. These are scripted, privileged
+diagnostics of the tools, not of a model using them.
+
 The native terminal hold step is executed and counted. No physics parameters or
 success predicates are altered.
 
@@ -227,7 +262,9 @@ EdgeTAM and LIBERO with synthetic policy responses. It verifies identical initia
 observations and repeated-capture tracking. An empty grasp must stop before lift
 with the hand reported fully closed, a reversed move must report the offset of its
 last applied command, and one selected region must be flagged when another object
-is lifted and pass when its own object is. No model requests leave the mock
+is lifted and pass when its own object is. From hovers 5 cm off, `locate` and a
+wrist-selected `grasp` must each place a can within 1.5 cm of its fixture
+position, and that grasp must hold it. No model requests leave the mock
 transport, and no task success is claimed. Pixel and pose fixtures exist only in
 `validate.py`. `PYTHONPATH` must name the `src` folder of the World Use tree under
 test when the library is not installed in the agent environment.

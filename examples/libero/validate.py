@@ -17,6 +17,7 @@ from inspect_robots_agent.policy import LLMAgentPolicy
 from inspect_robots_libero.embodiment import LiberoEmbodiment
 from inspect_robots_libero.tasks import libero_10_task
 from run import SOURCE, episode, runtime_manifest, source_hashes
+from world_tools import wrist_view
 
 
 class Scripted(AzureBudget):
@@ -60,6 +61,14 @@ class Scripted(AzureBudget):
                         ),
                     )
 
+                def in_wrist(at):
+                    # Where the top of a can at this fixture position appears from the measured pose.
+                    u, v = wrist_view(self.driver.observation.state["eef_state"]).project([at["x"], at["y"], 0.51])[0][
+                        0
+                    ]
+                    return dict(camera="wrist", point=[float(u), 255 - float(v)])
+
+                aside = dict(x=tomato["x"] + 0.04, y=tomato["y"] - 0.03)
                 tomato_box = dict(camera="agentview", box=[95, 120, 125, 161])
                 self.script = [
                     ("select_target", dict(target="fixture_object", **tomato_box)),
@@ -79,17 +88,33 @@ class Scripted(AzureBudget):
                     # A reversal issued while the arm still trails its last command.
                     ("move_to", dict(targets={"z": 0.55})),
                     ("move_to", dict(targets={"z": 0.62})),
+                    # A hover 5 cm off the soup; the wrist views place it and bring the hand over it.
+                    ("move_to", dict(targets=dict(x=soup["x"] + 0.04, y=soup["y"] + 0.03, z=0.64))),
+                    lambda: ("locate", dict(target="fixture_located", select=in_wrist(soup))),
                     # The selected region is the tomato sauce; this grasp lifts the soup instead.
-                    ("move_to", dict(targets={**soup, "z": 0.62})),
                     grasp(soup),
                     ("move_to", dict(targets={"gripper": 0.0})),
                     ("move_to", dict(targets={"z": 0.62})),
                     ("move_to", dict(targets={**tomato, "z": 0.62})),
                     # Reselecting in the grasp call itself must bind the same region.
                     grasp(tomato, select=tomato_box),
+                    # Set it down, hover 5 cm off it and take it again from a wrist selection alone.
+                    ("move_to", dict(targets={"gripper": 0.0})),
+                    ("move_to", dict(targets={**aside, "z": 0.64})),
+                    lambda: (
+                        "grasp",
+                        dict(
+                            object_target="fixture_wrist",
+                            select=in_wrist(tomato),
+                            approach={**aside, "z": 0.49},
+                            lift={**aside, "z": 0.53},
+                            expect_grip_mm=[50, 75],
+                        ),
+                    ),
                     ("give_up", dict(reason="Offline procedure checks complete.", hindsight="none")),
                 ]
-            name, args = self.script[index - 1]
+            entry = self.script[index - 1]
+            name, args = entry() if callable(entry) else entry
             args = dict(args)
             args["note"] = "Synthetic offline fixture; no task-completion claim."
         return httpx.Response(
@@ -217,7 +242,7 @@ def main():
             json.loads(line) for line in (args.output / "world_use/execution/world-use.jsonl").read_text().splitlines()
         ]
         assert all(o["valid"] for o in outcomes[:2])
-        empty, wrong, held = (o for o in outcomes if o.get("procedure") == "grasp")
+        empty, wrong, held, centred = (o for o in outcomes if o.get("procedure") == "grasp")
         # An empty hand is reported at rest, fully closed, before the settling bound and before any lift.
         closed = empty["last_command"]["outcome"]["data"]
         assert empty["status"] == "surprise" and empty["stages"][-1]["stage"] == "close"
@@ -247,6 +272,20 @@ def main():
         carried = next(t for t in held["observations"]["after"]["targets"] if t["target"] == "fixture_object")["motion"]
         assert held["status"] == "done" and held["assessment"] == "unknown" and not held["completion_verified"]
         assert carried["mask_iou"] < 0.9 and all(a["outcome"]["kind"] == "not_assessed" for a in held["assessments"])
+        # From hovers 5 cm off, the wrist views put both cans within the fingers' reach of their true places.
+        (located,) = (o["located"] for o in outcomes if "located" in o)
+        fixtures = dict(soup=(-0.1002, -0.152), tomato=(-0.1173, 0.0557))
+        placed = dict(
+            soup=float(np.hypot(located["x"] - fixtures["soup"][0], located["y"] - fixtures["soup"][1])),
+            tomato=float(
+                np.hypot(
+                    centred["centred"]["x"] - fixtures["tomato"][0], centred["centred"]["y"] - fixtures["tomato"][1]
+                )
+            ),
+        )
+        assert max(placed.values()) < 0.015 and located["looks"] >= 2
+        assert centred["status"] == "done" and [s["status"] for s in centred["stages"]] == ["done"] * 5
+        assert 50 <= centred["observations"]["after"]["aperture_mm"] <= 75
         # Selection and repeated observation share the actual simulator capture.
         assert outcomes[0]["frame"] == outcomes[1]["frame"]
         observed = outcomes[2]["targets"]
@@ -259,6 +298,7 @@ def main():
             empty_grasp_stopped_before_lift=True,
             applied_command_offset_reported_m=offset,
             lift_evidence=dict(left_behind=left["data"], carried_mask_iou=carried["mask_iou"]),
+            wrist_placement_error_m={k: round(v, 4) for k, v in placed.items()},
             initial_observations_identical=True,
             repeated_capture_regions_identical=True,
         )
