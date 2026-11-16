@@ -94,31 +94,19 @@ def test_a_region_the_image_cuts_off_is_placed_only_from_looks_at_all_of_it():
     assert result.data["extent_m"] == pytest.approx([0.18, 0.18], abs=6e-3)
 
 
-@pytest.mark.parametrize(("short", "status"), [(1, "done"), (2, "surprise")])
-def test_one_move_that_ends_short_still_brings_a_new_look(short, status):
-    hand = Hand([0.07, -0.04, 0.45])
-    move, stopped = hand.move, []
-
-    def reach(goal):
-        move(goal)
-        if len(stopped) < short:
-            stopped.append(goal)
-            return Outcome("surprise", "move", "fixture: past the arm's reach")
-        return Outcome("done", "move", "fixture")
-
-    result = locate(reach, hand.look, camera="wrist", arrive_m=0.012)
-    assert result.status == status
-    if result.ok:
-        assert [result.data[k] for k in "xy"] == pytest.approx(hand.thing[:2], abs=5e-3)
-    else:
-        assert len(hand.goals) == 2 and "reach" in result.message
-
-
-def test_a_move_that_did_not_finish_ends_the_search_at_once():
+def test_a_move_that_fails_ends_the_search_with_its_outcome():
     hand = Hand([0.07, -0.04, 0.45])
     result = locate(lambda goal: Outcome("stopped", "move", "still converging"), hand.look, camera="wrist",
                     arrive_m=0.012)
-    assert result.status == "stopped" and hand.looks == 1
+    assert result.status == "stopped" and result.message == "still converging" and hand.looks == 1
+
+
+def test_a_height_to_assume_that_is_not_below_the_camera_is_not_used():
+    # The ray never meets a height above the lens; heading for where it would have leads away from the region.
+    hand = Hand([0.07, -0.04, 0.45])
+    result = found(hand, assumed_z=0.9)
+    assert result.ok and [result.data[k] for k in "xyz"] == pytest.approx(hand.thing, abs=5e-3)
+    assert np.linalg.norm(hand.goals[0]) == pytest.approx(0.045) and hand.goals[0] @ hand.thing[:2] > 0
 
 
 def test_looks_that_meet_behind_the_camera_place_nothing():
@@ -196,16 +184,16 @@ def test_a_region_seen_from_above_gets_its_narrow_width_and_the_direction_across
     assert footprint(view, dominant_region(np.zeros((256, 256), bool)), 0.3) is None
 
 
-def test_rays_from_nearly_one_place_fix_nothing():
+def test_rays_from_nearly_one_place_and_parallel_rays_fix_nothing():
     hand = Hand([0.07, -0.04, 0.45])
     first = hand.look()
     hand.position[:2] += [0.02, 0.0]
     near = hand.look()
     assert triangulate([first, near]) is None
     hand.position[:2] += [0.02, 0.0]
-    fix = triangulate([first, near, hand.look()])
-    assert fix.point == pytest.approx(hand.thing, abs=1e-6) and fix.miss_m < 1e-6
-    assert fix.baseline_m == pytest.approx(0.04) and fix.depth_m == pytest.approx(0.3)
+    assert triangulate([first, near, hand.look()]) == pytest.approx(hand.thing, abs=1e-6)
+    # The same pixel from two places: something that travels with the camera, at no distance at all.
+    assert triangulate([first, Look(hand.view, hand.position.copy(), first.center, first.bbox)]) is None
 
 
 @pytest.mark.rendering

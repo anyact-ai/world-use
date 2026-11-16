@@ -17,10 +17,11 @@ import threading
 import time
 from pathlib import Path
 
-from run import ARMS, ROLES
-
 SOURCE = Path(__file__).resolve().parent
 ROOT = SOURCE.parents[1]
+sys.path.insert(0, str(ROOT / "src"))  # the library of this tree, as the pairs it starts import it
+
+from run import ARMS, ROLES  # noqa: E402
 
 
 def charge(folder: Path) -> tuple[float, bool]:
@@ -141,6 +142,8 @@ def main():
         cases = [tuple(map(int, item.split(":"))) for item in args.cases]
     if unknown := [case for case in cases if case not in ROLES]:
         parser.error(f"not cases in cases.toml: {unknown}")
+    if len(set(cases)) != len(cases):
+        parser.error("a case is listed twice; use --repeats for more pairs of one case")
     held_out = {case for case in cases if ROLES[case] == "held_out"}
     if held_out and not args.held_out_authorization:
         parser.error("held-out cases need --held-out-authorization")

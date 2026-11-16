@@ -469,6 +469,64 @@ def test_a_review_with_few_steps_left_spends_none_on_rising():
     assert review["status"] == "review" and not tools.driver.commands and "raised" not in review["message"]
 
 
+@pytest.mark.parametrize(("stalls", "status"), [(1, "done"), (2, "surprise")])
+def test_one_centring_move_that_stops_short_of_a_guessed_goal_still_brings_a_new_look(stalls, status):
+    tools = tools_fixture()
+    thing = np.array([0.07, -0.04, 0.45])
+    wrist_scene(tools, thing)
+    execute, short = tools.driver.execute, []
+
+    def reach(command):
+        outcome = execute(command)
+        if command.get("stage") == "locate" and len(short) < stalls:
+            short.append(command)
+            return Outcome("surprise", "move", "fixture: past the arm's reach", dict(arm="not_approaching"))
+        return outcome
+
+    tools.driver.execute = reach
+    found = json.loads(tools.execute(call("locate", target="object"), tools.driver.observation).note)
+    assert found["status"] == status
+    if status == "done":
+        assert [found["located"][k] for k in "xy"] == pytest.approx(thing[:2], abs=5e-3)
+    else:
+        assert len(tools.driver.commands) == 2 and "reach" in found["message"]
+
+
+def test_fingers_that_will_not_open_end_a_grasp_at_its_first_centring_move():
+    tools = tools_fixture()
+    wrist_scene(tools, np.array([0.07, -0.04, 0.45]))
+    execute = tools.driver.execute
+
+    def jammed(command):
+        outcome = execute(command)
+        if command.get("stage") == "grasp_centre":
+            return Outcome("surprise", "move", "the gripper stopped outside the expected opening", dict(arm="arrived"))
+        return outcome
+
+    tools.driver.execute = jammed
+    result = grasp(tools)
+    assert result["status"] == "surprise" and len(tools.driver.commands) == 1
+
+
+def test_the_review_reports_an_object_from_its_last_grasp_on():
+    tools = tools_fixture()
+    tools.driver.max_steps = 900
+    tools.handled = [
+        dict(object="can", grasp="done"),
+        dict(object="can", release="done", released_at=[0.1, 0.2]),
+        dict(object="can", grasp="surprise"),
+        dict(object="box", grasp="done"),
+        dict(object="box", release="done", released_at=[0.3, 0.2], from_located_destination_mm=12),
+    ]
+    done = ToolCall(id="test", name="done", arguments=json.dumps(dict(summary="Fixture.")))
+    review = json.loads(tools.execute(done, tools.driver.observation).note)
+    # The earlier release of the can is not shown as following the grasp that failed after it.
+    assert review["handled"] == [
+        dict(object="can", grasp="surprise"),
+        dict(object="box", grasp="done", release="done", released_at=[0.3, 0.2], from_located_destination_mm=12),
+    ]
+
+
 def test_a_region_missing_from_the_wrist_view_stops_before_any_descent():
     tools = tools_fixture()
     tools.tracking.observe = lambda names: [dict(target=n, valid=False, tracking="lost") for n in names]

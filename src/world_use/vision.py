@@ -54,7 +54,8 @@ def dominant_region(mask: np.ndarray) -> dict:
         if len(region) > len(largest):
             largest = region
     if not largest:
-        return dict(bbox=None, center=None, area_px=0, other_area_px=0, components=0)
+        return dict(bbox=None, center=None, area_px=0, other_area_px=0, components=0,
+                    axis_deg=None, length_px=0., width_px=0.)
     points = np.asarray(largest)
     lo, hi = points.min(axis=0), points.max(axis=0) + 1
     # Extents of the pixel centres along every whole degree, plus the pixel itself.

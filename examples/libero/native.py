@@ -234,7 +234,7 @@ class Driver:
         targets, started = command["targets"], self.steps
         if command.get("rise_m") is not None:
             targets = {**targets, "z": float(self.observation.state["eef_state"][2]) + command["rise_m"]}
-        legs = {**command, "travel_z": None, "above_first": False, "contact_ok": False, "rise_m": None}
+        legs = {**command, "travel_z": None, "above_first": False, "contact_ok": False, "rise_m": None, "rest": True}
 
         def leg(part, **change):
             out = self.execute({**legs, "targets": part, **change})
@@ -399,13 +399,13 @@ class Driver:
             # Stop pressing: command the hand to rest at its height, over the pose when it
             # stopped there and otherwise where it is.
             for _ in range(RELIEF_STEPS):
-                rest = np.append(self.observation.state["eef_state"][:9], final.data[9])
+                pose = np.append(self.observation.state["eef_state"][:9], final.data[9])
                 if contact:
-                    rest[:2], rest[3:9] = target[:2], target[3:9]
-                rest = Action(data=rest)
-                if violated := advance(rest):
+                    pose[:2], pose[3:9] = target[:2], target[3:9]
+                hold = Action(data=pose)
+                if violated := advance(hold):
                     return violated
-                if self.last_action is rest:
+                if self.last_action is hold:
                     break
             if contact:
                 self.record_observation()

@@ -75,6 +75,7 @@ def pair_rows(commit, pair):
             steps=result["steps"], wall_seconds=round(result["wall_seconds"]), **tokens[arm],
             estimated_usd=round(result["estimated_usd"], 3), conservative_usd=round(result["budget_charge_usd"], 3),
             tool_calls=dict(tools), **({"procedure_outcomes": dict(outcomes)} if arm == "world_use" else {}),
+            initial=result["initial_observation_sha256"][:12],
         ))  # fmt: skip
     return rows
 
@@ -142,6 +143,7 @@ def tables(rows):
         "|---|---|---|---|---|---|---|---|---|---|",
     ]
     totals = collections.defaultdict(lambda: collections.defaultdict(collections.Counter))
+    unmatched = False
     for case in cases:
         runs = {arm: chosen.get((*case, arm)) for arm in ("raw", "world_use")}
         s = {arm: summarize(r) if r else None for arm, r in runs.items()}
@@ -152,7 +154,13 @@ def tables(rows):
                 totals[group(*case)][arm].update(s[arm])
         for key, fmt in (("calls", number), ("estimated_usd", "{:.2f}".format), ("steps", number)):
             cells.append(" / ".join(fmt(s[arm][key]) if s[arm] else "-" for arm in ("raw", "world_use")))
-        lines.append(f"| {case[0]} | {case[1]} | {group(*case)} | " + " | ".join(cells) + " |")
+        # Arms run in one pair start from one observation. Rows paired across campaigns are checked here.
+        starts = {r["initial"] for arm_runs in runs.values() for r in arm_runs or () if "initial" in r}
+        unmatched = unmatched or len(starts) > 1
+        mark = " †" if len(starts) > 1 else ""
+        lines.append(f"| {case[0]} | {case[1]}{mark} | {group(*case)} | " + " | ".join(cells) + " |")
+    if unmatched:
+        lines += ["", "† The arms' runs of this case did not start from the same initial observation."]
     lines += [
         "",
         "Totals over those cases (sums of the per-case means).",

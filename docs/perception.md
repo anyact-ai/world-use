@@ -211,7 +211,8 @@ over the point the looks fix. `look()` returns a `Look` (the frame's view, the t
 centre and box in native pixels); `move(xy)` runs through your own executor and returns its `Outcome`.
 Like the [manipulation procedures](adapters.md#bounded-manipulation-procedures) it sends no command
 itself, so it works over the kernel client or another controller. A done result has `x, y, z` in the base
-frame, the looks and moves it took, and `pixel` and `extent_m` when the whole region is in view.
+frame, the looks and moves it took, `pixel` while the region is visible and `extent_m` when the whole
+region is in view. A move that fails ends the search with that move's outcome.
 
 Only looks at the whole region place it once one has been had: the centre of a region the image border
 cuts off is not the region's centre. The result is a position of the region the tracker follows, with the

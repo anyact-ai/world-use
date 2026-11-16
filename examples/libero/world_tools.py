@@ -34,9 +34,9 @@ while that object is not moved. z reads low, by up to 3 cm on flat things and 6 
 in recorded trials: use it for clearance, not as a grasp or release height.
 A position found for a target is kept until you select the target again or a grasp closes on it:
 locate or grasp it again without a new selection and one look confirms it.
-centred and located also give across_mm and along_mm, the region's narrow and long sides, and
-for a region clearly longer than wide fit_yaw_deg, the yaw_deg that puts the fingers across the
-narrow side.
+When the last look shows the whole region, centred and located also give across_mm and
+along_mm, its narrow and long sides, and for a region clearly longer than wide fit_yaw_deg, the
+yaw_deg that puts the fingers across the narrow side.
 centred and located x, y are world coordinates of the region's centre, already corrected for
 the camera's mount: pass them unchanged as targets. Never line objects up in the wrist image
 yourself: the camera sits 5 cm from the grasp axis, so the point under the fingers is at column
@@ -89,10 +89,11 @@ when the native approvers changed your commands: a move issued while the arm sti
 previous command can end short, and repeating the move covers the rest.
 A surprise is a measurement, not the end of the task: correct its cause and try again while
 calls and steps remain. Tool completion is not task success. Decide from fresh camera evidence.
-Your first done does not end the episode. It is answered once with a review: the hand rises to
-the highest it has been so both cameras see the work, and the result lists what was grasped and
-released. Check the images that follow against the instruction, object by object, then call
-done again or keep working.
+Your first done does not end the episode. It is answered once with a review: the result lists
+what was grasped and released, and the hand first rises to the highest it has rested at between
+your calls, when it is lower and more than 60 steps remain, so both cameras see the work. Check
+the images that follow against the instruction, object by object, then call done again or keep
+working.
 """
 
 
@@ -411,9 +412,18 @@ class WorldTools:
             visible = seen.get("valid") is True and bool(seen.get("center"))
             return Look(wrist_view(state), state[:3], *((seen["center"], seen.get("bbox")) if visible else ()))
 
+        short = []
+
         def move(goal):
             targets = dict(x=float(goal[0]), y=float(goal[1]), **hand)
-            return self.driver.execute(dict(self._move(targets, stage, expected=OPEN_MM if hand else None), rest=False))
+            command = self._move(targets, stage, expected=OPEN_MM if hand else None)
+            moved = self.driver.execute(dict(command, rest=False))
+            if moved.data.get("arm") == "not_approaching" and not short:
+                # A first guess can be past the arm's reach. The hand rests where it stopped, and a look
+                # from there is still a new look. A second such move ends the search.
+                short.append(moved)
+                return Outcome("done", moved.kind, "stopped short of a guessed goal; looking again from here")
+            return moved
 
         found = locate(
             move,
@@ -436,7 +446,7 @@ class WorldTools:
             if shape:
                 data.update(across_mm=round(1000 * shape["across_m"]), along_mm=round(1000 * shape["along_m"]))
                 if shape["along_m"] >= LONGER * shape["across_m"]:
-                    # The finger axis turned from world y toward world x, as grasp's yaw_deg is, in (-90, 90].
+                    # The finger axis turned from world y toward world x, as grasp's yaw_deg is, in [-90, 90).
                     yaw = math.degrees(math.atan2(shape["across"][0], shape["across"][1]))
                     data["fit_yaw_deg"] = round((yaw + 90) % 180 - 90)
         return data
@@ -508,7 +518,9 @@ class WorldTools:
             risen = self.driver.execute(self._move({"z": self.top_z}, "review_rise"))
         last = {}
         for row in self.handled:
-            last.setdefault(row["object"], {}).update({k: v for k, v in row.items() if k != "object"})
+            facts = {k: v for k, v in row.items() if k != "object"}
+            # A new grasp starts the object's account again; a release adds to the grasp before it.
+            last[row["object"]] = facts if "grasp" in facts else {**last.get(row["object"], {}), **facts}
         return self._result(
             dict(
                 status="review",

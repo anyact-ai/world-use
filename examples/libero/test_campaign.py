@@ -94,7 +94,7 @@ def test_repeats_get_their_own_folders_and_an_interrupted_attempt_is_retried(tmp
     assert launched == ["task00_init00_retry1", "task00_init00_repeat2"]
 
 
-def pair(folder, results, *, task=0, state=0, stopped=None):
+def pair(folder, results, *, task=0, state=0, stopped=None, initial="a" * 64):
     folder.mkdir()
     rows = []
     for i, (arm, _, calls) in enumerate(results):
@@ -117,6 +117,7 @@ def pair(folder, results, *, task=0, state=0, stopped=None):
             dict(
                 arm=arm, task_id=task, state=state, success=success, status="success" if success else "give_up",
                 calls=calls, steps=10 * calls, wall_seconds=12.4, estimated_usd=0.01 * calls, budget_charge_usd=0.02,
+                initial_observation_sha256=initial,
             )
         )  # fmt: skip
     if stopped:
@@ -154,4 +155,13 @@ def test_report_collects_repeats_and_infrastructure_stops_and_tables_the_latest_
     table = report.tables(rows)
     assert "| 0 | 0 | basket development | `b` | 1 of 2 | `b` | 2 of 2 | 40 / 11 |" in table
     assert "held-out" not in table.split("Totals")[0]  # a stopped pair is not a result
-    assert "| basket development | World Use | 2 of 2 | 11 |" in table
+    assert "| basket development | World Use | 2 of 2 | 11 |" in table and "†" not in table
+
+    # A later World Use run alone is tabled beside the earlier raw run, and marked if it began elsewhere.
+    alone = tmp_path / "alone"
+    alone.mkdir()
+    pair(alone / "task00_init00", [("world_use", True, 9)], initial="b" * 64)
+    report.collect(out, [f"c={alone}"])
+    table = report.tables([json.loads(line) for line in out.read_text().splitlines()])
+    assert "| 0 | 0 † | basket development | `b` | 1 of 2 | `c` | 1 of 1 | 40 / 9 |" in table
+    assert "did not start from the same initial observation" in table

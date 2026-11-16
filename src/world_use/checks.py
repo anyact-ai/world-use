@@ -24,8 +24,9 @@ class Settling:
             raise ValueError("settling tolerances must be finite and positive")
         if (not np.isfinite([timeout_s, window_s, progress_fraction, stable_s, stall_s]).all()
                 or not 0 < window_s <= timeout_s or not 0 < progress_fraction < 1
-                or not 0 <= stable_s < timeout_s or not 0 <= stall_s < timeout_s):
-            raise ValueError("settling needs 0 < window <= timeout and 0 < progress_fraction < 1")
+                or not 0 <= stable_s < timeout_s or stall_s < 0):
+            raise ValueError("settling needs 0 < window <= timeout, 0 < progress_fraction < 1, "
+                             "0 <= stable_s < timeout and stall_s >= 0")
         self.timeout_s, self.window_s, self.progress_fraction = timeout_s, window_s, progress_fraction
         self.started: float | None = None
         self.stamp: float | None = None

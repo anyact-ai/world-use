@@ -574,7 +574,7 @@ an earlier runner or scope does not cover this one. The committed
 paid run needs a validation made in its own runtime.
 
 Admission checks exact source and installed-runtime fingerprints. A small live
-image/function-call probe precedes both episodes. A pair has a $15 conservative
+image/function-call probe precedes the episodes. A pair has a $15 conservative
 usage cap, $7.40 per arm, a two-hour deadline and a 30-minute episode deadline
 unless `--total-budget`, `--arm-budget`, `--deadline-seconds` and
 `--episode-seconds` set others; all are recorded in `protocol.json`. A campaign
