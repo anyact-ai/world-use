@@ -22,15 +22,24 @@ from world_use.checks import Settling
 
 HZ = 20
 ARM_TOLERANCE = (0.012, 0.12)  # metres, largest rot6d column difference
+# Metres the hand may still travel per step when it counts as arrived. Raised high above the table
+# the arm swings 2 cm past a pose and back; a hand passing through its target has not arrived, and
+# a move begun on that swing looks stalled.
+REST_M = 0.002
 OPEN_MM = 80.0  # both fingers at their 0.04 m travel limit
 CLOSED_END_MM = 3.0  # empty fingers creep from here toward 1.4 mm; at or below it nothing is held
 OPEN_END_MM = 3.0  # the fingers creep over the last millimetres to their open limit
 GRIP_STOP_MM = 0.3  # less travel than this over a settling window is a stop, not motion
 WINDOW_S = 3.5 / HZ  # four 20 Hz intervals, clear of a sample boundary
 STABLE_S = 2 / HZ  # three consecutive samples
-# A free arm closes about a third of the distance to its command each step. A hand that gains
-# under a millimetre toward a command 1.5 cm or more away, twice running, is held by something.
-LEAD_M, PROGRESS_M, HELD_STEPS = 0.015, 0.001, 2
+# A free arm trails a command advancing 1 cm per step by about 3 cm and gains about 1 cm on it
+# each step. A hand that gains under a millimetre toward a command more than 3 cm away, twice
+# running, is held by something. Nearer than that a hand still carrying momentum from an unsettled
+# move can be drifting away from its command for a few steps, which settling waits out. A descent
+# that may end on contact starts from a hand at rest above the pose, so half that lead is enough.
+LEAD_M, CONTACT_LEAD_M, PROGRESS_M, HELD_STEPS = 0.03, 0.015, 0.001, 2
+# A swinging hand also makes no progress while it turns round. A stall is one that lasts.
+STALL_STEPS = 5
 RELIEF_STEPS = 12
 
 
@@ -268,6 +277,10 @@ class Driver:
             state = self.observation.state["eef_state"]
             return [float(np.linalg.norm(state[:3] - target[:3])), float(np.max(np.abs(state[3:9] - target[3:9])))]
 
+        def residuals():
+            """Distance from the pose, and the hand's travel over the last step: arrival needs both small."""
+            return [*errors(), travelled]
+
         def report(arm=None, gripper=None):
             pos_error, rot_error = errors()
             data = dict(
@@ -300,14 +313,16 @@ class Driver:
             return None
 
         settle = command.get("settle_steps", 0)
-        held, before_step = 0, self.observation.state["eef_state"][:3].copy()
+        held, stalled, travelled, before_step = 0, 0, 0.0, self.observation.state["eef_state"][:3].copy()
+        least = CONTACT_LEAD_M if command.get("contact_ok") else LEAD_M
 
         def held_up():
-            nonlocal held, before_step
+            nonlocal held, travelled, before_step
             here = self.observation.state["eef_state"][:3]
             lead = np.asarray(self.last_action.data)[:3] - before_step
             distance = float(np.linalg.norm(lead))
-            gained = float((here - before_step) @ lead) / distance if distance > LEAD_M else np.inf
+            gained = float((here - before_step) @ lead) / distance if distance > least else np.inf
+            travelled = float(np.linalg.norm(here - before_step))
             held, before_step = (held + 1 if gained < PROGRESS_M else 0), here.copy()
             return held >= HELD_STEPS
 
@@ -329,7 +344,7 @@ class Driver:
         # Settling repeats the final request. The half-step margin keeps the last counted
         # sample inside the deadline; the loop bound is what limits the steps.
         seconds = (settle + 0.5) / HZ
-        arm = Settling(ARM_TOLERANCE, seconds, WINDOW_S, stable_s=STABLE_S)
+        arm = Settling([*ARM_TOLERANCE, REST_M], seconds, WINDOW_S, stable_s=STABLE_S)
         # Above 0.5 the native hand keeps closing and below it keeps opening. Its travel
         # toward that end either reaches it, stops on something, or is still under way.
         closing = "gripper" in targets and final.data[9] > 0.5
@@ -345,7 +360,10 @@ class Driver:
             # A wait cannot conclude while an approver is still changing what is applied:
             # that is neither arrival nor a stall.
             requested = self.last_action is final
-            arm_state = arm.update(self.steps / HZ, errors(), command_active=requested)
+            arm_state = arm.update(self.steps / HZ, residuals(), command_active=requested)
+            stalled = stalled + 1 if arm_state == "stalled" else 0
+            if 0 < stalled < STALL_STEPS:
+                arm_state = None
             if hand is not None:
                 # The hand's own command ramps toward its end. While closing, the ramp only
                 # tightens fingers that have already stopped. While opening, it does not move

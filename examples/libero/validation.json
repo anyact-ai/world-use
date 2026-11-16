@@ -4,12 +4,12 @@
   "source_sha256": {
     "agent-requirements.txt": "dc865f41059c163718c91bb0ccd7f712b849c8f03d8a982e362a201eb94ccc70",
     "budget.py": "59ca1d7fd3d7c0e615d6ca21a9eadf1eec768a84ca2222fbbbf37b49326e0028",
-    "native.py": "ef19e5fec79a77ef5a8342a14176f9e56249882c3a3c287c425ef9c1dd2f78d8",
+    "native.py": "78b03248b47f85145187c3205649727b524572944c2c1e3ca1f3045ccfddc3f5",
     "run.py": "ee7bae7f744febfbf0bb995af7c3f8a00d3de3318c924738f5a4aa22f7fee081",
     "sim-requirements.txt": "dbaec293790695dedabd929bc9b9a75c074a8ce827308fa66d331924b8f0b996",
-    "test_runner.py": "616e9e05766a5c9d9e28bd36d6a04c5f80464113e5b01163d052a2ea00138590",
+    "test_runner.py": "200431896621e5ca628eb606c1c6d40364d05c5de4a32d02105026abe352b85a",
     "validate.py": "4407c3c29b472b2bd49a96439abb75b6c5ad00eaf27e057d0b341568d304bc16",
-    "world_tools.py": "3e2c8490b95ed3c16e977422bb4f845bd1ae71e910b71b93bc8a69cbc782824e"
+    "world_tools.py": "7b6e492eb15391ee64e91e8d492dd27fc701bdd8e773d5e60aeafcbfb845e4a0"
   },
   "real_simulator": true,
   "real_edgetam": true,
@@ -284,7 +284,7 @@
     "calls": 4,
     "estimated_usd": 0.0048,
     "budget_charge_usd": 0.0050000000000000044,
-    "wall_seconds": 22.000181707000593
+    "wall_seconds": 20.77025420999962
   },
   "world_use": {
     "arm": "world_use",
@@ -294,27 +294,27 @@
     "status": "give_up",
     "initial_observation_sha256": "0384bdf083bd225b3cf30238f18f7b49d05ae4cb64bc97e85262513c3a79d469",
     "instruction": "put both the alphabet soup and the tomato sauce in the basket",
-    "steps": 311,
+    "steps": 351,
     "calls": 18,
     "estimated_usd": 0.021599999999999998,
     "budget_charge_usd": 0.02250000000000002,
-    "wall_seconds": 168.99664483000015
+    "wall_seconds": 168.52280779300054
   },
   "empty_grasp_stopped_before_lift": true,
   "applied_command_offset_reported_m": 0.019999999999999907,
   "lift_evidence": {
     "left_behind": {
       "camera": "agentview",
-      "hand_vertical_travel_m": 0.0351,
-      "mask_iou": 0.996,
-      "center_shift_px": 0.04,
+      "hand_vertical_travel_m": 0.0397,
+      "mask_iou": 0.993,
+      "center_shift_px": 0.02,
       "unchanged": true
     },
-    "carried_mask_iou": 0.5447316103379721
+    "carried_mask_iou": 0.5229826353421859
   },
   "wrist_placement_error_m": {
-    "soup": 0.003,
-    "tomato": 0.0043
+    "soup": 0.0034,
+    "tomato": 0.004
   },
   "initial_observations_identical": true,
   "repeated_capture_regions_identical": true

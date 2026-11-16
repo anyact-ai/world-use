@@ -42,11 +42,12 @@ Three conditions must stay distinguishable in any comparison:
   commit that produced it.
 
 **Settling.** Each leg of a procedure stage repeats its final native pose for at
-most 20 more steps, all counted toward the 900-step limit. It uses the library's `Settling`
-check and returns as soon as the measurements settle the question. The arm has
-`arrived` after three consecutive samples within 12 mm and 0.12 rotation-column
-error; it is `not_approaching` once that offset stops shrinking over four
-intervals; otherwise it is `still_converging` at the bound. The fingers have
+most 40 more steps, all counted toward the 900-step limit. It uses the library's
+`Settling` check and returns as soon as the measurements settle the question.
+The arm has `arrived` after three consecutive samples within 12 mm and 0.12
+rotation-column error that moved under 2 mm per step; it is `not_approaching`
+once that offset has stopped shrinking over four intervals for five steps
+running; otherwise it is `still_converging` at the bound. The fingers have
 `reached_end` within 3 mm of fully closed or open, have
 `stopped_apart` once they travel less than 0.3 mm over four intervals, and are
 otherwise `still_moving`. A stable opening outside the policy's expected range is
@@ -236,6 +237,26 @@ and satisfied the success check after 9 calls and 478 and 456 steps.
 
 The native terminal hold step is executed and counted. No physics parameters or
 success predicates are altered.
+
+**A hand at rest.** The scenes of the five kitchen tasks put the table 46 cm
+higher. Hovering there the arm swings: a 5 cm level move throws the hand 2 cm
+up and it takes about 25 steps to come back to rest. Up to `c418a71` such a
+hand counted as arrived while it passed through its pose at 4 mm per step, and
+the small move that followed, begun on the swing, was reported as stalled:
+both scripted centre grasps in those scenes ended that way before any descent.
+Arrival now also needs the hand to move under 2 mm per step, a stall has to
+last five steps, since a swinging hand makes no progress either while it turns
+round, and a leg may settle for 40 steps instead of 20. A hand that gains
+nothing on its command is still taken for held at once when the command leads
+it by 3 cm, or by 1.5 cm in a descent that may end on contact, which starts
+from rest. A grasp of a wrist-selected object needs only z in its approach:
+at `c418a71` the docs called x and y ignored, the policy left them out, and
+every episode lost a call to the refusal.
+
+With these changes the two kitchen centre grasps complete, and the 20 centring
+trials in the first scene lift the same 18 in a median 76 steps instead of 66;
+the scripted task 0 run takes 524 steps instead of 483. No paid pair has been
+run at this commit.
 
 ## Paid results
 

@@ -24,8 +24,7 @@ Positions come from the wrist camera. Hover 15-25 cm above the scene with the wh
 the wrist image and select it there with a box around all of it; a point on the top face also
 does for a small object.
 - grasp with a wrist selection first moves the hand level, looking from several positions, until
-it is over the region, and reports that position as centred. Your approach x, y are then
-ignored.
+it is over the region, and reports that position as centred. The approach then needs only z.
 - locate does the same without descending or moving the fingers and returns located: the
 region's x, y, z, its extent_mm along the finger axis and across it, and pixel, where that point
 is in the wrist image you see next. Check there that it lies on what you meant. Use it once for
@@ -105,6 +104,7 @@ CENTRE_MOVES = 5
 OPEN_MM = [70, 85]  # fingers this far apart have let go, or made room, even while they still creep
 CUT_OFF_DROP_M = 0.25
 CLOSE_STEPS = 120
+SETTLE_STEPS = 40  # raised high above the table the arm needs about 25 steps to stop swinging
 
 
 def wrist_view(eef_state):
@@ -475,7 +475,7 @@ class WorldTools:
             facts.update(descent_ended_above_request_m=outcome.data["above_request_m"])
         return outcome
 
-    def _move(self, targets, stage, *, monitor=None, expected=None, settle=20):
+    def _move(self, targets, stage, *, monitor=None, expected=None, settle=SETTLE_STEPS):
         return dict(
             kind="move", targets=targets, stage=stage, settle_steps=settle, monitor_mm=monitor, expect_mm=expected
         )
@@ -555,15 +555,19 @@ class WorldTools:
                 grip = self._range(args["expect_grip_mm"])
                 for key in ("approach", "lift"):
                     self._validate_pose(args[key])
-                if not {"x", "y", "z"} <= args["approach"].keys() or "z" not in args["lift"]:
-                    raise ValueError("grasp needs approach x, y, z and lift z")
-                rise = float(args["lift"]["z"] - args["approach"]["z"])
-                if not 0.03 <= rise <= 0.05:
-                    raise ValueError("the test lift rises 3-5 cm: lift z minus approach z")
                 name = args["object_target"]
                 ran = []
                 camera = args["select"].get("camera") if isinstance(args.get("select"), dict) else None
                 wrist = (camera or self.tracking.targets.get(name, {}).get("camera")) == "wrist"
+                # Centring over a wrist region supplies x and y; nothing else does.
+                if not ({"z"} if wrist else {"x", "y", "z"}) <= args["approach"].keys() or "z" not in args["lift"]:
+                    raise ValueError(
+                        "grasp needs approach z and lift z, and approach x, y unless the object is selected "
+                        "in the wrist camera"
+                    )
+                rise = float(args["lift"]["z"] - args["approach"]["z"])
+                if not 0.03 <= rise <= 0.05:
+                    raise ValueError("the test lift rises 3-5 cm: lift z minus approach z")
                 offset = args.get("offset", [0, 0])
                 if (
                     not isinstance(offset, list)

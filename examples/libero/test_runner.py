@@ -324,6 +324,20 @@ def test_a_wrist_selection_centres_the_hand_over_the_region_before_descending():
     assert result["centred"]["extent_mm"] == pytest.approx([36, 53], abs=2)
 
 
+def test_a_wrist_selected_grasp_needs_no_x_or_y_and_any_other_grasp_does():
+    tools = tools_fixture()
+    thing = np.array([0.07, -0.04, 0.45])
+    wrist_scene(tools, thing)
+    heights = dict(object_target="object", approach={"z": 0.5}, lift={"z": 0.54}, expect_grip_mm=[20, 60])
+    done = json.loads(tools.execute(call("grasp", **heights), tools.driver.observation).note)
+    approach = next(c for c in tools.driver.commands if c.get("stage") == "grasp_approach")
+    assert done["status"] == "done" and [approach["targets"][k] for k in "xy"] == pytest.approx(thing[:2], abs=2e-3)
+    tools.tracking.targets["object"]["camera"] = "agentview"
+    count = len(tools.driver.commands)
+    refused = json.loads(tools.execute(call("grasp", **heights), tools.driver.observation).note)
+    assert refused["status"] == "refused" and len(tools.driver.commands) == count
+
+
 def test_an_offset_moves_the_grasp_point_off_the_centre_of_a_wrist_region():
     tools = tools_fixture()
     thing = np.array([0.07, -0.04, 0.45])
@@ -599,10 +613,20 @@ class Hand(LiberoEmbodiment):
     """
 
     def __init__(
-        self, *, object_mm=None, finger_gain=0.5, floor_z=None, wall_x=None, arm_gain=0.3, ramp=0.125, shove=0.0
+        self,
+        *,
+        object_mm=None,
+        finger_gain=0.5,
+        floor_z=None,
+        wall_x=None,
+        arm_gain=0.3,
+        ramp=0.125,
+        shove=0.0,
+        momentum=0.0,
     ):
         super().__init__(task_id=0, output_dir="unused")
         self.pos, self.command, self.half_mm = np.array([0.0, 0.0, 0.6]), 0.0, 40.0
+        self.momentum, self.velocity = momentum, np.zeros(3)
         self.object_mm, self.finger_gain, self.floor_z, self.shove = object_mm, finger_gain, floor_z, shove
         self.wall_x = wall_x
         self.arm_gain, self.ramp = arm_gain, ramp
@@ -620,7 +644,8 @@ class Hand(LiberoEmbodiment):
 
     def step(self, action):
         data = np.asarray(action.data, dtype=float)
-        self.pos = self.pos + self.arm_gain * (data[:3] - self.pos)
+        self.velocity = self.momentum * self.velocity + self.arm_gain * (data[:3] - self.pos)
+        self.pos = self.pos + self.velocity
         if self.floor_z is not None and self.pos[2] < self.floor_z:
             self.pos[2] = self.floor_z
             self.pos[0] += self.shove  # an obstacle that deflects the hand sideways
@@ -747,6 +772,18 @@ def test_a_level_leg_that_stalls_reports_how_far_the_hand_is_from_the_whole_requ
     assert out.status == "surprise" and out.data["arm"] == "not_approaching"
     assert out.data["above_request_m"] == pytest.approx(0.15, abs=2e-3)
     assert out.data["aside_m"] == pytest.approx(0.05, abs=2e-3)
+
+
+def test_a_swinging_arm_has_arrived_only_at_rest_and_its_turning_points_are_not_stalls(tmp_path):
+    # An arm with inertia swings past its pose and back before it settles.
+    d = driver(tmp_path, arm_gain=0.08, momentum=0.8)
+    out = d.execute(dict(stage({"x": 0.1}, "grasp_centre"), settle_steps=40))
+    rows = [json.loads(line)["state"]["eef_state"][0] for line in (d.output / "steps.jsonl").read_text().splitlines()]
+    # It passed more than the arrival tolerance beyond the pose, turned round there, and was
+    # judged neither arrived on the way through nor stalled at the turn.
+    assert max(rows) > 0.1 + 0.012
+    assert out.ok and out.data["arm"] == "arrived" and abs(rows[-1] - rows[-2]) <= 0.002
+    assert out.data["position_error_m"] <= 0.012
 
 
 def test_a_travel_height_is_reached_before_any_level_motion(tmp_path):
