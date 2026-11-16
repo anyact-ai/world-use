@@ -257,3 +257,17 @@ def test_async_place_applies_the_same_pre_release_and_final_checks():
     assert out.ok and out.data["assessment"] == "passed_caller_checks"
     assert len(feedback(out)["observations"]) == 2
     assert [a["checkpoint"] for a in out.data["assessments"]] == ["before_release", "after"]
+
+
+
+def test_an_assessor_may_abstain_only_where_no_stage_follows():
+    def execute(command):
+        return Outcome("done", "fixture", "command completed")
+
+    def abstain(checkpoint, observations):
+        return None if checkpoint == "after" else Outcome("done", "fixture", "continue")
+
+    result = grasp(execute, dict, approach={}, close={}, check={}, lift={}, assess=abstain)
+    assert result.ok and result.data["assessment"] == "unknown" and not result.data["assessments"][2:]
+    with pytest.raises(TypeError, match="unknown evidence must stop"):
+        grasp(execute, dict, approach={}, close={}, check={}, lift={}, assess=lambda checkpoint, observations: None)

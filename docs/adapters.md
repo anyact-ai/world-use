@@ -215,8 +215,9 @@ Pass `assess(checkpoint, observations)` to make observations control continuatio
 `before_close`, `before_lift` and `after`; place calls it at `before_release` and `after` withdrawal.
 Each checkpoint captures a fresh observation and rechecks the bound selections first. The callback
 receives independent copies of the observation history and returns an `Outcome`: only `done` permits
-the next stage. Use `stopped` for unknown evidence or `surprise` for a measured mismatch. Assessor errors
-propagate without further motion. Assessments should inspect evidence; choose corrective actions after
+the next stage. Use `stopped` for unknown evidence or `surprise` for a measured mismatch. At `after`, where
+no stage follows, the callback may return `None` to abstain; the result then reports `assessment="unknown"`,
+as it does without an assessor. Assessor errors propagate without further motion. Assessments should inspect evidence; choose corrective actions after
 the procedure returns, through the normal executor. No automatic retry, release or resumption occurs.
 An assessor's pass does not refresh evidence: retain the source measurement requirements on subsequent
 commands so the executor checks their age and validity again when motion starts.

@@ -97,6 +97,9 @@ def _run(kind: str, execute: Execute | AsyncExecute, observe: Observe | AsyncObs
                                hint="inspect and reselect the intended region; completed stages are not replayed")
         if assess is not None and name != "before":
             assessment = yield assess(name, deepcopy(observations))
+            if assessment is None and name == "after":
+                # No stage follows, so a caller with nothing to say leaves the assessment unknown.
+                return None
             if not isinstance(assessment, Outcome):
                 raise TypeError("assess must return an Outcome; unknown evidence must stop the procedure")
             data["assessments"].append(dict(checkpoint=name, outcome=deepcopy(assessment.feedback())))
@@ -143,6 +146,8 @@ def grasp(execute: Execute, observe: Observe, *, approach: dict, close: dict, ch
     that checkpoint name and the observation history; only a done Outcome permits
     continuation. It runs outside the control loop. Unknown evidence must return
     stopped; exceptions propagate without subsequent motion. There is no implicit retry.
+    After the lift no stage follows, so there assess may return None to abstain,
+    which leaves the assessment unknown as if no assessor had been given.
     """
     return _drive(_run("grasp", execute, observe,
         [("approach", approach), ("close", close), ("check_before_lift", check),
