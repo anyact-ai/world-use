@@ -16,7 +16,7 @@ from inspect_robots.approver import ChainApprover, ClampApprover, DeltaLimitAppr
 from inspect_robots_agent.policy import LLMAgentPolicy
 from inspect_robots_libero.embodiment import LiberoEmbodiment
 from inspect_robots_libero.tasks import libero_10_task
-from run import SOURCE, episode, runtime_manifest, source_hashes
+from run import MIRRORED, SOURCE, episode, runtime_manifest, source_hashes
 from world_tools import wrist_view
 
 
@@ -185,6 +185,7 @@ def reference(folder, transport):
         )
         assert log.status == "success"
         assert transport.arm_calls == 4
+        (folder / "system-prompt.txt").write_text(policy._messages[0]["content"])
         return env.executed
     finally:
         policy._client.close()
@@ -233,10 +234,16 @@ def main():
             for key in a["state"]:
                 np.testing.assert_allclose(a["state"][key], b["state"][key], atol=1e-12, rtol=0)
         report["native_parity"] = dict(actions_identical=True, states_match_atol=1e-12, steps=len(steps))
+        # What the raw arm is told differs from upstream by one sentence, which both arms get once.
+        upstream = (args.output / "reference/system-prompt.txt").read_text()
+        told = (args.output / "baseline/system-prompt.txt").read_text()
+        assert told != upstream and told.replace(" " + MIRRORED, "") == upstream
+        report["raw_prompt"] = dict(upstream_plus=MIRRORED)
         augmented = episode(
             args.output / "world_use", "world_use", transport, initial_expected=rebuilt["initial_observation_sha256"]
         )
         assert augmented["calls"] == len(transport.script)
+        assert (args.output / "world_use/system-prompt.txt").read_text().count(MIRRORED) == 1
         assert augmented["status"] == "give_up" and not augmented["success"]
         outcomes = [
             json.loads(line) for line in (args.output / "world_use/execution/world-use.jsonl").read_text().splitlines()

@@ -12,6 +12,7 @@ from inspect_robots.types import Observation, StepResult
 from inspect_robots_agent._llm import ToolCall
 from inspect_robots_libero.embodiment import LiberoEmbodiment
 from native import Driver, Frames, fingerprint
+from run import episode
 from world_tools import WorldTools, wrist_view
 
 from world_use.behaviors import Outcome
@@ -22,6 +23,14 @@ def observation():
         images={"agentview": np.zeros((256, 256, 3), dtype=np.uint8)},
         state={"eef_state": np.zeros(10), "gripper_qpos": np.array([0.02, -0.02])},
     )
+
+
+@pytest.mark.parametrize(("state", "held_out"), [(2, False), (0, True)])
+def test_the_reserved_state_runs_only_as_a_held_out_test(tmp_path, state, held_out):
+    # Refused before a simulator starts or a request is reserved.
+    with pytest.raises(ValueError, match="held-out"):
+        episode(tmp_path / "arm", "baseline", None, state=state, held_out=held_out)
+    assert not (tmp_path / "arm").exists()
 
 
 def test_capture_identity_survives_wrapper_and_new_capture_changes_it():

@@ -5,10 +5,10 @@
     "agent-requirements.txt": "dc865f41059c163718c91bb0ccd7f712b849c8f03d8a982e362a201eb94ccc70",
     "budget.py": "59ca1d7fd3d7c0e615d6ca21a9eadf1eec768a84ca2222fbbbf37b49326e0028",
     "native.py": "78b03248b47f85145187c3205649727b524572944c2c1e3ca1f3045ccfddc3f5",
-    "run.py": "ee7bae7f744febfbf0bb995af7c3f8a00d3de3318c924738f5a4aa22f7fee081",
+    "run.py": "22670494be3ff4ddaf1879749f116bf832d23704b2cb40e6026a9a58748aec38",
     "sim-requirements.txt": "dbaec293790695dedabd929bc9b9a75c074a8ce827308fa66d331924b8f0b996",
-    "test_runner.py": "c87606ba2cb618e2b15e7f844ddee0d173c51d83478c0c3b601150aa6182aae0",
-    "validate.py": "4407c3c29b472b2bd49a96439abb75b6c5ad00eaf27e057d0b341568d304bc16",
+    "test_runner.py": "9cff7f60858594fd9e49325e522be9573f654b1ba4c3e04d58716bffc144f2e9",
+    "validate.py": "469dc0372559137de09d6fe7baf5b686f6b7c2078071b35293b2c33148eed2b3",
     "world_tools.py": "5cb4ca73dc726351af3b645292dd436a464913b2de50d5baa873473118722c75"
   },
   "real_simulator": true,
@@ -272,6 +272,9 @@
     "states_match_atol": 1e-12,
     "steps": 24
   },
+  "raw_prompt": {
+    "upstream_plus": "The agentview image is mirrored left to right: left and right in the instruction are the reverse of left and right as that image shows them."
+  },
   "baseline": {
     "arm": "baseline",
     "task_id": 0,
@@ -284,7 +287,7 @@
     "calls": 4,
     "estimated_usd": 0.0048,
     "budget_charge_usd": 0.0050000000000000044,
-    "wall_seconds": 21.010778340998513
+    "wall_seconds": 22.318099211999993
   },
   "world_use": {
     "arm": "world_use",
@@ -298,7 +301,7 @@
     "calls": 18,
     "estimated_usd": 0.021599999999999998,
     "budget_charge_usd": 0.02250000000000002,
-    "wall_seconds": 169.1847897760017
+    "wall_seconds": 218.715683156
   },
   "empty_grasp_stopped_before_lift": true,
   "applied_command_offset_reported_m": 0.019999999999999907,

@@ -27,6 +27,15 @@ from world_tools import DOCS, WorldTools
 
 SOURCE = Path(__file__).resolve().parent
 
+# The simulator publishes the front camera's render turned half a turn, which is upright but
+# mirrored, while LIBERO's instructions name sides as the scene has them: in every paired left
+# and right region of its task files the left one is at the smaller world y, which that image
+# shows on its right. Both arms are told.
+MIRRORED = (
+    "The agentview image is mirrored left to right: left and right in the instruction are the "
+    "reverse of left and right as that image shows them."
+)
+
 
 def source_hashes():
     return {
@@ -66,9 +75,11 @@ def runtime_manifest():
     )
 
 
-def episode(folder, arm, transport, *, task_id=0, state=0, initial_expected=None, seconds=1800):
-    if state == 2:
-        raise ValueError("reserved held-out state 2 is outside this development pilot")
+def episode(folder, arm, transport, *, task_id=0, state=0, initial_expected=None, seconds=1800, held_out=False):
+    if (state == 2) != held_out:
+        raise ValueError(
+            "state 2 is the reserved held-out state: it runs only as a held-out test, and nothing else does"
+        )
     started = time.monotonic()
     env = LiberoEmbodiment(task_id=task_id, output_dir=folder / "simulator")
     policy = world = driver = None
@@ -107,9 +118,9 @@ def episode(folder, arm, transport, *, task_id=0, state=0, initial_expected=None
             transcript_echo=True,
         )
         policy._client._max_retries = 1
-        info = env.info
+        info = replace(env.info, docs=((env.info.docs or "") + " " + MIRRORED).strip())
         if arm == "world_use":
-            info = replace(info, docs=(info.docs or "") + "\n\n" + DOCS)
+            info = replace(info, docs=info.docs + "\n\n" + DOCS)
         policy.bind(info)
         if arm == "world_use":
             world = WorldTools(driver)
@@ -208,14 +219,17 @@ def main():
         "--authorization", required=True, help="the user's own words approving this exact paid scope; recorded verbatim"
     )
     parser.add_argument("--task", type=int, default=0, choices=range(10), help="LIBERO-10 task id")
-    parser.add_argument("--state", type=int, default=0, help="initial state; 2 is reserved held-out and refused")
+    parser.add_argument("--state", type=int, default=0, help="initial state; 2 is reserved and needs --held-out")
+    parser.add_argument(
+        "--held-out", action="store_true", help="run reserved state 2 as a test of finished tools, never to tune them"
+    )
     parser.add_argument("--total-budget", type=float, default=15.0, help="conservative USD cap for this pair")
     parser.add_argument("--arm-budget", type=float, default=7.4, help="conservative USD cap for each arm")
     parser.add_argument("--deadline-seconds", type=float, default=7200, help="wall-clock limit for this pair")
     parser.add_argument("--episode-seconds", type=float, default=1800, help="wall-clock limit for each episode")
     args = parser.parse_args()
-    if args.state == 2:
-        parser.error("initial state 2 is reserved held-out")
+    if (args.state == 2) != args.held_out:
+        parser.error("initial state 2 is reserved held-out: pass --held-out with it and with no other state")
     if not args.execute_paid_rollouts:
         parser.error("paid calls require --execute-paid-rollouts")
     checks = json.loads(args.validation.read_text())
@@ -239,6 +253,8 @@ def main():
         image_horizon=2,
         task_id=args.task,
         initial_state=args.state,
+        held_out=args.held_out,
+        added_to_both_prompts=MIRRORED,
         max_steps=900,
         max_calls=80,
         zero_shot=True,
@@ -270,6 +286,7 @@ def main():
                 state=args.state,
                 initial_expected=initial,
                 seconds=args.episode_seconds,
+                held_out=args.held_out,
             )
             initial = row["initial_observation_sha256"]
             report["results"].append(row)
