@@ -7,12 +7,13 @@ lost with a workspace reset. It is **not an exact restoration of that adapter**.
 Run a fresh baseline alongside World Use; do not compare its costs directly with
 earlier runs or infer a benchmark success rate from one pair.
 
-The pilot fixes task 0 / initial state 0, low reasoning, 80 calls, 900 simulator
-steps, two recent RGB observations, and a 3,072-token output cap. Both arms use the
+Each invocation runs one matched pair: a LIBERO-10 task and initial state (task 0,
+state 0 unless `--task` and `--state` say otherwise), low reasoning, 80 calls, 900
+simulator steps, two recent RGB observations, and a 3,072-token output cap. Both arms use the
 same model endpoint, native controller, limits, camera conversion and LIBERO
 success predicate. No demonstrations, object coordinates, depth, task notes or
 prior-run learning are provided. Initial RGB and robot-state hashes must match.
-State 2 remains outside this development pilot.
+Initial state 2 is reserved held-out and refused.
 
 The baseline uses the upstream agent's prompt and tools. The World Use arm adds
 RGB target selection/tracking, compact measured feedback and the library's grasp
@@ -251,9 +252,12 @@ an earlier runner or scope does not cover this one. The committed
 paid run needs a validation made in its own runtime.
 
 Admission checks exact source and installed-runtime fingerprints. A small live
-image/function-call probe precedes both episodes. The campaign has a $15
-conservative usage cap, $7.40 per arm, a two-hour deadline and a 30-minute episode
-deadline. Output directories must be new. There are no automatic HTTP retries;
+image/function-call probe precedes both episodes. A pair has a $15 conservative
+usage cap, $7.40 per arm, a two-hour deadline and a 30-minute episode deadline
+unless `--total-budget`, `--arm-budget`, `--deadline-seconds` and
+`--episode-seconds` set others; all are recorded in `protocol.json`. A campaign
+over several pairs runs one invocation per pair and must keep its own total.
+Output directories must be new. There are no automatic HTTP retries;
 unknown usage retains its reservation and blocks the campaign. All requests,
 responses and settled usage are journalled without authentication headers. Prices
 are assumptions from the published benchmark's model price row, not an Azure
