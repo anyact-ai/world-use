@@ -49,7 +49,10 @@ def estimate_input(body):
     text = walk(body)
     if images > 4:
         raise BudgetStop("more than two observations of two cameras")
-    tokens = len(json.dumps(text, ensure_ascii=False).encode()) + images * 8192 + 4096
+    # Over the 394 requests recorded so far the service counted 0.10 tokens per byte of this text
+    # and 291 per image, at most 0.24 per byte in any request. Half a token per byte and 8192
+    # per image stayed at least six times the count in every one.
+    tokens = len(json.dumps(text, ensure_ascii=False).encode()) // 2 + images * 8192 + 4096
     if tokens > 200000:
         raise BudgetStop("conservative short-context ceiling")
     return tokens

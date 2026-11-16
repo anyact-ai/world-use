@@ -313,8 +313,12 @@ def test_a_wrist_selection_centres_the_hand_over_the_region_before_descending():
     # The region was placed from looks at least 3 cm apart, and the policy is told where it is.
     assert [c["stage"] for c in driver.commands[:2]] == ["grasp_centre", "grasp_centre"]
     assert result["centred"]["looks"] >= 2 and result["centred"]["z"] == pytest.approx(0.45, abs=5e-3)
-    # A hand left closed by an earlier attempt opens before it comes down.
+    # The first move already heads for where the look meets the height assumed for a grasp.
+    assert [driver.commands[0]["targets"][k] for k in "xy"] == pytest.approx(thing[:2], abs=0.02)
+    # A hand left closed by an earlier attempt opens before it comes down, and fingers still
+    # creeping over their last millimetres do not stop the grasp.
     assert approach["targets"]["gripper"] == 0 and driver.commands[0]["targets"]["gripper"] == 0
+    assert approach["expect_mm"] == driver.commands[0]["expect_mm"] == [70, 85]
     assert "x" not in driver.commands[-2]["targets"] and driver.commands[-2]["rise_m"] == pytest.approx(0.04)
     # The region's box, 20 by 30 pixels from 30 cm above it, is reported in millimetres.
     assert result["centred"]["extent_mm"] == pytest.approx([36, 53], abs=2)
@@ -343,7 +347,9 @@ def test_a_yaw_turns_the_finger_axis_about_the_vertical_and_keeps_the_approach_a
     # World x for the fingers, and the same downward approach axis as at the start of an episode.
     assert a == pytest.approx([1, 0, 0]) and np.cross(a, b) == pytest.approx([0, 0, -1])
     count = len(tools.driver.commands)
-    assert grasp(tools, yaw_deg=120)["status"] == "refused" and len(tools.driver.commands) == count
+    refused = grasp(tools, yaw_deg=120, select=dict(camera="wrist", point=[5, 5]))
+    # A refused call changes nothing, the selection included.
+    assert refused["status"] == "refused" and len(tools.driver.commands) == count and not tools.selected
 
 
 def test_a_region_straight_below_the_hand_is_still_placed_from_two_looks():
@@ -376,6 +382,8 @@ def test_a_region_cut_off_by_the_image_border_is_placed_only_from_looks_at_all_o
     found = json.loads(tools.execute(call("locate", target="object"), tools.driver.observation).note)["located"]
     # The first look sees only the near part, whose centre is not the square's.
     assert [found[k] for k in "xyz"] == pytest.approx(thing, abs=5e-3)
+    # That look still led the hand most of the way there in one move.
+    assert 0.12 < tools.driver.commands[0]["targets"]["x"] < 0.3
     assert found["extent_mm"] == pytest.approx([180, 180], abs=6)
 
 
@@ -429,14 +437,16 @@ def test_locate_reports_where_a_wrist_region_is_without_descending():
     assert [found["located"][k] for k in "xyz"] == pytest.approx(thing, abs=5e-3)
     # The policy is told where that point is in the image it sees next: under the fingers, above centre.
     assert found["located"]["pixel"] == pytest.approx([128, 93], abs=6)
-    # Every move was level, and the hand ended over the region.
-    assert all(c["stage"] == "locate" and "z" not in c["targets"] for c in tools.driver.commands)
+    # Every move was level and left the fingers alone, whatever they hold, and the hand ended over the region.
+    assert all(c["stage"] == "locate" and c["targets"].keys() == {"x", "y"} for c in tools.driver.commands)
     assert [tools.driver.pose[k] for k in "xy"] == pytest.approx(thing[:2], abs=5e-3)
-    # A region in the fixed camera gives one direction only and no second look.
-    tools.tracking.targets["object"]["camera"] = "agentview"
+    # A region in the fixed camera gives one direction only and no second look. Asking for one
+    # is refused before it replaces the wrist selection.
     count = len(tools.driver.commands)
-    refused = json.loads(tools.execute(call("locate", target="object"), tools.driver.observation).note)
-    assert refused["status"] == "refused" and "wrist" in refused["message"] and len(tools.driver.commands) == count
+    elsewhere = call("locate", target="object", select=dict(camera="agentview", point=[5, 5]))
+    refused = json.loads(tools.execute(elsewhere, tools.driver.observation).note)
+    assert refused["status"] == "refused" and "wrist" in refused["message"]
+    assert len(tools.driver.commands) == count and not tools.selected
 
 
 def test_a_lift_too_small_to_compare_is_not_judged(monkeypatch):
@@ -588,10 +598,13 @@ class Hand(LiberoEmbodiment):
     command has already left behind.
     """
 
-    def __init__(self, *, object_mm=None, finger_gain=0.5, floor_z=None, arm_gain=0.3, ramp=0.125, shove=0.0):
+    def __init__(
+        self, *, object_mm=None, finger_gain=0.5, floor_z=None, wall_x=None, arm_gain=0.3, ramp=0.125, shove=0.0
+    ):
         super().__init__(task_id=0, output_dir="unused")
         self.pos, self.command, self.half_mm = np.array([0.0, 0.0, 0.6]), 0.0, 40.0
         self.object_mm, self.finger_gain, self.floor_z, self.shove = object_mm, finger_gain, floor_z, shove
+        self.wall_x = wall_x
         self.arm_gain, self.ramp = arm_gain, ramp
         self.last = dict(steps=0)
 
@@ -611,6 +624,8 @@ class Hand(LiberoEmbodiment):
         if self.floor_z is not None and self.pos[2] < self.floor_z:
             self.pos[2] = self.floor_z
             self.pos[0] += self.shove  # an obstacle that deflects the hand sideways
+        if self.wall_x is not None:
+            self.pos[0] = min(self.pos[0], self.wall_x)
         self.command = float(np.clip(self.command + self.ramp * np.sign(2 * data[9] - 1), 0, 1))
         half = self.half_mm + self.finger_gain * (40 * (1 - self.command) - self.half_mm)
         if self.object_mm is not None:
@@ -713,6 +728,25 @@ def test_a_descent_blocked_far_above_its_request_ends_early_and_stops_pushing(tm
     assert abs(d.last_action.data[2] - 0.55) < 0.011
     up = d.execute(dict(kind="move", targets={"z": 0.6}, stage="move_to"))
     assert up.data.get("applied", {}).get("last_command_reached_request", True)
+
+
+def test_a_hand_that_met_contact_slightly_off_the_pose_comes_to_rest_over_it(tmp_path):
+    d = driver(tmp_path, floor_z=0.5, shove=0.002)
+    out = d.execute(stage({"z": 0.47}, "grasp_approach", contact_ok=True))
+    assert out.ok and out.data["arm"] == "stopped_on_contact"
+    rows = [json.loads(line) for line in (d.output / "steps.jsonl").read_text().splitlines()]
+    slid = max(row["state"]["eef_state"][0] for row in rows)
+    # The palm slid while it pressed. At rest it is held over the pose, not left where it slid to.
+    assert slid > 0.004 and d.observation.state["eef_state"][0] < 0.8 * slid and d.last_action.data[0] == 0
+
+
+def test_a_level_leg_that_stalls_reports_how_far_the_hand_is_from_the_whole_request(tmp_path):
+    d = driver(tmp_path, wall_x=0.05)
+    out = d.execute(stage({"x": 0.1, "z": 0.45}, "place_approach", above_first=True, contact_ok=True))
+    # The hand never came down: it is still 15 cm above the release height and 5 cm short of it.
+    assert out.status == "surprise" and out.data["arm"] == "not_approaching"
+    assert out.data["above_request_m"] == pytest.approx(0.15, abs=2e-3)
+    assert out.data["aside_m"] == pytest.approx(0.05, abs=2e-3)
 
 
 def test_a_travel_height_is_reached_before_any_level_motion(tmp_path):

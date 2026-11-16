@@ -225,13 +225,26 @@ class Driver:
         if command.get("rise_m") is not None:
             targets = {**targets, "z": float(self.observation.state["eef_state"][2]) + command["rise_m"]}
         legs = {**command, "travel_z": None, "above_first": False, "contact_ok": False, "rise_m": None}
+
+        def leg(part):
+            out = self.execute({**legs, "targets": part})
+            if "above_request_m" in out.data:
+                # A leg that stalled is short of the stage's request, not of its own.
+                state = self.observation.state["eef_state"]
+                aside = [state[i] - targets[k] for i, k in enumerate("xy") if k in targets]
+                out.data.update(
+                    above_request_m=round(float(state[2] - targets.get("z", state[2])), 4),
+                    aside_m=round(float(np.linalg.norm(aside)), 4) if aside else 0.0,
+                )
+            return out
+
         travel = command.get("travel_z")
         if travel is not None and travel - float(self.observation.state["eef_state"][2]) > ARM_TOLERANCE[0]:
-            rise = self.execute({**legs, "targets": {"z": travel}})
+            rise = leg({"z": travel})
             if not rise.ok:
                 return rise
         if command.get("above_first") and "z" in targets and len(targets) > 1:
-            first = self.execute({**legs, "targets": {k: v for k, v in targets.items() if k != "z"}})
+            first = leg({k: v for k, v in targets.items() if k != "z"})
             if not first.ok:
                 return first
         result = self.tools.execute(

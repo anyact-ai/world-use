@@ -155,10 +155,10 @@ A `grasp` whose object was selected in the wrist camera now moves the hand level
 until it is over the region and only then descends. One look gives a direction;
 the hand looks again from at least 3 cm away and the region is placed where the
 rays meet, using the camera's mount on the hand. `locate` does the same without
-descending and returns the position, for a destination the policy will carry
-something to. The mount is a constant of the robot read from its model, not of
-any task, and the raw arm is not told it; the docs given to the World Use arm
-state where the grasp point appears in the wrist image.
+descending or moving the fingers and returns the position, for a destination
+the policy will carry something to. The mount is a constant of the robot read
+from its model, not of any task, and the raw arm is not told it; the docs given
+to the World Use arm state where the grasp point appears in the wrist image.
 
 Starting 5.4 and 5.8 cm off ten cans and flat boxes, with the object's projected
 centre as the selection, the hand was centred within a median 2.4 mm and at most
@@ -193,7 +193,8 @@ short is commanded to rest where it is: over the pose when it met contact there,
 so that a palm resting on a can does not slide off it, and at its measured pose
 otherwise. The next move then starts unclamped. `grasp` and `place` report
 `descent_ended_above_request_m`, which tells a landing on the intended surface
-from one on a rim or a neighbour. `locate` also returns the region's extent and
+from one on a rim or a neighbour; a level or travel leg that stalls reports the
+hand's offset from the whole request, not from the leg's own target. `locate` also returns the region's extent and
 the pixel where the located point appears in the next wrist image, and the docs
 say to pass located coordinates unchanged and to select with a box: a box around
 the basket placed it within 1.2 mm in both states of task 1, where a point on
@@ -242,146 +243,26 @@ success predicates are altered.
 with the commit that produced it, how the episode ended, calls, counted steps,
 wall time, tokens and estimated cost at the assumed prices. The raw arm is the
 same condition at every commit; the World Use arm is the tree at that commit.
-All pairs so far are development state 0. Wall times were not controlled for
-other load on the machine.
+Wall times were not controlled for other load on the machine. A pair in which
+the transport refused a request has one row, for the arm that was running, and
+no result for either arm.
 
-| commit | task | arm | ended | calls | steps | est. USD |
-|---|---|---|---|---|---|---|
-| `6d73def` | 0 | raw | success | 49 | 653 | 0.66 |
-| `6d73def` | 0 | World Use | gave up | 21 | 331 | 0.20 |
-| `da32947` | 0 | raw | success | 44 | 557 | 0.50 |
-| `da32947` | 0 | World Use | step limit | 23 | 900 | 0.24 |
-| `b61545e` | 0 | raw | claimed done, not successful | 58 | 727 | 0.96 |
-| `b61545e` | 0 | World Use | success | 13 | 762 | 0.10 |
-| `b61545e` | 7 | raw | success | 49 | 531 | 0.63 |
-| `b61545e` | 7 | World Use | success | 15 | 818 | 0.12 |
+| commit | task | state | arm | ended | calls | steps | est. USD |
+|---|---|---|---|---|---|---|---|
+| `6d73def` | 0 | 0 | raw | success | 49 | 653 | 0.66 |
+| `6d73def` | 0 | 0 | World Use | gave up | 21 | 331 | 0.20 |
+| `da32947` | 0 | 0 | raw | success | 44 | 557 | 0.50 |
+| `da32947` | 0 | 0 | World Use | step limit | 23 | 900 | 0.24 |
+| `b61545e` | 0 | 0 | raw | claimed done, not successful | 58 | 727 | 0.96 |
+| `b61545e` | 0 | 0 | World Use | success | 13 | 762 | 0.10 |
+| `b61545e` | 7 | 0 | raw | success | 49 | 531 | 0.63 |
+| `b61545e` | 7 | 0 | World Use | success | 15 | 818 | 0.12 |
+| `72d0fca` | 0 | 1 | raw | stopped by the spending guard | 64 | 656 | 1.07 |
+| `72d0fca` | 1 | 0 | raw | stopped by the spending guard | 60 | 828 | 1.05 |
+| `72d0fca` | 1 | 1 | raw | step limit | 52 | 900 | 0.75 |
+| `72d0fca` | 1 | 1 | World Use | success | 11 | 708 | 0.07 |
 
-These are single episodes. The two earlier World Use failures are what the
-sections above were written from, so the later successes on the same task and
-state are not independent evidence; held-out state 2 has not been run.
-
-## Rebuild the runtime
-
-Use Linux with `uv`, Git, CMake 3.x, and working headless EGL software rendering.
-Keep the simulator on Python 3.12 and World Use on Python 3.13. The two processes
-communicate through the upstream worker protocol; their MuJoCo versions are
-independent. The simulator dependencies and agent dependencies are frozen in the
-adjacent requirement files. The runtime used for a paid run is recorded and must
-match the runtime that passed validation.
-
-Pinned sources:
-
-| Component | Revision |
-|---|---|
-| World Use library | `182b78d8e023adb5abe90a121afec2955e48ec70` |
-| IRVLUTD/LLM_LIBERO | `7db834afc6c202abf5fd93668e65141630408551` |
-| robocurve/inspect-robots | `4d35fe4b81a643c0e61e8d287810b3c26f9d386a` |
-| lerobot/libero-assets (HF dataset) | `0b3ea86be5fe169d0fd036ae63d1070ec09e90f6` |
-| facebook/EdgeTAM | `f3a09791b2343c0733d456d08d73771d9363b69a` |
-
-Create the two virtual environments, clone/check out those source revisions, and
-install the requirement files using PyPI plus the official CPU PyTorch index:
-
-```sh
-uv venv --python 3.12 /workspace/libero-runtime/sim-env
-uv venv --python 3.13 /workspace/libero-runtime/agent-env
-PATH=/workspace/libero-runtime/sim-env/bin:$PATH uv pip install \
-  --python /workspace/libero-runtime/sim-env/bin/python \
-  -r examples/libero/sim-requirements.txt \
-  --index https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match
-uv pip install --python /workspace/libero-runtime/agent-env/bin/python \
-  -r examples/libero/agent-requirements.txt \
-  --index https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match
-```
-
-Install CMake in the simulator environment first if the host has none:
-`uv pip install --python /workspace/libero-runtime/sim-env/bin/python 'cmake>=3.25,<4'`.
-Install the checked-out Inspect Robots core and its `plugins/inspect-robots-agent`,
-LLM_LIBERO, and this World Use library in the agent environment with `uv pip install
---no-deps --python ... <source paths>`. Initialize LIBERO's config by importing
-`libero.libero` once in the simulator interpreter and answering `N`, with
-`LIBERO_CONFIG_PATH` pointing to a new runtime-owned directory.
-
-Download the pinned `lerobot/libero-assets` snapshot with
-`huggingface_hub.snapshot_download(repo_type='dataset', revision=...)`, and link the
-snapshot as `libero/libero/assets` inside the simulator installation. Download the
-pinned EdgeTAM snapshot into `HF_HOME` before enabling offline mode. Both runtime
-installs must preserve the inherited proxy and CA settings.
-
-If the CPU PyTorch index is unreachable, the same `torch` and `torchvision`
-versions from PyPI run on CPU; the runtime manifest then records the extra CUDA
-packages. If Xet downloads are blocked, set `HF_HUB_DISABLE_XET=1` for the snapshot
-downloads. EdgeTAM also loads `config.json` from `timm/repvit_m1.dist_in1k`
-(revision `55e64695f26bb1711730f916e557b464fb46478d` when last rebuilt), which is
-not part of its pinned snapshot: load the tracker once online before enabling
-offline mode.
-
-The explicit preparation above documents the reconstruction; it has not been
-packaged as a separately tested clean-machine installer. The validation below
-tests the actual installed runtime and refuses a failed or stale validation.
-
-## Validate before paying
-
-Set these variables for both validation and the pilot, adapting runtime paths:
-
-```sh
-export LIBERO_PYTHON=/workspace/libero-runtime/sim-env/bin/python
-export LIBERO_CONFIG_PATH=/workspace/libero-runtime/libero-config
-export HF_HOME=/workspace/libero-runtime/huggingface
-export HF_HUB_OFFLINE=1
-export MUJOCO_GL=egl
-export PYOPENGL_PLATFORM=egl
-export OMP_NUM_THREADS=2
-export OPENBLAS_NUM_THREADS=1
-/workspace/libero-runtime/agent-env/bin/python examples/libero/validate.py \
-  --output /workspace/libero-validation
-```
-
-Validation runs the runner's regressions, compares the rebuilt baseline's approved
-actions and measured states against upstream `evaluate`, and exercises actual
-EdgeTAM and LIBERO with synthetic policy responses. It verifies identical initial
-observations and repeated-capture tracking. An empty grasp must stop before lift
-with the hand reported fully closed, a reversed move must report the offset of its
-last applied command, and one selected region must be flagged when another object
-is lifted and pass when its own object is. From hovers 5 cm off, `locate` and a
-wrist-selected `grasp` must each place a can within 1.5 cm of its fixture
-position, and that grasp must hold it. No model requests leave the mock
-transport, and no task success is claimed. Pixel and pose fixtures exist only in
-`validate.py`. `PYTHONPATH` must name the `src` folder of the World Use tree under
-test when the library is not installed in the agent environment.
-
-## Run the authorized pilot
-
-Supply `FOUNDRY_API_KEY` through the environment's credential settings. Set
-`LIBERO_AZURE_BASE_URL` to the approved Azure resource's `/openai/v1` endpoint.
-Do not store credentials in this repository or pass them on a command line.
-
-```sh
-/workspace/libero-runtime/agent-env/bin/python examples/libero/run.py \
-  --validation /workspace/libero-validation/validation.json \
-  --output /workspace/libero-paid-pilot \
-  --authorization "<the user's own words approving this scope>" \
-  --execute-paid-rollouts
-```
-
-The authorization is recorded verbatim in `protocol.json`. An approval given for
-an earlier runner or scope does not cover this one. The committed
-`validation.json` records an offline validation of this source in one runtime; a
-paid run needs a validation made in its own runtime.
-
-Admission checks exact source and installed-runtime fingerprints. A small live
-image/function-call probe precedes both episodes. A pair has a $15 conservative
-usage cap, $7.40 per arm, a two-hour deadline and a 30-minute episode deadline
-unless `--total-budget`, `--arm-budget`, `--deadline-seconds` and
-`--episode-seconds` set others; all are recorded in `protocol.json`. A campaign
-over several pairs runs one invocation per pair and must keep its own total.
-Output directories must be new. There are no automatic HTTP retries;
-unknown usage retains its reservation and blocks the campaign. All requests,
-responses and settled usage are journalled without authentication headers. Prices
-are assumptions from the published benchmark's model price row, not an Azure
-billing reconciliation. Local compute is excluded.
-
-Each arm saves raw observation PNGs, native action/state records, simulator video,
-policy transcript and result. World Use also saves tracking and procedure feedback.
-Preserve this source branch and the result artifacts durably; a workspace-local
-download link is not a backup.
+These are single episodes on development states. The two earlier World Use
+failures on task 0 are what the sections above were written from, so later
+successes on that task and state are not independent evidence. Held-out state 2
+has not been run.
