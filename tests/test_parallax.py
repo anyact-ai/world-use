@@ -6,7 +6,8 @@ import pytest
 from world_use.behaviors import Outcome
 from world_use.cameras import MountedSimCamera, View
 from world_use.examples.pick_place import setup
-from world_use.parallax import Look, locate, triangulate
+from world_use.parallax import Look, footprint, locate, triangulate
+from world_use.vision import dominant_region
 
 # The camera looks along the tool's approach axis from 5 cm beside the grasp point and 10 cm behind it.
 MOUNT = View([[-1, 0, 0, 0], [0, -1, 0, 0.05], [0, 0, 1, -0.1], [0, 0, 0, 1]], 170.0, 170.0, 128, 128, 256, 256)
@@ -147,6 +148,30 @@ def test_a_region_lost_after_it_was_placed_keeps_its_position():
     assert [result.data[k] for k in "xy"] == pytest.approx(hand.thing[:2], abs=5e-3)
 
 
+def test_a_position_found_earlier_is_confirmed_by_one_look_from_over_it():
+    hand = Hand([0.07, -0.04, 0.45])
+    first = found(hand, assumed_z=0.5)
+    known = [first.data[k] for k in "xyz"]
+    looks, moves = hand.looks, len(hand.goals)
+    again = found(hand, known=known)
+    assert again.ok and [again.data[k] for k in "xyz"] == known and again.data["moves"] == 0
+    assert hand.looks == looks + 1 and len(hand.goals) == moves and "pixel" in again.data
+    # From elsewhere the first move goes straight over it, and that look confirms it.
+    hand.position[:2] = [-0.05, 0.06]
+    back = found(hand, known=known)
+    assert back.ok and back.data["moves"] == 1 and hand.goals[-1] == pytest.approx(known[:2])
+    assert [back.data[k] for k in "xy"] == pytest.approx(hand.thing[:2], abs=5e-3)
+
+
+def test_a_region_that_moved_since_it_was_found_is_placed_afresh():
+    hand = Hand([0.07, -0.04, 0.45])
+    known = [found(hand, assumed_z=0.5).data[k] for k in "xyz"]
+    hand.thing = np.array([0.1, -0.01, 0.45])                       # pushed 4 cm aside since
+    result = found(hand, known=known)
+    assert result.ok and result.data["looks"] >= 2
+    assert [result.data[k] for k in "xyz"] == pytest.approx(hand.thing, abs=5e-3)
+
+
 def test_a_mirrored_image_places_the_region_in_the_same_spot():
     # The same camera published with its rows flipped: a negative focal length, and the row offset mirrored.
     flipped = View(MOUNT.T, MOUNT.fx, -MOUNT.fy, MOUNT.cx, MOUNT.height - 1 - MOUNT.cy, MOUNT.width, MOUNT.height)
@@ -154,6 +179,21 @@ def test_a_mirrored_image_places_the_region_in_the_same_spot():
     a, b = found(hand, assumed_z=0.5), found(mirrored, assumed_z=0.5)
     assert [b.data[k] for k in "xyz"] == pytest.approx([a.data[k] for k in "xyz"], abs=1e-9)
     assert b.data["pixel"][1] == 255 - a.data["pixel"][1]
+
+
+@pytest.mark.parametrize("turn_deg", [0, 35, -70])
+def test_a_region_seen_from_above_gets_its_narrow_width_and_the_direction_across_it(turn_deg):
+    # A 12 by 5 cm box top at z = 0.45, turned about the vertical, seen from 30 cm above.
+    hand = Hand([0.0, 0.05, 0.45])
+    view, turn = hand.view, np.radians(turn_deg)
+    long, narrow = np.array([np.cos(turn), np.sin(turn), 0]), np.array([-np.sin(turn), np.cos(turn), 0])
+    grid = np.stack(np.meshgrid(np.arange(256), np.arange(256)), axis=-1).reshape(-1, 2)
+    points = view.unproject(grid, np.full(len(grid), 0.3)) - hand.thing
+    mask = ((abs(points @ long) <= 0.06) & (abs(points @ narrow) <= 0.025)).reshape(256, 256)
+    seen = footprint(view, dominant_region(mask), 0.3)
+    assert seen["across_m"] == pytest.approx(0.05, abs=5e-3) and seen["along_m"] == pytest.approx(0.12, abs=5e-3)
+    assert abs(np.dot(seen["across"], narrow)) > 0.99
+    assert footprint(view, dominant_region(np.zeros((256, 256), bool)), 0.3) is None
 
 
 def test_rays_from_nearly_one_place_fix_nothing():

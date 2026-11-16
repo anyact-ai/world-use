@@ -25,6 +25,9 @@ def dominant_region(mask: np.ndarray) -> dict:
     Tiny disconnected predictions can make the full mask's bounding box span the
     image. Preserve the raw mask; these statistics describe only its largest
     component, not a corrected segmentation or a verified object identity.
+    width_px is its narrowest extent over all directions, length_px its extent
+    across that, and axis_deg the direction of its length, from image x toward
+    image y in (-90, 90]: the narrowest box around it, not its bounding box.
     """
     pixels = np.asarray(mask, dtype=bool)
     if pixels.ndim != 2:
@@ -54,9 +57,16 @@ def dominant_region(mask: np.ndarray) -> dict:
         return dict(bbox=None, center=None, area_px=0, other_area_px=0, components=0)
     points = np.asarray(largest)
     lo, hi = points.min(axis=0), points.max(axis=0) + 1
+    # Extents of the pixel centres along every whole degree, plus the pixel itself.
+    angles = np.radians(np.arange(-89, 91))
+    along = points[:, 1:2] * np.cos(angles) + points[:, 0:1] * np.sin(angles)
+    extents = along.max(axis=0) - along.min(axis=0) + 1
+    narrow = int(np.argmin(extents))                    # the direction across the narrowest side
     return dict(bbox=[int(lo[1]), int(lo[0]), int(hi[1]), int(hi[0])],
                 center=points[:, ::-1].mean(axis=0).tolist(), area_px=len(largest),
-                other_area_px=int(pixels.sum()) - len(largest), components=components)
+                other_area_px=int(pixels.sum()) - len(largest), components=components,
+                axis_deg=float((narrow + 90) % 180 - 89), length_px=float(extents[(narrow + 90) % 180]),
+                width_px=float(extents[narrow]))
 
 
 @dataclass(frozen=True)

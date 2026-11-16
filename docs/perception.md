@@ -216,6 +216,14 @@ frame, the looks and moves it took, and `pixel` and `extent_m` when the whole re
 Only looks at the whole region place it once one has been had: the centre of a region the image border
 cuts off is not the region's centre. The result is a position of the region the tracker follows, with the
 tracker's errors in it. It has no measurement `id`, and it is invalidated by the object moving, not by age.
+Pass a position found earlier as `known`: the first move heads straight over it and one look that shows
+the region within `arrive_m` of it confirms it; a region that has moved is placed afresh.
+
+`dominant_region` also reports the narrowest box around the region: `width_px`, `length_px` and `axis_deg`,
+the direction of its length in the image. `footprint(view, region, depth_m)` turns that into metres for a
+region seen face-on at a known depth, with the base-frame direction across its narrow side, the one a
+gripper's fingers close along to take it by that side. A region that covers only part of an object has
+that part's narrow side.
 
 `MountedSimCamera(name, mount, body)` renders such a camera in the simulator from the tool pose of the same
 physics state. [`tests/test_parallax.py`](../tests/test_parallax.py) locates a block with it to within a

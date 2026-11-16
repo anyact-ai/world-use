@@ -70,9 +70,30 @@ def triangulate(looks: Sequence[Look], *, baseline_m: float = 0.03, near_m: floa
     return Fix(point, len(looks), baseline, float(miss), depth)
 
 
+def footprint(view: View, region: dict, depth_m: float) -> dict | None:
+    """The size of a region seen face-on at a known depth: across its narrow side and along its long one.
+
+    region is a tracker's dominant_region; depth_m is the surface's distance along the optical axis, as a
+    Fix gives it. `across` is the base-frame unit direction across the narrow side, the one a gripper's
+    fingers close along to take the region by its narrow side. None for an empty region.
+    """
+    if not region.get("center"):
+        return None
+    centre, turn = np.asarray(region["center"], float), np.radians(region["axis_deg"])
+    long = np.array([np.cos(turn), np.sin(turn)])
+
+    def span(direction, pixels):
+        ends = view.unproject([centre - direction * pixels / 2, centre + direction * pixels / 2], [depth_m] * 2)
+        return ends[1] - ends[0]
+
+    across, along = span(np.array([-long[1], long[0]]), region["width_px"]), span(long, region["length_px"])
+    width = float(np.linalg.norm(across))
+    return dict(across_m=width, along_m=float(np.linalg.norm(along)), across=(across / width).tolist())
+
+
 def locate(move: Callable[[np.ndarray], Outcome], look: Callable[[], Look], *, camera: str, arrive_m: float,
-           assumed_z: float | None = None, max_moves: int = 5, baseline_m: float = 0.03, near_m: float = 0.05,
-           cut_off_drop_m: float = 0.25) -> Outcome:
+           assumed_z: float | None = None, known=None, max_moves: int = 5, baseline_m: float = 0.03,
+           near_m: float = 0.05, cut_off_drop_m: float = 0.25) -> Outcome:
     """Move the hand level until it is over a region its camera tracks, and report where the region is.
 
     look() returns the region as the camera sees it now. move(xy) takes the hand level to base-frame
@@ -87,8 +108,13 @@ def locate(move: Callable[[np.ndarray], Outcome], look: Callable[[], Look], *, c
     off; a whole region with no height to assume needs only a second look from a sidestep away.
     Only looks at the whole region place it once one has been had. A move that ends short of its
     goal still brings a new look; a second one ends the search with that move's Outcome.
+
+    known is a position found for this region earlier. The first move then heads straight over it,
+    and one look from there that shows the region within arrive_m of it confirms it without a
+    second. A region that has moved is not confirmed and is placed afresh.
     """
     sidestep = 1.5 * baseline_m     # leaves the looks a baseline apart even when the arm arrives short
+    known = None if known is None else np.asarray(known, float)
     looks, moves, short, fix, whole = [], 0, 0, None, False
     while True:
         seen = look()
@@ -98,6 +124,10 @@ def locate(move: Callable[[np.ndarray], Outcome], look: Callable[[], Look], *, c
         if seen.whole or (visible and not whole):
             looks.append(seen)
             fix = triangulate(looks, baseline_m=baseline_m, near_m=near_m)
+            if fix is None and known is not None and np.linalg.norm(known[:2] - seen.hand[:2]) <= arrive_m:
+                (pixel,), (depth,) = seen.view.project(known)
+                if depth >= near_m and np.linalg.norm(pixel - seen.center) * depth / abs(seen.view.fx) <= arrive_m:
+                    fix = Fix(known, 1, 0.0, 0.0, float(depth))
         if fix is not None:
             # A region the tracker drops after its position is fixed keeps that position.
             if not visible or moves >= max_moves or np.linalg.norm(fix.point[:2] - seen.hand[:2]) <= arrive_m:
@@ -125,6 +155,8 @@ def locate(move: Callable[[np.ndarray], Outcome], look: Callable[[], Look], *, c
         elif moves >= max_moves:
             return Outcome("stopped", "locate", f"the region could not be placed from the {camera} views",
                            dict(moves=moves))
+        elif known is not None and not moves and np.linalg.norm(known[:2] - seen.hand[:2]) > arrive_m:
+            goal = known[:2]
         else:
             origin, direction = ray(looks[-1].view, looks[-1].center)
             drop = origin[2] - assumed_z if assumed_z is not None else None if whole else cut_off_drop_m

@@ -63,10 +63,21 @@ def test_dominant_region_reports_disconnected_predictions_without_changing_mask(
     mask[-1, -1] = True
     original = mask.copy()
     region = dominant_region(mask)
-    assert region == dict(bbox=[10, 5, 15, 10], center=[12., 7.], area_px=25,
-                          other_area_px=2, components=3)
+    assert region.pop("axis_deg") in (0., 90.)          # a square has no longer side
+    assert region == dict(bbox=[10, 5, 15, 10], center=[12., 7.], area_px=25, other_area_px=2, components=3,
+                          length_px=pytest.approx(5.), width_px=pytest.approx(5.))
     np.testing.assert_array_equal(mask, original)
     assert dominant_region(np.zeros_like(mask))["bbox"] is None
+
+
+@pytest.mark.parametrize("turn", [-60, 0, 30, 90])
+def test_dominant_region_reports_the_narrowest_box_around_a_turned_region(turn):
+    # A 60 by 16 pixel bar turned about its middle: its bounding box says little about its sides.
+    y, x = np.mgrid[0:120, 0:120] - 60
+    c, s = np.cos(np.radians(turn)), np.sin(np.radians(turn))
+    region = dominant_region((abs(x * c + y * s) <= 30) & (abs(-x * s + y * c) <= 8))
+    assert region["length_px"] == pytest.approx(61, abs=3) and region["width_px"] == pytest.approx(17, abs=2)
+    assert abs((region["axis_deg"] - turn + 90) % 180 - 90) <= 2
 
 
 def test_duplicate_and_stale_frames_do_not_advance_tracking(tracker, monkeypatch):
