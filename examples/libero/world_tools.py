@@ -570,7 +570,8 @@ class WorldTools:
                         "grasp needs approach z and lift z, and approach x, y unless the object is selected "
                         "in the wrist camera"
                     )
-                rise = float(args["lift"]["z"] - args["approach"]["z"])
+                # To the micrometre: 0.54 - 0.49 is a little over 0.05 in binary.
+                rise = round(float(args["lift"]["z"] - args["approach"]["z"]), 6)
                 if not 0.03 <= rise <= 0.05:
                     raise ValueError("the test lift rises 3-5 cm: lift z minus approach z")
                 offset = args.get("offset", [0, 0])

@@ -7,9 +7,9 @@
     "native.py": "78b03248b47f85145187c3205649727b524572944c2c1e3ca1f3045ccfddc3f5",
     "run.py": "22670494be3ff4ddaf1879749f116bf832d23704b2cb40e6026a9a58748aec38",
     "sim-requirements.txt": "dbaec293790695dedabd929bc9b9a75c074a8ce827308fa66d331924b8f0b996",
-    "test_runner.py": "9cff7f60858594fd9e49325e522be9573f654b1ba4c3e04d58716bffc144f2e9",
+    "test_runner.py": "e2addfec84c9896db3caa8f981c403891b7af3b45933cd161822525075e6f333",
     "validate.py": "469dc0372559137de09d6fe7baf5b686f6b7c2078071b35293b2c33148eed2b3",
-    "world_tools.py": "5cb4ca73dc726351af3b645292dd436a464913b2de50d5baa873473118722c75"
+    "world_tools.py": "3fe8ff6bf6f2b7fdcf75f0ad3fcf677ec9a4d9659ba9e6fc321b43f7e6fe23a8"
   },
   "real_simulator": true,
   "real_edgetam": true,
@@ -287,7 +287,7 @@
     "calls": 4,
     "estimated_usd": 0.0048,
     "budget_charge_usd": 0.0050000000000000044,
-    "wall_seconds": 22.318099211999993
+    "wall_seconds": 21.172846173999915
   },
   "world_use": {
     "arm": "world_use",
@@ -301,7 +301,7 @@
     "calls": 18,
     "estimated_usd": 0.021599999999999998,
     "budget_charge_usd": 0.02250000000000002,
-    "wall_seconds": 218.715683156
+    "wall_seconds": 173.63139236999996
   },
   "empty_grasp_stopped_before_lift": true,
   "applied_command_offset_reported_m": 0.019999999999999907,

@@ -333,6 +333,14 @@ def test_a_wrist_selection_centres_the_hand_over_the_region_before_descending():
     assert result["centred"]["extent_mm"] == pytest.approx([36, 53], abs=2)
 
 
+@pytest.mark.parametrize(("lift", "status"), [(0.54, "done"), (0.52, "done"), (0.545, "refused"), (0.515, "refused")])
+def test_a_test_lift_of_exactly_three_or_five_centimetres_is_accepted(lift, status):
+    tools = tools_fixture()
+    pose = dict(x=0.0, y=0.0, z=0.49)
+    request = call("grasp", object_target="object", approach=pose, lift={"z": lift}, expect_grip_mm=[20, 60])
+    assert json.loads(tools.execute(request, tools.driver.observation).note)["status"] == status
+
+
 def test_a_wrist_selected_grasp_needs_no_x_or_y_and_any_other_grasp_does():
     tools = tools_fixture()
     thing = np.array([0.07, -0.04, 0.45])
