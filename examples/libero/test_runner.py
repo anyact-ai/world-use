@@ -424,6 +424,24 @@ def test_one_centring_move_that_stops_short_still_brings_a_new_look(stalls, stat
         assert len(tools.driver.commands) == 2
 
 
+def test_looks_that_meet_above_the_camera_place_nothing():
+    tools = tools_fixture()
+    wrist_scene(tools, np.array([0.07, -0.04, 0.45]))
+    look = tools.tracking.observe
+
+    def diverging(names):
+        # A region that seems to move with the camera: the rays through it fan out below and
+        # cross behind the lens.
+        seen = look(names)
+        for target in seen:
+            target["center"] = [128 + 500 * tools.driver.pose["x"], 128 + 500 * tools.driver.pose["y"]]
+        return seen
+
+    tools.tracking.observe = diverging
+    found = json.loads(tools.execute(call("locate", target="object"), tools.driver.observation).note)
+    assert found["status"] != "done" and "located" not in found
+
+
 def test_a_region_missing_from_the_wrist_view_stops_before_any_descent():
     tools = tools_fixture()
     tools.tracking.observe = lambda names: [dict(target=n, valid=False, tracking="lost") for n in names]

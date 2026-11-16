@@ -16,8 +16,9 @@ prior-run learning are provided. Initial RGB and robot-state hashes must match.
 Initial state 2 is reserved held-out and refused.
 
 The baseline uses the upstream agent's prompt and tools. The World Use arm adds
-RGB target selection/tracking, compact measured feedback and the library's grasp
-and place procedures. Sol chooses the regions, poses, expected aperture and
+RGB target selection and tracking, the position of a selected region measured
+from the wrist camera, compact measured feedback and the library's grasp and
+place procedures. Sol chooses the regions, heights, expected aperture and
 placement interpretation. A placement pauses before release and needs a one-use
 decision tied to the unchanged observations. Image overlap and finger opening do
 not certify object identity, support or task completion.
@@ -195,14 +196,15 @@ so that a palm resting on a can does not slide off it, and at its measured pose
 otherwise. The next move then starts unclamped. `grasp` and `place` report
 `descent_ended_above_request_m`, which tells a landing on the intended surface
 from one on a rim or a neighbour; a level or travel leg that stalls reports the
-hand's offset from the whole request, not from the leg's own target. `locate` also returns the region's extent and
-the pixel where the located point appears in the next wrist image, and the docs
-say to pass located coordinates unchanged and to select with a box: a box around
-the basket placed it within 1.2 mm in both states of task 1, where a point on
-its liner was 35 mm off in one. Centring now ends once the hand has arrived
-within the arm's 12 mm tolerance of the region, which the recorded looks show
-costs no accuracy and takes 1.9 moves instead of 2.3, and a sidestep is long
-enough that an object straight below the hand still gets two separated looks.
+hand's offset from the whole request, not from the leg's own target. `locate`
+also returns the region's extent and the pixel where the located point appears
+in the next wrist image, and the docs say to pass located coordinates unchanged
+and to select with a box: a box around the basket placed it within 1.2 mm in
+both states of task 1, where a point on its liner was 35 mm off in one.
+Centring now ends once the hand has arrived within the arm's 12 mm tolerance of
+the region, which the recorded looks show costs no accuracy and takes 1.9 moves
+instead of 2.3, and a sidestep is long enough that an object straight below the
+hand still gets two separated looks.
 `grasp` needs only z in `lift`, takes an `offset` from the centre of a wrist
 region for a rim grasp and a `yaw_deg` to turn the finger axis away from a
 neighbour, and lets a close run 120 steps while the fingers are still moving;
@@ -255,12 +257,11 @@ every episode lost a call to the refusal.
 
 With these changes the two kitchen centre grasps complete, and the 20 centring
 trials in the first scene lift the same 18 in a median 76 steps instead of 66;
-the scripted task 0 run takes 524 steps instead of 483. No paid pair has been
-run at this commit.
+the scripted task 0 run takes 524 steps instead of 483.
 
 ## Paid results
 
-At `c418a71` the three basket tasks, 0, 1 and 7, were each run on development
+**Basket tasks.** At `c418a71` tasks 0, 1 and 7 were each run on development
 states 0 and 1, one matched pair per task and state:
 
 | | raw Sol | World Use |
@@ -274,21 +275,56 @@ states 0 and 1, one matched pair per task and state:
 | wall time | 2,914 s | 2,140 s |
 
 On the two pairs in which both arms succeeded, the World Use arm used 74% fewer
-calls and 79% fewer input tokens, and 16% more steps.
+calls and 79% fewer input tokens, and 16% more steps. Over every basket pair
+from `b61545e` on, ten in all, the World Use arm succeeded in nine and raw Sol
+in three.
 
-What this does not show:
+**The other seven tasks.** At `e1f4c5e` each was run once, on state 0:
 
-- Each cell is one episode. Sol's raw outcomes on task 0 state 0 across four runs
-  were two successes, one false completion and one give-up.
-- These states are the ones the tools were developed on. Task 0 state 0 had been
-  run with three earlier versions of the World Use arm, which failed twice, and
-  tasks 1 and 7 once each. Held-out state 2 has not been run.
-- The other seven LIBERO-10 tasks have not been run. They need mugs, a bowl,
-  moka pots and a book grasped, and drawers, a stove knob and a microwave door
-  operated, none of which a paid run has tried. In scripted trials at `c418a71`
-  ([grasp-evidence.jsonl](grasp-evidence.jsonl)) a grasp offset by the object's
-  half-width lifted one mug in 5 of 6 attempts and the other in none of 6, a
-  moka pot in 3 of 6, and the bowl in none of 3.
+| task | raw Sol | calls | est. USD | World Use | calls | est. USD |
+|---|---|---|---|---|---|---|
+| 2: turn on the stove, moka pot onto it | step limit | 56 | 0.90 | **success** | 15 | 0.09 |
+| 3: bowl into the bottom drawer, close it | **success** | 49 | 0.77 | step limit | 34 | 0.44 |
+| 4: two mugs onto their plates | gave up | 74 | 1.47 | claimed done | 14 | 0.10 |
+| 5: book into the caddy | gave up | 54 | 0.82 | gave up | 19 | 0.16 |
+| 6: mug onto the plate, pudding right of it | gave up | 61 | 1.06 | claimed done | 12 | 0.08 |
+| 8: both moka pots onto the stove | gave up | 61 | 1.00 | gave up | 23 | 0.21 |
+| 9: mug into the microwave, close it | gave up | 60 | 1.00 | gave up | 13 | 0.09 |
+
+Each arm succeeded once, on different tasks. The World Use arm made 130 calls
+for an estimated $1.17 where raw Sol made 415 for $7.01, and it twice declared
+a task done that the success check rejects. In a second pair on task 0 at this
+commit raw Sol reached the step limit after 73 calls and the World Use arm
+again declared an unfinished task done.
+
+Why the World Use arm fell short on these:
+
+- Tasks 4 and 6 name a left plate and the right of a plate. The front camera's
+  image as both arms receive it is mirrored: the task's left is the image's
+  right. The arm rim-grasped both mugs and the pudding and set them down, on the
+  side the image shows. Raw Sol did not get as far in either task.
+- The third claim, on task 0, put the tomato sauce and the butter in the basket
+  as soup and sauce. Raw Sol's false completion at `b61545e` was the same kind
+  of mistake. Nothing in these tools checks what a selected region is.
+- The bowl was taken by its rim on the fourth attempt and set in the drawer, and
+  the steps ran out while the drawer was being pushed shut. One moka pot reached
+  the stove and the second slipped when the two touched. The mug for the
+  microwave was lifted by its rim and lost on the microwave's roof during the
+  carry. The book was never held. A grasp from above, even with a rim offset,
+  holds these objects poorly or not at all.
+- On task 5 `locate` returned a point above the camera for a clipped selection.
+  Looks that meet less than 5 cm below the camera are now discarded.
+
+What these results do not show:
+
+- Each cell is one episode. Sol's raw outcomes on task 0 state 0 across five runs
+  were two successes, one false completion, one give-up and one step limit; the
+  World Use arm's across the last three were two successes and one false
+  completion.
+- The basket states are the ones the tools were developed on. Task 0 state 0 had
+  been run with three earlier versions of the World Use arm, which failed twice,
+  and tasks 1 and 7 once each. The other seven tasks were run once and not
+  iterated on. Held-out state 2 has not been run.
 - The World Use arm is told the wrist camera's mount and the hand's dimensions.
   The raw arm is not.
 
@@ -298,7 +334,7 @@ wall time, tokens and estimated cost at the assumed prices. The raw arm is the
 same condition at every commit; the World Use arm is the tree at that commit.
 Wall times were not controlled for other load on the machine. A pair in which
 the transport refused a request has one row, for the arm that was running, and
-no result for either arm. All pairs together cost an estimated $10.09, $15.42
+no result for either arm. All pairs together cost an estimated $19.72, $29.82
 at the conservative rate the transport reserves.
 
 | commit | task | state | arm | ended | calls | steps | est. USD |
@@ -327,3 +363,19 @@ at the conservative rate the transport reserves.
 | `c418a71` | 7 | 0 | World Use | success | 9 | 497 | 0.04 |
 | `c418a71` | 7 | 1 | raw | gave up | 32 | 613 | 0.32 |
 | `c418a71` | 7 | 1 | World Use | success | 11 | 542 | 0.06 |
+| `e1f4c5e` | 0 | 0 | raw | step limit | 73 | 900 | 1.37 |
+| `e1f4c5e` | 0 | 0 | World Use | claimed done, not successful | 13 | 727 | 0.09 |
+| `e1f4c5e` | 2 | 0 | raw | step limit | 56 | 900 | 0.90 |
+| `e1f4c5e` | 2 | 0 | World Use | success | 15 | 388 | 0.09 |
+| `e1f4c5e` | 3 | 0 | raw | success | 49 | 697 | 0.77 |
+| `e1f4c5e` | 3 | 0 | World Use | step limit | 34 | 900 | 0.44 |
+| `e1f4c5e` | 4 | 0 | raw | gave up | 74 | 882 | 1.47 |
+| `e1f4c5e` | 4 | 0 | World Use | claimed done, not successful | 14 | 851 | 0.10 |
+| `e1f4c5e` | 5 | 0 | raw | gave up | 54 | 651 | 0.82 |
+| `e1f4c5e` | 5 | 0 | World Use | gave up | 19 | 674 | 0.16 |
+| `e1f4c5e` | 6 | 0 | raw | gave up | 61 | 838 | 1.06 |
+| `e1f4c5e` | 6 | 0 | World Use | claimed done, not successful | 12 | 651 | 0.08 |
+| `e1f4c5e` | 8 | 0 | raw | gave up | 61 | 871 | 1.00 |
+| `e1f4c5e` | 8 | 0 | World Use | gave up | 23 | 875 | 0.21 |
+| `e1f4c5e` | 9 | 0 | raw | gave up | 60 | 686 | 1.00 |
+| `e1f4c5e` | 9 | 0 | World Use | gave up | 13 | 403 | 0.09 |

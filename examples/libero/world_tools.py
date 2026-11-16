@@ -103,6 +103,7 @@ SIDESTEP_M = 0.045  # a step that leaves the looks that far apart even when the 
 CENTRE_MOVES = 5
 OPEN_MM = [70, 85]  # fingers this far apart have let go, or made room, even while they still creep
 CUT_OFF_DROP_M = 0.25
+BELOW_CAMERA_M = 0.05  # nearer than this the lens shows only the hand
 CLOSE_STEPS = 120
 SETTLE_STEPS = 40  # raised high above the table the arm needs about 25 steps to stop swinging
 
@@ -399,6 +400,10 @@ class WorldTools:
                 rays.append(wrist_ray(state, seen["center"]))
                 if max(float(np.linalg.norm(a - b)) for a, _ in rays for b, _ in rays) >= BASELINE_M:
                     fix = nearest_point(rays)
+                    # Looks at a region whose outline changed between them can meet anywhere,
+                    # even behind the camera. What the camera looks down on is below it.
+                    if fix[2] > min(origin[2] for origin, _ in rays) - BELOW_CAMERA_M:
+                        fix = None
             if fix is not None:
                 # The last look was taken from over the region once the hand has arrived at it. A
                 # region the tracker drops after its position is fixed keeps that position.
