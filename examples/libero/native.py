@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 from inspect_robots.approver import ChainApprover, ClampApprover, DeltaLimitApprover
+from inspect_robots.types import Action
 from inspect_robots_agent._llm import ToolCall
 from inspect_robots_agent._tools import build_toolset
 from PIL import Image
@@ -27,6 +28,10 @@ OPEN_END_MM = 3.0  # the fingers creep over the last millimetres to their open l
 GRIP_STOP_MM = 0.3  # less travel than this over a settling window is a stop, not motion
 WINDOW_S = 3.5 / HZ  # four 20 Hz intervals, clear of a sample boundary
 STABLE_S = 2 / HZ  # three consecutive samples
+# A free arm closes about a third of the distance to its command each step. A hand that gains
+# under a millimetre toward a command 1.5 cm or more away, twice running, is held by something.
+LEAD_M, PROGRESS_M, HELD_STEPS = 0.015, 0.001, 2
+RELIEF_STEPS = 12
 
 
 class EpisodeEnded(RuntimeError):
@@ -181,10 +186,12 @@ class Driver:
         """Native interpolation, optionally followed by a bounded measured settling check.
 
         Settling repeats the same commanded pose through the approvers; every repeat
-        counts toward the same 900-step horizon. It never selects a new target pose.
-        It returns as soon as the measurements settle the question: the arm arrived
-        or stopped short, the fingers reached their end or stopped apart. Motion still
-        under way at the bound is reported as such, not as a stable result.
+        counts toward the same 900-step horizon. It returns as soon as the measurements
+        settle the question: the arm arrived or stopped short, the fingers reached their
+        end or stopped apart. Motion still under way at the bound is reported as such,
+        not as a stable result. A settled stage also ends once its command leads a hand
+        that no longer follows, and a hand that stopped short is commanded to where it
+        is, so that it stops pushing and the next move starts from rest.
 
         A stage may ask for four things a raw move does not do. travel_z first rises
         straight up to that height when the hand is below it. above_first moves level
@@ -279,10 +286,25 @@ class Driver:
                 )
             return None
 
+        settle = command.get("settle_steps", 0)
+        held, before_step = 0, self.observation.state["eef_state"][:3].copy()
+
+        def held_up():
+            nonlocal held, before_step
+            here = self.observation.state["eef_state"][:3]
+            lead = np.asarray(self.last_action.data)[:3] - before_step
+            distance = float(np.linalg.norm(lead))
+            gained = float((here - before_step) @ lead) / distance if distance > LEAD_M else np.inf
+            held, before_step = (held + 1 if gained < PROGRESS_M else 0), here.copy()
+            return held >= HELD_STEPS
+
+        arm_state = hand_state = None
         for action in result.chunk.actions:
             if violated := advance(action):
                 return violated
-        settle = command.get("settle_steps", 0)
+            if settle and held_up():
+                arm_state = "stalled"
+                break
         if not settle:
             self.record_observation()
             data = report()
@@ -301,10 +323,12 @@ class Driver:
         opening = "gripper" in targets and final.data[9] < 0.5
         end = CLOSED_END_MM if closing else OPEN_END_MM
         hand = Settling([end], seconds, WINDOW_S, GRIP_STOP_MM / end, stable_s=STABLE_S) if closing or opening else None
-        arm_state = hand_state = None
-        for index in range(settle + 1):
+        for index in range(0 if arm_state else settle + 1):
             if index and (violated := advance(final)):
                 return violated
+            if index and held_up():
+                arm_state = "stalled"
+                break
             # A wait cannot conclude while an approver is still changing what is applied:
             # that is neither arrival nor a stall.
             requested = self.last_action is final
@@ -322,18 +346,36 @@ class Driver:
                 )
             if arm_state in ("stalled", "timeout") or (arm_state == "arrived" and (hand is None or hand_state)):
                 break
-        self.record_observation()
         later = "inspect and choose another command; later stages did not run"
-        if arm_state == "stalled" and command.get("contact_ok"):
+        if arm_state == "stalled":
             state = self.observation.state["eef_state"]
             level = float(np.linalg.norm(state[:2] - target[:2]))
             above = float(state[2] - target[2])
             # Stopped over the pose with only height left to go: the palm met the object or the
             # fingertips met the table. A hand pushed aside is still a failed approach.
-            if level <= ARM_TOLERANCE[0] and errors()[1] <= ARM_TOLERANCE[1] and above > 0:
+            contact = (
+                command.get("contact_ok")
+                and level <= ARM_TOLERANCE[0]
+                and errors()[1] <= ARM_TOLERANCE[1]
+                and above > 0
+            )
+            # Stop pressing: command the hand to rest at its height, over the pose when it
+            # stopped there and otherwise where it is.
+            for _ in range(RELIEF_STEPS):
+                rest = np.append(self.observation.state["eef_state"][:9], final.data[9])
+                if contact:
+                    rest[:2], rest[3:9] = target[:2], target[3:9]
+                rest = Action(data=rest)
+                if violated := advance(rest):
+                    return violated
+                if self.last_action is rest:
+                    break
+            if contact:
+                self.record_observation()
                 data = report("stopped_on_contact")
                 data["above_request_m"] = round(above, 4)
                 return Outcome("done", kind, "the descent met contact above the requested height", data)
+        self.record_observation()
         if arm_state != "arrived":
             stalled = arm_state == "stalled"
             data = report("not_approaching" if stalled else "still_converging")
@@ -351,21 +393,25 @@ class Driver:
                 data,
                 dict(position_error_m=ARM_TOLERANCE[0], rotation_column_error=ARM_TOLERANCE[1]),
                 {k: data[k] for k in ("position_error_m", "rotation_column_error")},
-                ("contact or an unreachable request can cause this; the request is still applied; " if stalled else "")
+                (
+                    "something is in the way or the request is out of reach; the hand rests where it stopped; "
+                    if stalled
+                    else ""
+                )
                 + later,
             )
-        if hand is not None and hand_state not in ("arrived", "stalled"):
-            return Outcome(
-                "stopped",
-                kind,
-                "the gripper was still moving when bounded settling ended",
-                report("arrived", "still_moving"),
-                hint=later,
-            )
         # A stalled hand is one whose fingers stopped apart: on something, or blocked.
-        data = report("arrived", hand and ("reached_end" if hand_state == "arrived" else "stopped_apart"))
+        grip = hand and {"arrived": "reached_end", "stalled": "stopped_apart"}.get(hand_state, "still_moving")
+        data = report("arrived", grip)
         expected = command.get("expect_mm")
-        if hand is not None and expected and not expected[0] <= data["aperture_mm"] <= expected[1]:
+        within = expected and expected[0] <= data["aperture_mm"] <= expected[1]
+        # Fingers still creeping open inside the expected opening have let go. A close still
+        # under way has not gripped.
+        if grip == "still_moving" and not (opening and within):
+            return Outcome(
+                "stopped", kind, "the gripper was still moving when bounded settling ended", data, hint=later
+            )
+        if hand is not None and expected and not within:
             empty = closing and hand_state == "arrived"
             return Outcome(
                 "surprise",

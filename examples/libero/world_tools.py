@@ -10,7 +10,7 @@ import uuid
 import numpy as np
 from inspect_robots.types import Action, ActionChunk
 from inspect_robots_agent._tools import ToolResult
-from native import fingerprint
+from native import ARM_TOLERANCE, fingerprint
 
 from world_use import procedures
 from world_use.behaviors import Outcome
@@ -20,17 +20,21 @@ from world_use.vision_worker import TrackerProcess
 
 DOCS = """World Use additions. You own object identity, poses and every decision. EdgeTAM only
 follows the image regions you select: it does not confirm what a region is.
-Positions come from the wrist camera. It sits 5 cm from the grasp axis, so the point under the
-fingers is NOT the centre of the wrist image: it is column 128, row 41 at fingertip depth and
-row 96 on a surface 17 cm below. Do not line objects up in the wrist image yourself. Hover
-15-25 cm above the scene with the object anywhere in the wrist image and select it there:
+Positions come from the wrist camera. Hover 15-25 cm above the scene with the whole object in
+the wrist image and select it there with a box around all of it; a point on the top face also
+does for a small object.
 - grasp with a wrist selection first moves the hand level, looking from several positions, until
 it is over the region, and reports that position as centred. Your approach x, y are a first
 guess only.
-- locate does the same without descending and returns the region's x, y and z. Use it once for a
-destination such as a basket or plate, before carrying anything there; the position holds while
-that object is not moved. z is where the looks agree: within 1 cm on flat things, up to 4 cm low
-on tall ones first seen from the side.
+- locate does the same without descending and returns located: the region's x, y, z, its
+extent_mm along the finger axis and across it, and pixel, where that point is in the wrist image
+you see next. Check there that it lies on what you meant. Use it once for a destination such as
+a basket or plate before carrying anything there; the position holds while that object is not
+moved. z is within 1 cm on flat things and up to 4 cm low on tall ones first seen from the side.
+centred and located x, y are world coordinates of the region's centre, already corrected for
+the camera's mount: pass them unchanged as targets. Never line objects up in the wrist image
+yourself: the camera sits 5 cm from the grasp axis, so the point under the fingers is at column
+128, row 41 at fingertip depth and row 96 on a surface 17 cm below, not at the image centre.
 A selection in agentview is not centred: grasp then uses your x, y as given. That camera does not
 move, so it adds one check instead. A region seen there before the approach is compared with the
 region after the test lift, and across a place move that is vertical to within 2 cm. A region
@@ -40,26 +44,33 @@ concludes nothing. Tracking is evidence, not a precondition.
 grasp opens the fingers, moves level to above the pose and then straight down. The approach z is
 the lowest height you allow: if the hand meets contact directly above the pose, with the palm on
 a tall object or the fingertips on the table, it stops there, so ask for a low z when you cannot
-judge height. It then closes, checks the measured opening against your expected range in
-millimetres, rises by lift z minus approach z, and checks again. It stops at the first failed
-check and never carries, retreats or retries. Judge from both cameras whether the object followed.
+judge height, and descent_ended_above_request_m says where: far above the object's own height
+means something else held the hand up. It then closes, checks the measured opening against your
+expected range in millimetres, rises by lift z minus approach z, and checks again. It stops at
+the first failed check and never carries, retreats or retries. Judge from both cameras whether
+the object followed.
 With the start orientation the fingers open along world y and take objects up to 78 mm across.
-r00=1 r10=0 r20=0 r01=0 r11=-1 r21=0 in a pose turns them to open along world x. The hand body
-is 20 cm wide along the finger axis and starts 6 cm above the fingertips: a neighbour taller
-than that within 10 cm along the axis blocks the descent. Grasp a can, bottle or box at its
+grasp's yaw_deg turns that axis about the vertical, 90 to world x, and the hand keeps the turn
+afterwards. The hand body is 20 cm wide along the finger axis and starts 6 cm above the
+fingertips: a neighbour taller than that within 10 cm along the axis blocks the descent, and a
+turn of 30-60 degrees away from it can clear it. Fingers closing across a box that is not
+square to them turn it first, which takes tens of steps. Grasp a can, bottle or box at its
 centre with the fingers across its narrow side. A mug, bowl or pot is wider than the fingers:
-take it by the rim, offset by the rim radius along the finger axis so one finger goes inside,
-with the approach z just below the rim top instead of a low z.
+take it by the rim. Give grasp an offset of the rim radius along the finger axis from the centre
+of the wrist region, on a side clear of any handle, so one finger goes inside, with the approach
+z 2-3 cm below the rim top instead of a low z.
 place rises straight up to travel_z when the hand is below it, moves level to above your release
 pose, descends with the grip monitored and stops early on contact the same way, then returns
-BEFORE opening with a one-use checkpoint. Choose a travel_z that clears everything on the way,
-the destination's rim included, by more than the held object hangs below the fingertips. Inspect
-the views, then call release_placement to open and withdraw, or correct the pose. Any motion or
-reselection voids the checkpoint.
-Every interpolation and settling step counts toward the 900-step episode limit.
+BEFORE opening with a one-use checkpoint. Its descent_ended_above_request_m tells a landing on
+the surface you meant from one on something higher, such as a rim. Choose a travel_z that clears
+everything on the way, the destination's rim included, by more than the held object hangs below
+the fingertips. Inspect the views, then call release_placement to open and withdraw, or correct
+the pose. Any motion or reselection voids the checkpoint.
+Every interpolation and settling step counts toward the 900-step episode limit; one clean pick
+and place takes about 200.
 Results report measurements. arm: arrived; stopped_on_contact (above_request_m is how far above
 the requested height); not_approaching (something stopped or shoved the hand: above_request_m
-and aside_m say where it is relative to the request); still_converging. gripper: reached_end
+and aside_m say where it rests relative to the request); still_converging. gripper: reached_end
 (fully closed or open, nothing between the fingers); stopped_apart; still_moving. applied appears
 when the native approvers changed your commands: a move issued while the arm still trails the
 previous command can end short, and repeating the move covers the rest.
@@ -85,8 +96,9 @@ UNCHANGED_SHIFT_PER_M = 0.3
 WRIST_FOCAL_PX, WRIST_SIZE = 166.8128, 256
 WRIST_IN_TOOL = np.array([[-1.0, 0, 0, 0], [0, -1.0, 0, 0.05], [0, 0, 1.0, -0.097], [0, 0, 0, 1.0]])
 BASELINE_M = 0.03  # least distance between two looks at a region before its depth is trusted
-CENTRED_M = 0.004  # the hand is over the region once the remaining level offset is this small
+SIDESTEP_M = 0.045  # a step that leaves the looks that far apart even when the arm arrives short
 CENTRE_MOVES = 4
+CLOSE_STEPS = 120
 
 
 def wrist_view(eef_state):
@@ -256,7 +268,7 @@ SCHEMAS = [
     schema(
         "locate",
         "Move the hand level until it is over a region selected in the wrist camera and return the "
-        "region's x, y and z. select binds target first, in the same call.",
+        "region's world x, y, z and size. select binds target first, in the same call.",
         dict(target=TEXT, select=SELECTION, note=TEXT),
         ["target", "note"],
     ),
@@ -266,7 +278,25 @@ SCHEMAS = [
         "camera), descend to the pose or to contact above it, close, check measured opening, and test "
         "lift by 3-5 cm. Stops on failed evidence or measured checks; does not carry automatically. "
         "select binds object_target first, in the same call.",
-        dict(object_target=TEXT, select=SELECTION, approach=TARGETS, lift=TARGETS, expect_grip_mm=RANGE, note=TEXT),
+        dict(
+            object_target=TEXT,
+            select=SELECTION,
+            offset=dict(
+                type="array",
+                items=dict(type="number"),
+                minItems=2,
+                maxItems=2,
+                description="[dx, dy] in metres from the centre of a wrist-selected region to the grasp point.",
+            ),
+            yaw_deg=dict(
+                type="number",
+                description="Turn of the finger axis about the vertical: 0 along world y, 90 along world x.",
+            ),
+            approach=TARGETS,
+            lift=TARGETS,
+            expect_grip_mm=RANGE,
+            note=TEXT,
+        ),
         ["object_target", "approach", "lift", "expect_grip_mm", "note"],
     ),
     schema(
@@ -353,13 +383,23 @@ class WorldTools:
             visible = seen.get("valid") is True and bool(seen.get("center"))
             if visible:
                 rays.append(wrist_ray(state, seen["center"]))
-                if max(float(np.linalg.norm(origin - rays[0][0])) for origin, _ in rays) >= BASELINE_M:
+                if max(float(np.linalg.norm(a - b)) for a, _ in rays for b, _ in rays) >= BASELINE_M:
                     fix = nearest_point(rays)
             if fix is not None:
-                # A region the tracker drops after its position is fixed keeps that position.
-                if not visible or moves >= CENTRE_MOVES or np.linalg.norm(fix[:2] - state[:2]) <= CENTRED_M:
+                # The last look was taken from over the region once the hand has arrived at it. A
+                # region the tracker drops after its position is fixed keeps that position.
+                if not visible or moves >= CENTRE_MOVES or np.linalg.norm(fix[:2] - state[:2]) <= ARM_TOLERANCE[0]:
                     found = dict(x=float(fix[0]), y=float(fix[1]), z=float(fix[2]), looks=len(rays), moves=moves)
-                    return found if visible else dict(found, region="lost after these looks")
+                    if not visible:
+                        return dict(found, region="lost after these looks")
+                    u, v = wrist_view(state).project(fix)[0][0]
+                    found["pixel"] = [round(float(u)), round(WRIST_SIZE - 1 - float(v))]
+                    x0, y0, x1, y1 = seen.get("bbox") or [0] * 4
+                    if min(x0, y0) > 0 and max(x1, y1) < WRIST_SIZE - 1:
+                        # A whole region seen from above: its box scales with the camera's height over it.
+                        scale = 1000 * (rays[-1][0][2] - fix[2]) / WRIST_FOCAL_PX
+                        found["extent_mm"] = [round((x1 - x0) * scale), round((y1 - y0) * scale)]
+                    return found
                 goal = fix[:2]
             elif not visible:
                 return Outcome(
@@ -377,10 +417,10 @@ class WorldTools:
                 # One look: head for where it meets the assumed height, or with no height to
                 # assume just far enough toward the region for a second look.
                 origin, direction = rays[-1]
-                toward, step = direction[:2], BASELINE_M
+                toward, step = direction[:2], SIDESTEP_M
                 if floor_z is not None:
                     toward = (origin + direction * ((floor_z + 0.05 - origin[2]) / direction[2]))[:2] - state[:2]
-                    step = max(float(np.linalg.norm(toward)), BASELINE_M)
+                    step = max(float(np.linalg.norm(toward)), SIDESTEP_M)
                 distance = float(np.linalg.norm(toward))
                 goal = state[:2] + (toward / distance if distance > 1e-6 else np.array([1.0, 0.0])) * step
             moved = self.driver.execute(self._move(dict(x=float(goal[0]), y=float(goal[1]), gripper=0), stage))
@@ -404,8 +444,18 @@ class WorldTools:
         feedback = procedures.feedback(outcome)
         return self._result(dict(feedback, **facts), dict(procedure_brief(feedback, bound), **facts))
 
-    def _move(self, targets, stage, *, monitor=None, expected=None):
-        return dict(kind="move", targets=targets, stage=stage, settle_steps=20, monitor_mm=monitor, expect_mm=expected)
+    def _descend(self, command, facts):
+        """Execute a stage, noting where an approach that met contact or stalled ended."""
+        outcome = self.driver.execute(command)
+        if command.get("stage") in ("grasp_approach", "place_approach") and "above_request_m" in outcome.data:
+            # Where the descent ended says what it met: the object, the surface or something else.
+            facts.update(descent_ended_above_request_m=outcome.data["above_request_m"])
+        return outcome
+
+    def _move(self, targets, stage, *, monitor=None, expected=None, settle=20):
+        return dict(
+            kind="move", targets=targets, stage=stage, settle_steps=settle, monitor_mm=monitor, expect_mm=expected
+        )
 
     @staticmethod
     def _range(value):
@@ -481,11 +531,11 @@ class WorldTools:
                 grip = self._range(args["expect_grip_mm"])
                 for key in ("approach", "lift"):
                     self._validate_pose(args[key])
-                if not {"x", "y", "z"} <= args["approach"].keys() or not {"x", "y", "z"} <= args["lift"].keys():
-                    raise ValueError("grasp approach and lift require explicit x, y, z")
-                delta = np.array([args["lift"][k] - args["approach"][k] for k in ("x", "y", "z")])
-                if not (0.03 <= delta[2] <= 0.05 and np.linalg.norm(delta[:2]) <= 0.005):
-                    raise ValueError("test lift must be vertical 3-5 cm, with at most 5 mm lateral displacement")
+                if not {"x", "y", "z"} <= args["approach"].keys() or "z" not in args["lift"]:
+                    raise ValueError("grasp needs approach x, y, z and lift z")
+                rise = float(args["lift"]["z"] - args["approach"]["z"])
+                if not 0.03 <= rise <= 0.05:
+                    raise ValueError("the test lift rises 3-5 cm: lift z minus approach z")
                 if "select" in args:
                     self._select(args["object_target"], args["select"])
 
@@ -493,6 +543,23 @@ class WorldTools:
                 ran = []
 
                 wrist = self.tracking.targets.get(name, {}).get("camera") == "wrist"
+                offset = args.get("offset", [0, 0])
+                if (
+                    not isinstance(offset, list)
+                    or len(offset) != 2
+                    or any(type(v) not in (float, int) or not math.isfinite(v) or abs(v) > 0.1 for v in offset)
+                ):
+                    raise ValueError("offset is [dx, dy] in metres, each within 0.1")
+                if any(offset) and not wrist:
+                    raise ValueError("offset is measured from a region selected in the wrist camera")
+                approach = dict(args["approach"], gripper=0)
+                if (yaw := args.get("yaw_deg")) is not None:
+                    if type(yaw) not in (float, int) or not -90 <= yaw <= 90:
+                        raise ValueError("yaw_deg is between -90 and 90")
+                    # Tool x, the finger axis, turned from world y toward world x; the approach axis stays down.
+                    turn = math.radians(yaw)
+                    columns = [math.sin(turn), math.cos(turn), 0.0, math.cos(turn), -math.sin(turn), 0.0]
+                    approach.update(zip(("r00", "r10", "r20", "r01", "r11", "r21"), columns, strict=True))
 
                 found = {}
 
@@ -502,9 +569,10 @@ class WorldTools:
                         if isinstance(centred, Outcome):
                             ran.append(False)
                             return centred
-                        found.update(centred=centred)
-                        command = dict(command, targets=dict(command["targets"], x=centred["x"], y=centred["y"]))
-                    outcome = self.driver.execute(command)
+                        found.update(centred={k: v for k, v in centred.items() if k != "pixel"})
+                        over = dict(x=centred["x"] + offset[0], y=centred["y"] + offset[1])
+                        command = dict(command, targets=dict(command["targets"], **over))
+                    outcome = self._descend(command, found)
                     ran.append(outcome.ok)
                     return outcome
 
@@ -539,16 +607,13 @@ class WorldTools:
                 outcome = procedures.grasp(
                     run,
                     observe,
-                    approach=dict(
-                        self._move(dict(args["approach"], gripper=0), "grasp_approach"),
-                        above_first=True,
-                        contact_ok=True,
-                    ),
-                    close=self._move({"gripper": 1}, "grasp_close", expected=grip),
+                    approach=dict(self._move(approach, "grasp_approach"), above_first=True, contact_ok=True),
+                    # Fingers closing across a box that is not square to them turn it first, slowly.
+                    close=self._move({"gripper": 1}, "grasp_close", expected=grip, settle=CLOSE_STEPS),
                     check=dict(kind="check_grip", expect_mm=grip),
                     # The hand may have been centred, and stopped on contact above the requested height:
                     # rise straight up from where it is.
-                    lift=dict(self._move({}, "grasp_test_lift", monitor=grip), rise_m=float(delta[2])),
+                    lift=dict(self._move({}, "grasp_test_lift", monitor=grip), rise_m=rise),
                     assess=lifted,
                 )
                 return self._procedure(outcome, name, **found)
@@ -598,7 +663,8 @@ class WorldTools:
                     above_first=True,
                     contact_ok=True,
                 )
-                return self._procedure(self._place(args, move, pause), *bound)
+                facts = {}
+                return self._procedure(self._place(args, move, pause, facts), *bound, **facts)
             if call.name == "release_placement":
                 pending, self.pending = self.pending, None
                 if (
@@ -629,9 +695,9 @@ class WorldTools:
         except (KeyError, ValueError, TypeError) as exc:
             return self._result(dict(status="refused", message=str(exc)))
 
-    def _place(self, args, move, assess):
+    def _place(self, args, move, assess, facts=None):
         return procedures.place(
-            self.driver.execute,
+            lambda command: self._descend(command, {} if facts is None else facts),
             self.observe,
             move=move,
             release=self._move({"gripper": 0}, "place_release", expected=[70, 85]),

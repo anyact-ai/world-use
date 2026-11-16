@@ -251,9 +251,7 @@ MOVED = dict(mask_iou=0.5, center_delta_px=[1.0, -9.0])
 
 def grasp(tools, **extra):
     pose = dict(x=0.0, y=0.0, z=0.5)
-    request = call(
-        "grasp", object_target="object", approach=pose, lift={**pose, "z": 0.54}, expect_grip_mm=[20, 60], **extra
-    )
+    request = call("grasp", object_target="object", approach=pose, lift={"z": 0.54}, expect_grip_mm=[20, 60], **extra)
     return json.loads(tools.execute(request, tools.driver.observation).note)
 
 
@@ -290,8 +288,9 @@ def wrist_scene(tools, thing, visible=lambda looks: True):
         driver.observation.state["eef_state"][:] = eef()
         if not visible(len(looks)):
             return [dict(target=n, valid=False, tracking="lost") for n in names]
-        u, v = wrist_view(eef()).project(thing)[0][0]
-        return [dict(target=n, valid=True, camera="wrist", center=[float(u), 255 - float(v)]) for n in names]
+        u, v = (float(c) for c in wrist_view(eef()).project(thing)[0][0])
+        box = [u - 10, 255 - v - 15, u + 10, 255 - v + 15]
+        return [dict(target=n, valid=True, camera="wrist", center=[u, 255 - v], bbox=box) for n in names]
 
     tools.tracking.observe = look
     tools.tracking.targets["object"]["camera"] = "wrist"
@@ -310,6 +309,57 @@ def test_a_wrist_selection_centres_the_hand_over_the_region_before_descending():
     # A hand left closed by an earlier attempt opens before it comes down.
     assert approach["targets"]["gripper"] == 0 and driver.commands[0]["targets"]["gripper"] == 0
     assert "x" not in driver.commands[-2]["targets"] and driver.commands[-2]["rise_m"] == pytest.approx(0.04)
+    # The region's box, 20 by 30 pixels from 30 cm above it, is reported in millimetres.
+    assert result["centred"]["extent_mm"] == pytest.approx([36, 53], abs=2)
+
+
+def test_an_offset_moves_the_grasp_point_off_the_centre_of_a_wrist_region():
+    tools = tools_fixture()
+    thing = np.array([0.07, -0.04, 0.45])
+    wrist_scene(tools, thing)
+    result = grasp(tools, offset=[0, 0.04])
+    approach = next(c for c in tools.driver.commands if c.get("stage") == "grasp_approach")
+    assert result["status"] == "done" and result["centred"]["y"] == pytest.approx(thing[1], abs=2e-3)
+    assert [approach["targets"][k] for k in "xy"] == pytest.approx(thing[:2] + [0, 0.04], abs=2e-3)
+    # Without a wrist region there is no centre to measure the offset from.
+    tools.tracking.targets["object"]["camera"] = "agentview"
+    count = len(tools.driver.commands)
+    refused = grasp(tools, offset=[0, 0.04])
+    assert refused["status"] == "refused" and len(tools.driver.commands) == count
+
+
+def test_a_yaw_turns_the_finger_axis_about_the_vertical_and_keeps_the_approach_axis_down():
+    tools = tools_fixture()
+    assert grasp(tools, yaw_deg=90)["status"] == "done"
+    approach = next(c for c in tools.driver.commands if c.get("stage") == "grasp_approach")["targets"]
+    a, b = (np.array([approach[f"r{i}{j}"] for i in range(3)]) for j in range(2))
+    # World x for the fingers, and the same downward approach axis as at the start of an episode.
+    assert a == pytest.approx([1, 0, 0]) and np.cross(a, b) == pytest.approx([0, 0, -1])
+    count = len(tools.driver.commands)
+    assert grasp(tools, yaw_deg=120)["status"] == "refused" and len(tools.driver.commands) == count
+
+
+def test_a_region_straight_below_the_hand_is_still_placed_from_two_looks():
+    tools = tools_fixture()
+    # The first look is nearly along the ray, so a step toward the region gains no baseline by itself,
+    # and the arm may arrive a centimetre short of each step.
+    thing = np.array([0.0, -0.045, 0.45])
+    wrist_scene(tools, thing)
+    execute = tools.driver.execute
+
+    def short(command):
+        if command.get("stage") == "grasp_centre":
+            here = np.array([tools.driver.pose[k] for k in "xy"])
+            goal = np.array([command["targets"][k] for k in "xy"])
+            reach = max(0.0, float(np.linalg.norm(goal - here)) - 0.011)
+            goal = here + (goal - here) / max(float(np.linalg.norm(goal - here)), 1e-9) * reach
+            command = dict(command, targets=dict(command["targets"], x=float(goal[0]), y=float(goal[1])))
+        return execute(command)
+
+    tools.driver.execute = short
+    result = grasp(tools)
+    assert result["status"] == "done" and result["centred"]["moves"] <= 2
+    assert [result["centred"][k] for k in "xy"] == pytest.approx(thing[:2], abs=5e-3)
 
 
 def test_a_region_missing_from_the_wrist_view_stops_before_any_descent():
@@ -337,6 +387,8 @@ def test_locate_reports_where_a_wrist_region_is_without_descending():
     found = json.loads(tools.execute(call("locate", target="object"), tools.driver.observation).note)
     assert found["status"] == "done"
     assert [found["located"][k] for k in "xyz"] == pytest.approx(thing, abs=5e-3)
+    # The policy is told where that point is in the image it sees next: under the fingers, above centre.
+    assert found["located"]["pixel"] == pytest.approx([128, 93], abs=6)
     # Every move was level, and the hand ended over the region.
     assert all(c["stage"] == "locate" and "z" not in c["targets"] for c in tools.driver.commands)
     assert [tools.driver.pose[k] for k in "xy"] == pytest.approx(thing[:2], abs=5e-3)
@@ -387,6 +439,19 @@ def test_a_lost_region_is_reported_and_blocks_neither_grasp_nor_place():
     request = call("place", object_target="object", move={"z": 0.45}, withdraw={"z": 0.55}, expect_grip_mm=[5, 70])
     placed = json.loads(tools.execute(request, tools.driver.observation).note)
     assert placed["status"] == "stopped" and placed["checkpoint"] == "before_release" and tools.pending
+
+
+def test_grasp_and_place_report_how_far_above_the_request_a_descent_ended(monkeypatch):
+    tools = tools_fixture()
+    execute = tools.driver.execute
+    held = Outcome("done", "move", "fixture: contact", dict(arm="stopped_on_contact", above_request_m=0.096))
+    approach = ("grasp_approach", "place_approach")
+    monkeypatch.setattr(tools.driver, "execute", lambda c: held if c.get("stage") in approach else execute(c))
+    assert grasp(tools)["descent_ended_above_request_m"] == 0.096
+    request = call("place", object_target="object", move={"z": 0.45}, withdraw={"z": 0.6}, expect_grip_mm=[5, 70])
+    placed = json.loads(tools.execute(request, tools.driver.observation).note)
+    # A can that came down on a rim still pauses for the policy, which is told how high it stopped.
+    assert placed["checkpoint"] == "before_release" and placed["descent_ended_above_request_m"] == 0.096
 
 
 def test_a_grasp_that_stops_before_its_lift_reports_no_lift_evidence(monkeypatch):
@@ -548,6 +613,14 @@ def test_a_hand_still_moving_at_the_bound_is_not_reported_as_stable(tmp_path):
     assert out.data["aperture_change_mm"] < 0 and out.data["executed_steps"] == 31
 
 
+def test_fingers_still_creeping_open_inside_the_expected_opening_have_released(tmp_path):
+    d = driver(tmp_path, object_mm=50, finger_gain=0.06)
+    d.execute(stage({"gripper": 1}, "grasp_close", expect_mm=[40, 78]))
+    # Slow fingers are still short of fully open when the bound ends, but well clear of the object.
+    out = d.execute(stage({"gripper": 0}, "place_release", expect_mm=[60, 85]))
+    assert out.ok and out.data["gripper"] == "still_moving" and 60 < out.data["aperture_mm"] < 77
+
+
 def test_an_opening_hand_is_not_judged_before_its_command_ramp_ends(tmp_path):
     # A slow ramp leaves the fingers resting on the object well into the wait. That pause is not a stop.
     d = driver(tmp_path, object_mm=50, ramp=0.05)
@@ -587,6 +660,19 @@ def test_a_level_first_approach_is_over_the_pose_before_it_descends(tmp_path):
     descent = next(i for i, row in enumerate(rows) if row["approved"][2] < 0.6 - 1e-9)
     assert abs(rows[descent - 1]["state"]["eef_state"][0] - 0.1) <= 0.012
     assert out.ok and out.data["executed_steps"] == len(rows) and out.data["position_error_m"] <= 0.012
+
+
+def test_a_descent_blocked_far_above_its_request_ends_early_and_stops_pushing(tmp_path):
+    d = driver(tmp_path, floor_z=0.55)
+    out = d.execute(stage({"z": 0.43}, "place_approach", contact_ok=True))
+    assert out.ok and out.data["arm"] == "stopped_on_contact"
+    assert out.data["above_request_m"] == pytest.approx(0.12, abs=2e-3)
+    # The command had 17 steps to run and then a wait; it ended a few steps after the hand stopped following.
+    assert out.data["executed_steps"] < 21
+    # The applied command came back to the hand, so the next move is not held back by the approvers.
+    assert abs(d.last_action.data[2] - 0.55) < 0.011
+    up = d.execute(dict(kind="move", targets={"z": 0.6}, stage="move_to"))
+    assert up.data.get("applied", {}).get("last_command_reached_request", True)
 
 
 def test_a_travel_height_is_reached_before_any_level_motion(tmp_path):

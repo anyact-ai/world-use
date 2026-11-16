@@ -176,6 +176,43 @@ one `locate` of the basket within 3.5 mm, two wrist-selected grasps, two
 placements, one release and five moves. These are scripted, privileged
 diagnostics of the tools, not of a model using them.
 
+**Stopping on contact, and using what was located.** The second paid pair, at
+`da32947`, was closer and still went against the candidate. Raw Sol succeeded
+again, in 44 calls and 557 steps. The World Use arm put the soup in the basket
+and was carrying the tomato sauce when the 900-step limit ended it after 23
+calls. It had located the basket within 2 cm from a point at the edge of the
+wrist image, then released 4 cm from that position, onto the rim. Each blocked
+descent kept pushing for 16 steps with the command up to 13 cm below the hand,
+tilted the hand, and needed two more moves to back out, because the approvers
+limit every step from the last applied command. Three stalled placements and
+their recoveries used about 300 steps.
+
+A settled stage now ends once the hand gains less than a millimetre toward a
+command at least 1.5 cm away on two consecutive steps, and a hand that stopped
+short is commanded to rest where it is: over the pose when it met contact there,
+so that a palm resting on a can does not slide off it, and at its measured pose
+otherwise. The next move then starts unclamped. `grasp` and `place` report
+`descent_ended_above_request_m`, which tells a landing on the intended surface
+from one on a rim or a neighbour. `locate` also returns the region's extent and
+the pixel where the located point appears in the next wrist image, and the docs
+say to pass located coordinates unchanged and to select with a box: a box around
+the basket placed it within 1.2 mm in both states of task 1, where a point on
+its liner was 35 mm off in one. Centring now ends once the hand has arrived
+within the arm's 12 mm tolerance of the region, which the recorded looks show
+costs no accuracy and takes 1.9 moves instead of 2.3, and a sidestep is long
+enough that an object straight below the hand still gets two separated looks.
+`grasp` needs only z in `lift`, takes an `offset` from the centre of a wrist
+region for a rim grasp and a `yaw_deg` to turn the finger axis away from a
+neighbour, and lets a close run 120 steps while the fingers are still moving;
+a release whose fingers are still creeping inside the expected opening counts
+as released.
+
+With these changes the 20 centring trials lifted 18, the two failures again the
+box beside the milk carton, and the scripted task 0 run took 471 steps. A grasp
+turned 45 degrees clears that carton and lifted the box in four of four trials,
+in 158 to 189 steps, most of them the fingers turning the box before they hold
+it.
+
 The native terminal hold step is executed and counted. No physics parameters or
 success predicates are altered.
 
