@@ -18,7 +18,7 @@ from PIL import Image
 
 from world_use.behaviors import Outcome
 from world_use.cameras import Frame
-from world_use.checks import Settling
+from world_use.checks import Following, Settling
 
 HZ = 20
 ARM_TOLERANCE = (0.012, 0.12)  # metres, largest rot6d column difference
@@ -279,7 +279,7 @@ class Driver:
 
         def residuals():
             """Distance from the pose, and the hand's travel over the last step: arrival needs both small."""
-            return [*errors(), travelled]
+            return [*errors(), following.travel_m]
 
         def report(arm=None, gripper=None):
             pos_error, rot_error = errors()
@@ -313,18 +313,15 @@ class Driver:
             return None
 
         settle = command.get("settle_steps", 0)
-        held, stalled, travelled, before_step = 0, 0, 0.0, self.observation.state["eef_state"][:3].copy()
-        least = CONTACT_LEAD_M if command.get("contact_ok") else LEAD_M
+        following = Following(
+            self.observation.state["eef_state"][:3],
+            lead_m=CONTACT_LEAD_M if command.get("contact_ok") else LEAD_M,
+            progress_m=PROGRESS_M,
+            steps=HELD_STEPS,
+        )
 
         def held_up():
-            nonlocal held, travelled, before_step
-            here = self.observation.state["eef_state"][:3]
-            lead = np.asarray(self.last_action.data)[:3] - before_step
-            distance = float(np.linalg.norm(lead))
-            gained = float((here - before_step) @ lead) / distance if distance > least else np.inf
-            travelled = float(np.linalg.norm(here - before_step))
-            held, before_step = (held + 1 if gained < PROGRESS_M else 0), here.copy()
-            return held >= HELD_STEPS
+            return following.update(self.observation.state["eef_state"][:3], np.asarray(self.last_action.data)[:3])
 
         arm_state = hand_state = None
         for action in result.chunk.actions:
@@ -344,7 +341,9 @@ class Driver:
         # Settling repeats the final request. The half-step margin keeps the last counted
         # sample inside the deadline; the loop bound is what limits the steps.
         seconds = (settle + 0.5) / HZ
-        arm = Settling([*ARM_TOLERANCE, REST_M], seconds, WINDOW_S, stable_s=STABLE_S)
+        arm = Settling(
+            [*ARM_TOLERANCE, REST_M], seconds, WINDOW_S, stable_s=STABLE_S, stall_s=(STALL_STEPS - 1) / HZ
+        )
         # Above 0.5 the native hand keeps closing and below it keeps opening. Its travel
         # toward that end either reaches it, stops on something, or is still under way.
         closing = "gripper" in targets and final.data[9] > 0.5
@@ -361,9 +360,6 @@ class Driver:
             # that is neither arrival nor a stall.
             requested = self.last_action is final
             arm_state = arm.update(self.steps / HZ, residuals(), command_active=requested)
-            stalled = stalled + 1 if arm_state == "stalled" else 0
-            if 0 < stalled < STALL_STEPS:
-                arm_state = None
             if hand is not None:
                 # The hand's own command ramps toward its end. While closing, the ramp only
                 # tightens fingers that have already stopped. While opening, it does not move

@@ -81,11 +81,23 @@ without extending the deadline. A full window with at least three measurements
 is needed for a stall, and slow progress projected to arrive before the deadline
 keeps its remaining time. This checker sends no commands and changes no controller.
 
+Two things a tolerance alone gets wrong on a lightly damped arm. A hand passing through its target has
+not arrived: add its travel over the last control step as one more residual, with the travel you accept
+at rest as its tolerance. And an arm that swings past its target makes no progress while it turns round:
+`stall_s` is how long a stall must last before `update` reports it.
+
+`world_use.checks.Following(position, lead_m=..., progress_m=...)` tells a hand that something holds from
+one that only trails its command, without torque sensing. Call `update(position, applied_command)` after
+each control step; it returns `True` once the hand has gained less than `progress_m` toward a command more
+than `lead_m` ahead of it, twice running. That ends a move early instead of pressing until a timeout, and
+lets a descent end on contact. It does not say what holds the hand, and nearer than `lead_m` it concludes
+nothing. `travel_m` is the hand's travel over the last step, the residual above.
+
 A hand that closes on an object has no target opening to arrive at. Give the checker its
 travel toward the commanded end instead: `"arrived"` then means the fingers met nothing,
 `"stalled"` means they stopped apart, and `"timeout"` means they were still moving. Compare
 the settled opening with the expected range afterwards. The
-[LIBERO runner](../examples/libero/native.py) settles its arm and fingers this way.
+[LIBERO runner](../examples/libero/native.py) judges its arm and fingers with these checks.
 
 ## Describe the robot
 

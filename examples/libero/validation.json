@@ -4,17 +4,18 @@
   "source_sha256": {
     "agent-requirements.txt": "dc865f41059c163718c91bb0ccd7f712b849c8f03d8a982e362a201eb94ccc70",
     "budget.py": "59ca1d7fd3d7c0e615d6ca21a9eadf1eec768a84ca2222fbbbf37b49326e0028",
-    "native.py": "78b03248b47f85145187c3205649727b524572944c2c1e3ca1f3045ccfddc3f5",
-    "run.py": "22670494be3ff4ddaf1879749f116bf832d23704b2cb40e6026a9a58748aec38",
+    "native.py": "17e934635dfc655785f576f577032bc1c701d998975afd3b125b00fd0b6cbfc5",
+    "run.py": "25affcb18aa3ac8287e40764d9aeda48ed2a2863fa5491796832408f2c72aef5",
     "sim-requirements.txt": "dbaec293790695dedabd929bc9b9a75c074a8ce827308fa66d331924b8f0b996",
-    "test_runner.py": "e2addfec84c9896db3caa8f981c403891b7af3b45933cd161822525075e6f333",
-    "validate.py": "469dc0372559137de09d6fe7baf5b686f6b7c2078071b35293b2c33148eed2b3",
-    "world_tools.py": "3fe8ff6bf6f2b7fdcf75f0ad3fcf677ec9a4d9659ba9e6fc321b43f7e6fe23a8"
+    "test_runner.py": "e06113051cbedf061c9c524b00c7dca5fa4651175cd5c4d4052747f3d8d881bb",
+    "validate.py": "88677546d42e09e562a42b95cd858f0da0cb175f276c532a87bffde1cd1bae67",
+    "world_tools.py": "9a1dbf5bb527169bf86fccd3bdc58445bbdf8bb050372d117b11f3f14965a328"
   },
   "real_simulator": true,
   "real_edgetam": true,
   "synthetic_policy": true,
   "runtime": {
+    "world_use_sha256": "4f4a02f80f54f4b9d080a3d8761e96ce4a2573839f6b0bbbd65c7f5fd9b58c90",
     "agent_packages": {
       "jsonschema-specifications": "2025.9.1",
       "hf-xet": "1.8.0",
@@ -257,9 +258,6 @@
       "inspect_robots_agent._tools": "a4f24a4edca742f4d3dc34f919fbc07680fd7b71c0913843bc194b84f934491d",
       "inspect_robots_agent.policy": "8ca484e0dd551d905e171a3fc09098ce0f44585ab7c32ae060f1b816cf70da97",
       "inspect_robots_libero.embodiment": "c6f9c6793808b29dd3fa1289f9b996ead52176661e79644c7473edea0677b40a",
-      "world_use.procedures": "baf5d5e803d4fa029b2ede1573fb46d564837952976bd7cea86f4c90ca4d3457",
-      "world_use.tracking": "580607701338ba14c4d6fe7e45098c2daf79a6b2dc076be1058676c102754742",
-      "world_use.vision": "4eae54612af034c9170d2fc40c25e412e7735fb8bd371e52a0edf49118040410",
       "native_simulator_worker": "f934adb6d0ee86c7f19f728fc1b6bccf7a12ff73a3ab0ce845cf63634bfdafd7"
     },
     "vision_model": "facebook/EdgeTAM",
@@ -287,7 +285,7 @@
     "calls": 4,
     "estimated_usd": 0.0048,
     "budget_charge_usd": 0.0050000000000000044,
-    "wall_seconds": 21.172846173999915
+    "wall_seconds": 17.329719346000047
   },
   "world_use": {
     "arm": "world_use",
@@ -301,7 +299,7 @@
     "calls": 18,
     "estimated_usd": 0.021599999999999998,
     "budget_charge_usd": 0.02250000000000002,
-    "wall_seconds": 173.63139236999996
+    "wall_seconds": 156.86705056999995
   },
   "empty_grasp_stopped_before_lift": true,
   "applied_command_offset_reported_m": 0.019999999999999907,
@@ -320,5 +318,11 @@
     "tomato": 0.004
   },
   "initial_observations_identical": true,
-  "repeated_capture_regions_identical": true
+  "repeated_capture_regions_identical": true,
+  "scripted_world_use": {
+    "steps": 351,
+    "applied_commands_sha256": "00fe0b88ece97daec64a0d182ace9416347fb676219565f17f5a941d9ebfd1c6",
+    "told_results_sha256": "3f2d0e5bfe413559780b9e5d68470a88c09e4fb0632e85c236cb52c60c1a8e5b",
+    "system_prompt_sha256": "8baa9cb1d032180deb061d6db0e59391a8f40dab1971c7c8413aa2a8c5476947"
+  }
 }
