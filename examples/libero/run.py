@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import time
+import tomllib
 from dataclasses import replace
 from importlib.metadata import distributions
 from pathlib import Path
@@ -26,6 +27,8 @@ from native import Driver, EpisodeEnded, fingerprint
 from world_tools import DOCS, WorldTools
 
 SOURCE = Path(__file__).resolve().parent
+ROLES = {(c["task"], c["state"]): c["role"] for c in tomllib.loads((SOURCE / "cases.toml").read_text())["case"]}
+ARMS = dict(both=("baseline", "world_use"), world_use=("world_use",))
 
 # The simulator publishes the front camera's render turned half a turn, which is upright but
 # mirrored, while LIBERO's instructions name sides as the scene has them: in every paired left
@@ -83,11 +86,19 @@ def runtime_manifest():
     )
 
 
-def episode(folder, arm, transport, *, task_id=0, state=0, initial_expected=None, seconds=1800, held_out=False):
-    if (state == 2) != held_out:
+def check_case(task_id, state, held_out):
+    role = ROLES.get((task_id, state))
+    if role is None:
+        raise ValueError(f"task {task_id} state {state} is not a case in cases.toml")
+    if (role == "held_out") != held_out:
         raise ValueError(
-            "state 2 is the reserved held-out state: it runs only as a held-out test, and nothing else does"
+            f"task {task_id} state {state} is a {role} case: a held-out case runs only as a held-out test, "
+            "and nothing else does"
         )
+
+
+def episode(folder, arm, transport, *, task_id=0, state=0, initial_expected=None, seconds=1800, held_out=False):
+    check_case(task_id, state, held_out)
     started = time.monotonic()
     env = LiberoEmbodiment(task_id=task_id, output_dir=folder / "simulator")
     policy = world = driver = None
@@ -227,17 +238,22 @@ def main():
         "--authorization", required=True, help="the user's own words approving this exact paid scope; recorded verbatim"
     )
     parser.add_argument("--task", type=int, default=0, choices=range(10), help="LIBERO-10 task id")
-    parser.add_argument("--state", type=int, default=0, help="initial state; 2 is reserved and needs --held-out")
+    parser.add_argument("--state", type=int, default=0, help="initial state; a held-out case needs --held-out")
     parser.add_argument(
-        "--held-out", action="store_true", help="run reserved state 2 as a test of finished tools, never to tune them"
+        "--held-out", action="store_true", help="run a held-out case as a test of finished tools, never to tune them"
+    )
+    parser.add_argument(
+        "--arms", choices=ARMS, default="both", help="world_use runs only that arm, reusing an earlier raw result"
     )
     parser.add_argument("--total-budget", type=float, default=15.0, help="conservative USD cap for this pair")
     parser.add_argument("--arm-budget", type=float, default=7.4, help="conservative USD cap for each arm")
     parser.add_argument("--deadline-seconds", type=float, default=7200, help="wall-clock limit for this pair")
     parser.add_argument("--episode-seconds", type=float, default=1800, help="wall-clock limit for each episode")
     args = parser.parse_args()
-    if (args.state == 2) != args.held_out:
-        parser.error("initial state 2 is reserved held-out: pass --held-out with it and with no other state")
+    try:
+        check_case(args.task, args.state, args.held_out)
+    except ValueError as exc:
+        parser.error(str(exc))
     if not args.execute_paid_rollouts:
         parser.error("paid calls require --execute-paid-rollouts")
     checks = json.loads(args.validation.read_text())
@@ -262,6 +278,7 @@ def main():
         task_id=args.task,
         initial_state=args.state,
         held_out=args.held_out,
+        arms=list(ARMS[args.arms]),
         added_to_both_prompts=MIRRORED,
         max_steps=900,
         max_calls=80,
@@ -285,7 +302,7 @@ def main():
     try:
         report["api_preflight"] = live_probe(transport)
         initial = None
-        for arm in ("baseline", "world_use"):
+        for arm in ARMS[args.arms]:
             row = episode(
                 args.output / arm,
                 arm,
