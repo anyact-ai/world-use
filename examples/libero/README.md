@@ -1,6 +1,6 @@
 # Matched LIBERO development pilot
 
-This runner compares GPT-6.1 Sol alone with Sol using World Use PR #22, on the
+This runner compares GPT-6.1 Sol alone with Sol using World Use, on the
 published [LLM_LIBERO](https://github.com/IRVLUTD/LLM_LIBERO) simulator and policy.
 It was reconstructed after the earlier, separately stored benchmark adapter was
 lost with a workspace reset. It is **not an exact restoration of that adapter**.
@@ -13,8 +13,8 @@ simulator steps, two recent RGB observations, and a 3,072-token output cap. Both
 same model endpoint, native controller, limits, camera conversion and LIBERO
 success predicate. No demonstrations, object coordinates, depth, task notes or
 prior-run learning are provided. Initial RGB and robot-state hashes must match.
-Initial state 2 is reserved held-out: it runs only with `--held-out`, to test
-finished tools and never to tune them.
+[`cases.toml`](cases.toml) gives every runnable task and state a role. A held-out
+case runs only with `--held-out`, to test finished tools and never to tune them.
 
 The baseline uses the upstream agent's tools and its prompt with one sentence
 added, which both arms get: the front camera's image is mirrored, so left and
@@ -266,6 +266,54 @@ With these changes the two kitchen centre grasps complete, and the 20 centring
 trials in the first scene lift the same 18 in a median 76 steps instead of 66;
 the scripted task 0 run takes 524 steps instead of 483.
 
+**Into the library.** The geometry and the judgements above lived in this folder,
+where no other robot could use them and no core test covered them. They are now
+library code: [`world_use.parallax`](../../docs/perception.md#positions-from-a-camera-on-the-hand)
+for positions from a camera on the hand, a `View` in the tool frame with a signed
+focal length for the wrist camera's flipped image, and
+[`checks.Following` and `Settling(stall_s=...)`](../../docs/adapters.md#measured-completion)
+for a held hand and a lasting stall. The library's own simulated arm finds and picks
+a block with them in its tests. The driver's loop and the tool schemas stay here:
+they are shaped by this embodiment's absolute-pose commands and approvers, and one
+robot is not enough to choose an interface from. The move was checked against the
+scripted simulator episode in `validate.py`, which now records its step count and
+hashes of the applied commands, the results told to the policy and the prompt. All
+were unchanged except one reported size, 74 to 73 mm: the region's box is scaled by
+distance along the optical axis instead of by height difference.
+
+The hand-set motion thresholds were tested instead of replaced. On a fake arm that
+closes 8 to 70 percent of its gap to the command each step and keeps none to 70
+percent of its speed, they tell free motion, contact and a blocked move apart in
+every case tried; they fail only for a slow arm that keeps 85 percent of its speed.
+Measuring each arm's response was therefore not built.
+
+**Four changes after the move.** Each is a new condition.
+
+- *Remembered positions.* A position found for a target is kept until the target
+  is selected again or a grasp closes on it. Locating or grasping it again confirms
+  it with one look instead of working it out again.
+- *Looks without waiting.* A look needs the pose it is taken from, not a hand at
+  rest, so centring moves end on arrival, and the rise to a travel height runs into
+  the level carry at that height. In the recorded development episodes 36 percent
+  of the World Use arm's steps were waits.
+- *Fingers across the narrow side.* `locate` and `grasp` report the narrowest box
+  around the region (`across_mm`, `along_mm`). Given no yaw and no offset, a
+  grasp of a region the policy outlined with a box in the wrist camera, clearly
+  longer than wide and with a narrow side of at most 70 mm, turns the fingers
+  across it. A point can select only part of an object, so a point selection
+  never turns the hand. Grasps stay vertical.
+- *A review before done.* LIBERO ends an episode by itself when its check passes,
+  so a `done` from the policy is always a claim the check rejects. The tools cannot
+  know that and do not use it. The first `done` is answered once with a review: the
+  hand rises to the highest it has been, the result lists what was grasped and
+  released, and the policy is asked to check each named object in the images that
+  follow before calling `done` again.
+
+Not built: re-seeding a lost region from its remembered position, because a region
+that leaves the wrist view is needed again only through its coordinates; and a
+left-behind check for wrist selections, which needs the front camera's pose, and
+that differs between LIBERO scenes.
+
 ## Paid results
 
 **Basket tasks, both arms told the image is mirrored.** Tasks 0, 1 and 7, one
@@ -461,23 +509,67 @@ transport, and no task success is claimed. Pixel and pose fixtures exist only in
 `validate.py`. `PYTHONPATH` must name the `src` folder of the World Use tree under
 test when the library is not installed in the agent environment.
 
+## Cases
+
+[`cases.toml`](cases.toml) lists every task and initial state the runner accepts,
+each with a role. Development cases, states 0 and 1 of every task, are for
+iteration. A held-out case runs only with `--held-out`, as a test of finished
+tools, and is never inspected to tune them: state 2 of tasks 0, 1 and 7 has been
+run and reported once, and state 3 of every task has never been run. The runner
+refuses an unlisted case, a held-out case without `--held-out` and a development
+case with it.
+
 ## Run the authorized pilot
 
 Supply `FOUNDRY_API_KEY` through the environment's credential settings. Set
 `LIBERO_AZURE_BASE_URL` to the approved Azure resource's `/openai/v1` endpoint.
 Do not store credentials in this repository or pass them on a command line.
 
+One pair:
+
 ```sh
 /workspace/libero-runtime/agent-env/bin/python examples/libero/run.py \
   --validation /workspace/libero-validation/validation.json \
   --output /workspace/libero-paid-pilot \
+  --task 0 --state 0 \
   --authorization "<the user's own words approving this scope>" \
   --execute-paid-rollouts
 ```
 
+Several pairs under one campaign cap, here state 0 of the basket tasks twice,
+three pairs at a time:
+
+```sh
+/workspace/libero-runtime/agent-env/bin/python examples/libero/campaign.py \
+  /workspace/libero-paid-campaign 0:0 1:0 7:0 --repeats 2 \
+  --cap 45 --pair-cap 7 --arm-cap 3.4 --workers 3 \
+  --validation /workspace/libero-validation/validation.json \
+  --authorization "<the user's own words approving this scope>"
+```
+
+`--role development` or `--role held_out` selects every case of that role
+instead. Any held-out case also needs `--held-out-authorization`, the user's
+words approving that test. The campaign admits a pair only while the conservative charge of its finished
+attempts plus the full caps of running pairs leaves room for one more pair cap,
+and admits nothing more once any attempt has unknown usage. Pairs it finds
+complete in its folder are skipped; an interrupted attempt is kept, charged and
+retried in a new `_retryN` folder, and each repeat after the first has its own
+`_repeatN` folder. `--arms world_use` runs only the World Use arm, for a
+development check that reuses the raw arm's earlier result; `protocol.json`
+records the arms run.
+
+Append the campaign's pairs, labelled with the commit they ran, to the compact
+rows, and print the comparison tables. The tables use each case's latest commit
+for each arm and report repeats as solved k of n:
+
+```sh
+python examples/libero/report.py collect examples/libero/paid-results.jsonl \
+  <commit>=/workspace/libero-paid-campaign
+python examples/libero/report.py tables examples/libero/paid-results.jsonl
+```
+
 The authorization is recorded verbatim in `protocol.json`. An approval given for
-an earlier runner or scope does not cover this one. `--state 2 --held-out` runs
-the reserved state. The committed
+an earlier runner or scope does not cover this one. The committed
 `validation.json` records an offline validation of this source in one runtime; a
 paid run needs a validation made in its own runtime.
 
@@ -486,8 +578,8 @@ image/function-call probe precedes both episodes. A pair has a $15 conservative
 usage cap, $7.40 per arm, a two-hour deadline and a 30-minute episode deadline
 unless `--total-budget`, `--arm-budget`, `--deadline-seconds` and
 `--episode-seconds` set others; all are recorded in `protocol.json`. A campaign
-over several pairs runs one invocation per pair and must keep its own total.
-Output directories must be new. There are no automatic HTTP retries;
+runs one invocation per pair, with 3,000-second episodes and a 6,000-second
+pair deadline. Output directories must be new. There are no automatic HTTP retries;
 unknown usage retains its reservation and blocks the campaign. All requests,
 responses and settled usage are journalled without authentication headers. Prices
 are assumptions from the published benchmark's model price row, not an Azure

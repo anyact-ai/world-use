@@ -15,7 +15,7 @@ from native import ARM_TOLERANCE, fingerprint
 from world_use import procedures
 from world_use.behaviors import Outcome
 from world_use.cameras import View
-from world_use.parallax import Look, locate
+from world_use.parallax import Look, footprint, locate
 from world_use.tracking import Tracking
 from world_use.vision_worker import TrackerProcess
 
@@ -32,6 +32,11 @@ is in the wrist image you see next. Check there that it lies on what you meant. 
 a destination such as a basket or plate before carrying anything there; the position holds
 while that object is not moved. z reads low, by up to 3 cm on flat things and 6 cm on tall ones
 in recorded trials: use it for clearance, not as a grasp or release height.
+A position found for a target is kept until you select the target again or a grasp closes on it:
+locate or grasp it again without a new selection and one look confirms it.
+centred and located also give across_mm and along_mm, the region's narrow and long sides, and
+for a region clearly longer than wide fit_yaw_deg, the yaw_deg that puts the fingers across the
+narrow side.
 centred and located x, y are world coordinates of the region's centre, already corrected for
 the camera's mount: pass them unchanged as targets. Never line objects up in the wrist image
 yourself: the camera sits 5 cm from the grasp axis, so the point under the fingers is at column
@@ -52,14 +57,18 @@ the first failed check and never carries, retreats or retries. Judge from both c
 the object followed.
 With the start orientation the fingers open along world y and take objects up to 78 mm across.
 grasp's yaw_deg turns that axis about the vertical, 90 to world x, and the hand keeps the turn
-afterwards. The hand body is 20 cm wide along the finger axis and starts 6 cm above the
-fingertips: a neighbour taller than that within 10 cm along the axis blocks the descent, and a
-turn of 30-60 degrees away from it can clear it. Fingers closing across a box that is not
-square to them turn it first, which takes tens of steps. Grasp a can, bottle or box at its
-centre with the fingers across its narrow side. A mug, bowl or pot is wider than the fingers:
-take it by the rim. Give grasp an offset of the rim radius along the finger axis from the centre
-of the wrist region, on a side clear of any handle, so one finger goes inside, with the approach
-z 2-3 cm below the rim top instead of a low z.
+afterwards. Given no yaw_deg and no offset, a grasp of a region you selected in the wrist camera
+with a box around all of the object turns to its fit_yaw_deg by itself when its narrow side is
+at most 70 mm, and reports fingers_turned_to_yaw_deg; pass yaw_deg to choose the turn yourself,
+as when a neighbour is in the way. A point may select only part of an object, so a point
+selection never turns the hand. The hand body is 20 cm wide along the finger axis and starts 6
+cm above the fingertips: a neighbour taller than that within 10 cm along the axis blocks the
+descent, and a turn of 30-60 degrees away from it can clear it. Fingers closing across a box
+that is not square to them turn it first, which takes tens of steps. Grasp a can, bottle or box
+at its centre with the fingers across its narrow side. A mug, bowl or pot is wider than the
+fingers: take it by the rim. Give grasp an offset of the rim radius along the finger axis from
+the centre of the wrist region, on a side clear of any handle, so one finger goes inside, with
+the approach z 2-3 cm below the rim top instead of a low z.
 place rises straight up to travel_z when the hand is below it, moves level to above your release
 pose, descends with the grip monitored and stops early on contact the same way, then returns
 BEFORE opening with a one-use checkpoint. Its descent_ended_above_request_m tells a landing on
@@ -80,6 +89,10 @@ when the native approvers changed your commands: a move issued while the arm sti
 previous command can end short, and repeating the move covers the rest.
 A surprise is a measurement, not the end of the task: correct its cause and try again while
 calls and steps remain. Tool completion is not task success. Decide from fresh camera evidence.
+Your first done does not end the episode. It is answered once with a review: the hand rises to
+the highest it has been so both cameras see the work, and the result lists what was grasped and
+released. Check the images that follow against the instruction, object by object, then call
+done again or keep working.
 """
 
 
@@ -102,8 +115,18 @@ WRIST = View(
     [[-1.0, 0, 0, 0], [0, -1.0, 0, 0.05], [0, 0, 1.0, -0.097], [0, 0, 0, 1.0]], 166.8128, -166.8128, 128, 127, 256, 256
 )
 OPEN_MM = [70, 85]  # fingers this far apart have let go, or made room, even while they still creep
+FIT_MM = 70  # the widest narrow side the fingers are turned to take: 78 mm of opening less clearance
+LONGER = 1.3  # a region this much longer than it is wide has a narrow side to take it by
+REVIEW_STEPS = 60  # with fewer steps than this left, the review does not spend any on rising
 CLOSE_STEPS = 120
 SETTLE_STEPS = 40  # raised high above the table the arm needs about 25 steps to stop swinging
+
+
+def turned(yaw_deg):
+    """Pose targets for the finger axis, tool x, turned from world y toward world x with the approach axis down."""
+    turn = math.radians(yaw_deg)
+    columns = [math.sin(turn), math.cos(turn), 0.0, math.cos(turn), -math.sin(turn), 0.0]
+    return dict(zip(("r00", "r10", "r20", "r01", "r11", "r21"), columns, strict=True))
 
 
 def wrist_view(eef_state):
@@ -327,6 +350,11 @@ class WorldTools:
         )
         self.pending = None
         self.seen = None
+        self.located = {}  # where each target was last found; forgotten once it is reselected or taken
+        self.outlined = set()  # targets selected with a box around them, whose region is the whole object
+        self.handled = []  # what was grasped and released, for the review before done
+        self.reviewed = False
+        self.top_z = float(driver.observation.state["eef_state"][2])
 
     def schemas(self):
         return self.native.schemas() + copy.deepcopy(SCHEMAS)
@@ -355,6 +383,10 @@ class WorldTools:
         if where.get("camera") not in current:
             raise ValueError(f"camera must be one of {sorted(current)}")
         self.seen = None
+        self.located.pop(target, None)
+        self.outlined.discard(target)
+        if where.get("box") is not None:
+            self.outlined.add(target)
         return self.tracking.select(
             current[where["camera"]].id, target, point=where.get("point"), box=where.get("box"), space="image"
         )
@@ -362,22 +394,26 @@ class WorldTools:
     def _centre(self, name, stage, floor_z=None):
         """Move the hand level until it is over a region tracked in the wrist camera.
 
-        Returns the region's position, or the Outcome that stopped the search. Every move is a
-        counted, settled native move. Given the lowest height a grasp allows, the first move
+        Returns the region's position and shape, or the Outcome that stopped the search. Every
+        move is a counted native move that ends once the hand is there: a look needs the pose it
+        is taken from, not a hand at rest. Given the lowest height a grasp allows, the first move
         heads for a little above it and the moves also open the fingers; otherwise they leave
-        them alone.
+        them alone. A position found earlier for a region not reselected since is confirmed by
+        one look instead of being worked out again.
         """
         hand = dict(gripper=0) if floor_z is not None else {}
 
+        def region():
+            return next((t for t in self.observe()["targets"] if t["target"] == name), {})
+
         def look():
-            seen = next((t for t in self.observe()["targets"] if t["target"] == name), {})
-            state = self.driver.observation.state["eef_state"]
+            seen, state = region(), self.driver.observation.state["eef_state"]
             visible = seen.get("valid") is True and bool(seen.get("center"))
             return Look(wrist_view(state), state[:3], *((seen["center"], seen.get("bbox")) if visible else ()))
 
         def move(goal):
             targets = dict(x=float(goal[0]), y=float(goal[1]), **hand)
-            return self.driver.execute(self._move(targets, stage, expected=OPEN_MM if hand else None))
+            return self.driver.execute(dict(self._move(targets, stage, expected=OPEN_MM if hand else None), rest=False))
 
         found = locate(
             move,
@@ -385,13 +421,25 @@ class WorldTools:
             camera="wrist",
             arrive_m=ARM_TOLERANCE[0],
             assumed_z=None if floor_z is None else floor_z + 0.05,
+            known=self.located.get(name),
         )
         if not found.ok:
             return found
-        extent = found.data.pop("extent_m", None)
+        data = found.data
+        self.located[name] = [data[k] for k in "xyz"]
+        extent = data.pop("extent_m", None)
         if extent:
-            found.data["extent_mm"] = [round(1000 * side) for side in extent]
-        return found.data
+            data["extent_mm"] = [round(1000 * side) for side in extent]
+            view = wrist_view(self.driver.observation.state["eef_state"])
+            depth = float(view.project(self.located[name])[1][0])
+            shape = footprint(view, region().get("dominant_region") or {}, depth)
+            if shape:
+                data.update(across_mm=round(1000 * shape["across_m"]), along_mm=round(1000 * shape["along_m"]))
+                if shape["along_m"] >= LONGER * shape["across_m"]:
+                    # The finger axis turned from world y toward world x, as grasp's yaw_deg is, in (-90, 90].
+                    yaw = math.degrees(math.atan2(shape["across"][0], shape["across"][1]))
+                    data["fit_yaw_deg"] = round((yaw + 90) % 180 - 90)
+        return data
 
     def _result(self, data, told=None):
         """Record the full result and return the policy its brief copy."""
@@ -451,7 +499,35 @@ class WorldTools:
         if result.error:
             raise ValueError(result.error)
 
+    def _review(self):
+        """The one check before the episode ends: an unobstructed look and what the tools did."""
+        state = self.driver.observation.state["eef_state"]
+        risen = None
+        if self.top_z - float(state[2]) > ARM_TOLERANCE[0] and self.driver.max_steps - self.driver.steps > REVIEW_STEPS:
+            # The highest the hand has been is a height it can be at; from there both cameras see more.
+            risen = self.driver.execute(self._move({"z": self.top_z}, "review_rise"))
+        last = {}
+        for row in self.handled:
+            last.setdefault(row["object"], {}).update({k: v for k, v in row.items() if k != "object"})
+        return self._result(
+            dict(
+                status="review",
+                message="This is the one check before the episode ends, not an error. Look at the images that "
+                "follow"
+                + (", taken with the hand raised out of the way" if risen is not None and risen.ok else "")
+                + ". For every object the instruction names, find it and say where it is now. If each is "
+                "the object you meant and is where the instruction asks, call done again. Otherwise keep "
+                "working: nothing has ended.",
+                handled=[dict(object=name, **facts) for name, facts in last.items()],
+                **self.driver.measure(),
+            )
+        )
+
     def execute(self, call, observation):
+        self.top_z = max(self.top_z, float(self.driver.observation.state["eef_state"][2]))
+        if call.name == "done" and not self.reviewed:
+            self.reviewed, self.pending = True, None
+            return self._review()
         if call.name in ("done", "give_up"):
             self.pending = None
             return self.native.execute(call, observation)
@@ -524,10 +600,7 @@ class WorldTools:
                 if (yaw := args.get("yaw_deg")) is not None:
                     if type(yaw) not in (float, int) or not -90 <= yaw <= 90:
                         raise ValueError("yaw_deg is between -90 and 90")
-                    # Tool x, the finger axis, turned from world y toward world x; the approach axis stays down.
-                    turn = math.radians(yaw)
-                    columns = [math.sin(turn), math.cos(turn), 0.0, math.cos(turn), -math.sin(turn), 0.0]
-                    approach.update(zip(("r00", "r10", "r20", "r01", "r11", "r21"), columns, strict=True))
+                    approach.update(turned(yaw))
                 if "select" in args:
                     self._select(name, args["select"])
 
@@ -541,6 +614,13 @@ class WorldTools:
                             return centred
                         found.update(centred={k: v for k, v in centred.items() if k != "pixel"})
                         over = dict(x=centred["x"] + offset[0], y=centred["y"] + offset[1])
+                        fit = centred.get("fit_yaw_deg")
+                        fits = fit is not None and centred["across_mm"] <= FIT_MM
+                        if yaw is None and not any(offset) and fits and name in self.outlined:
+                            # Fingers across the narrow side close on it squarely instead of turning it first.
+                            # A point may select only part of an object, whose narrow side is not the object's.
+                            over.update(turned(fit))
+                            found.update(fingers_turned_to_yaw_deg=fit)
                         command = dict(command, targets=dict(command["targets"], **over))
                     outcome = self._descend(command, found)
                     ran.append(outcome.ok)
@@ -588,6 +668,9 @@ class WorldTools:
                     lift=dict(self._move({}, "grasp_test_lift", monitor=grip), rise_m=rise),
                     assess=lifted,
                 )
+                if len(ran) > 1:
+                    self.located.pop(name, None)  # fingers that closed may have moved it
+                self.handled.append(dict(object=name, grasp=outcome.status))
                 return self._procedure(outcome, name, **found)
             if call.name == "place":
                 self.pending = None
@@ -656,10 +739,16 @@ class WorldTools:
                         dict(verified=False, policy_note=args["note"]),
                     )
 
+                kept = pending["args"]
+                released = dict(object=kept["object_target"])
+                at = self.driver.observation.state["eef_state"][:2]
+                released["released_at"] = [float(at[0]), float(at[1])]
+                if (where := self.located.get(kept.get("destination_target"))) is not None:
+                    released["from_located_destination_mm"] = round(1000 * float(np.hypot(*(at - where[:2]))))
                 outcome = self._place(
                     pending["args"], dict(kind="confirm_state", fingerprint=pending["fingerprint"]), approved
                 )
-                kept = pending["args"]
+                self.handled.append(dict(released, release=outcome.status))
                 return self._procedure(
                     outcome, *(kept[k] for k in ("object_target", "destination_target") if k in kept)
                 )

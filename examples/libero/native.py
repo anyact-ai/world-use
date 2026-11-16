@@ -202,11 +202,12 @@ class Driver:
         that no longer follows, and a hand that stopped short is commanded to where it
         is, so that it stops pushing and the next move starts from rest.
 
-        A stage may ask for four things a raw move does not do. travel_z first rises
+        A stage may ask for five things a raw move does not do. travel_z first rises
         straight up to that height when the hand is below it. above_first moves level
         to above the pose and settles there before descending, so the hand comes straight
         down. contact_ok accepts a descent that contact stopped directly above the pose.
         rise_m replaces the target height with the measured height plus that rise.
+        rest=False accepts arrival at the pose without waiting for the hand to stop there.
         """
         kind = command["kind"]
         if kind == "confirm_state":
@@ -235,8 +236,8 @@ class Driver:
             targets = {**targets, "z": float(self.observation.state["eef_state"][2]) + command["rise_m"]}
         legs = {**command, "travel_z": None, "above_first": False, "contact_ok": False, "rise_m": None}
 
-        def leg(part):
-            out = self.execute({**legs, "targets": part})
+        def leg(part, **change):
+            out = self.execute({**legs, "targets": part, **change})
             if "above_request_m" in out.data:
                 # A leg that stalled is short of the stage's request, not of its own.
                 state = self.observation.state["eef_state"]
@@ -248,12 +249,15 @@ class Driver:
             return out
 
         travel = command.get("travel_z")
+        level = {k: v for k, v in targets.items() if k != "z"}
         if travel is not None and travel - float(self.observation.state["eef_state"][2]) > ARM_TOLERANCE[0]:
-            rise = leg({"z": travel})
+            # The level leg that follows holds this height, so the hand need not stop at the top first.
+            rise = leg({"z": travel}, rest=False)
             if not rise.ok:
                 return rise
+            level["z"] = travel
         if command.get("above_first") and "z" in targets and len(targets) > 1:
-            first = leg({k: v for k, v in targets.items() if k != "z"})
+            first = leg(level)
             if not first.ok:
                 return first
         result = self.tools.execute(
@@ -341,8 +345,14 @@ class Driver:
         # Settling repeats the final request. The half-step margin keeps the last counted
         # sample inside the deadline; the loop bound is what limits the steps.
         seconds = (settle + 0.5) / HZ
+        # A stage that only passes through its pose, or takes a look from it, has arrived once it is there.
+        rest = command.get("rest", True)
         arm = Settling(
-            [*ARM_TOLERANCE, REST_M], seconds, WINDOW_S, stable_s=STABLE_S, stall_s=(STALL_STEPS - 1) / HZ
+            [*ARM_TOLERANCE, REST_M if rest else 1.0],
+            seconds,
+            WINDOW_S,
+            stable_s=STABLE_S if rest else 0,
+            stall_s=(STALL_STEPS - 1) / HZ,
         )
         # Above 0.5 the native hand keeps closing and below it keeps opening. Its travel
         # toward that end either reaches it, stops on something, or is still under way.

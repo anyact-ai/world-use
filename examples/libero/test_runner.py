@@ -173,6 +173,7 @@ def tools_fixture(camera=None, **motion):
     tools.driver = FakeDriver()
     tools.native = tools.driver.tools
     tools.pending = tools.seen = None
+    tools.located, tools.outlined, tools.handled, tools.reviewed, tools.top_z = {}, set(), [], False, 0.5
     captures = iter(range(100))
 
     def observe(names):
@@ -284,7 +285,7 @@ def test_grasp_reports_a_selected_region_that_stayed_behind_the_lift(camera, mot
         assert result["checkpoint"] == "after" and result["observed"] == dict(mask_iou=0.97, center_shift_px=0.58)
 
 
-def wrist_scene(tools, thing, visible=lambda looks: True, half=0.0):
+def wrist_scene(tools, thing, visible=lambda looks: True, half=0.0, shape=None):
     """A fixed point, or a level square of that half-width, seen by the wrist camera of the fixture's hand."""
     driver, looks = tools.driver, []
     driver.pose.update(z=0.65)
@@ -306,7 +307,12 @@ def wrist_scene(tools, thing, visible=lambda looks: True, half=0.0):
             px = np.array([wrist_view(eef()).project(c)[0][0] for c in corners], dtype=float)
             box = [*np.clip(px.min(axis=0), 0, 255), *np.clip(px.max(axis=0), 0, 255)]
             u, v = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-        return [dict(target=n, valid=True, camera="wrist", center=[u, v], bbox=box) for n in names]
+        seen = dict(valid=True, camera="wrist", center=[u, v], bbox=box)
+        if shape:
+            # The tracker's narrowest box around the region: its long side's direction and both sides in pixels.
+            axis_deg, length_px, width_px = shape
+            seen["dominant_region"] = dict(center=[u, v], axis_deg=axis_deg, length_px=length_px, width_px=width_px)
+        return [dict(target=n, **seen) for n in names]
 
     tools.tracking.observe = look
     tools.tracking.targets["object"]["camera"] = "wrist"
@@ -381,6 +387,86 @@ def test_a_yaw_turns_the_finger_axis_about_the_vertical_and_keeps_the_approach_a
     refused = grasp(tools, yaw_deg=120, select=dict(camera="wrist", point=[5, 5]))
     # A refused call changes nothing, the selection included.
     assert refused["status"] == "refused" and len(tools.driver.commands) == count and not tools.selected
+
+
+def test_a_position_found_once_is_not_worked_out_again_until_the_region_is_reselected_or_taken():
+    tools = tools_fixture()
+    wrist_scene(tools, np.array([0.07, -0.04, 0.45]))
+    first = json.loads(tools.execute(call("locate", target="object"), tools.driver.observation).note)["located"]
+    moves = len(tools.driver.commands)
+    again = json.loads(tools.execute(call("locate", target="object"), tools.driver.observation).note)["located"]
+    assert [again[k] for k in "xyz"] == [first[k] for k in "xyz"] and len(tools.driver.commands) == moves
+    # A grasp of it goes straight to the approach, and fingers that closed on it may have moved it.
+    assert grasp(tools)["status"] == "done"
+    assert tools.driver.commands[moves]["stage"] == "grasp_approach" and not tools.located
+    # A new selection is a new region.
+    tools.located["object"] = [0.0, 0.0, 0.45]
+    tools.execute(call("select_target", target="object", camera="agentview", point=[5, 5]), tools.driver.observation)
+    assert not tools.located
+
+
+@pytest.mark.parametrize(
+    ("extra", "outlined", "turned"),
+    [({}, True, True), ({}, False, False), (dict(yaw_deg=0), True, False), (dict(offset=[0.02, 0]), True, False)],
+)
+def test_fingers_turn_across_the_narrow_side_of_an_outlined_long_region_unless_the_policy_placed_them(
+    extra, outlined, turned
+):
+    tools = tools_fixture()
+    # A box top 34 pixels long at 30 degrees in the published wrist image and 14 wide, from 30 cm above.
+    wrist_scene(tools, np.array([0.07, -0.04, 0.45]), shape=(30, 34, 14))
+    # Only a region selected with a box around it is taken to be the whole object.
+    tools.outlined = {"object"} if outlined else set()
+    result = grasp(tools, **extra)
+    approach = next(c for c in tools.driver.commands if c.get("stage") == "grasp_approach")
+    assert result["status"] == "done" and result["centred"]["across_mm"] == pytest.approx(25, abs=3)
+    fit = result["centred"]["fit_yaw_deg"]
+    assert (result.get("fingers_turned_to_yaw_deg") == fit) == turned
+    if turned:
+        # The finger axis, tool x, lies across the narrow side and the approach axis stays down.
+        axis = np.array([approach["targets"][k] for k in ("r00", "r10", "r20")])
+        assert axis == pytest.approx([np.sin(np.radians(fit)), np.cos(np.radians(fit)), 0], abs=1e-9)
+    elif "yaw_deg" not in extra:
+        assert "r00" not in approach["targets"]
+
+
+def test_a_round_or_wide_region_leaves_the_fingers_as_they_are():
+    for shape in ((30, 20, 19), (30, 80, 55)):
+        tools = tools_fixture()
+        wrist_scene(tools, np.array([0.07, -0.04, 0.45]), shape=shape)
+        tools.outlined = {"object"}
+        result = grasp(tools)
+        approach = next(c for c in tools.driver.commands if c.get("stage") == "grasp_approach")
+        assert result["status"] == "done" and "fingers_turned_to_yaw_deg" not in result
+        assert "r00" not in approach["targets"]
+
+
+def test_the_first_done_is_answered_with_one_review_and_the_second_ends_the_episode():
+    tools = tools_fixture()
+    tools.driver.max_steps, tools.top_z = 900, 0.72
+    ended = []
+    validate = tools.native.execute
+
+    def native(call, *rest):
+        return (ended.append(call.name) or "ended") if call.name == "done" else validate(call, *rest)
+
+    tools.native.execute = native
+    assert grasp(tools)["status"] == "done"
+    done = ToolCall(id="test", name="done", arguments=json.dumps(dict(summary="Fixture.")))
+    review = json.loads(tools.execute(done, tools.driver.observation).note)
+    # Nothing ended: the hand rose to the highest it has been, and the policy is told what was handled.
+    assert review["status"] == "review" and not ended and "call done again" in review["message"]
+    assert tools.driver.commands[-1]["stage"] == "review_rise" and tools.driver.commands[-1]["targets"] == {"z": 0.72}
+    assert review["handled"] == [dict(object="object", grasp="done")]
+    assert tools.execute(done, tools.driver.observation) == "ended" and ended == ["done"]
+
+
+def test_a_review_with_few_steps_left_spends_none_on_rising():
+    tools = tools_fixture()
+    tools.driver.max_steps, tools.driver.steps, tools.top_z = 900, 870, 0.72
+    done = ToolCall(id="test", name="done", arguments=json.dumps(dict(summary="Fixture.")))
+    review = json.loads(tools.execute(done, tools.driver.observation).note)
+    assert review["status"] == "review" and not tools.driver.commands and "raised" not in review["message"]
 
 
 def test_a_region_missing_from_the_wrist_view_stops_before_any_descent():
@@ -743,6 +829,41 @@ def test_a_swinging_arm_has_arrived_only_at_rest_and_its_turning_points_are_not_
     assert max(rows) > 0.1 + 0.012
     assert out.ok and out.data["arm"] == "arrived" and abs(rows[-1] - rows[-2]) <= 0.002
     assert out.data["position_error_m"] <= 0.012
+
+
+@pytest.mark.parametrize(
+    ("case", "hand", "command", "arm"),
+    [
+        ("free", {}, dict(targets={"x": 0.15}), "arrived"),
+        ("descent", {}, dict(targets={"x": 0.1, "z": 0.5}, above_first=True, contact_ok=True), "arrived"),
+        (
+            "contact",
+            dict(floor_z=0.5),
+            dict(targets={"x": 0.1, "z": 0.45}, above_first=True, contact_ok=True),
+            "stopped_on_contact",
+        ),
+        ("blocked", dict(wall_x=0.05), dict(targets={"x": 0.15}), "not_approaching"),
+    ],
+)
+def test_the_thresholds_tell_motion_contact_and_a_block_apart_on_arms_that_lag_and_swing_differently(
+    tmp_path, case, hand, command, arm
+):
+    # The thresholds were set on one simulated arm. A fake arm that closes 8 to 70 percent of its gap to the
+    # command each step, and keeps none to 70 percent of its speed, is judged the same way. A slow arm that
+    # keeps 85 percent of its speed is not: its free descent reads as blocked.
+    for gain in (0.08, 0.2, 0.45, 0.7):
+        for momentum in (0.0, 0.5, 0.7):
+            d = driver(tmp_path / f"{gain}-{momentum}", arm_gain=gain, momentum=momentum, **hand)
+            out = d.execute(dict(kind="move", stage=case, settle_steps=40, **command))
+            assert out.data["arm"] == arm, (gain, momentum)
+
+
+def test_a_stage_that_only_passes_through_its_pose_does_not_wait_for_the_hand_to_stop(tmp_path):
+    resting, passing = driver(tmp_path / "a", momentum=0.7), driver(tmp_path / "b", momentum=0.7)
+    stopped = resting.execute(stage({"x": 0.1}, "carry"))
+    through = passing.execute(dict(stage({"x": 0.1}, "look"), rest=False))
+    assert stopped.data["arm"] == through.data["arm"] == "arrived" and through.data["position_error_m"] < 0.012
+    assert passing.steps < resting.steps - 3
 
 
 def test_a_travel_height_is_reached_before_any_level_motion(tmp_path):
