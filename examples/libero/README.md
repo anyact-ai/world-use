@@ -268,25 +268,46 @@ the scripted task 0 run takes 524 steps instead of 483.
 
 ## Paid results
 
-**Basket tasks.** At `c418a71` tasks 0, 1 and 7 were each run on development
-states 0 and 1, one matched pair per task and state:
+**Basket tasks, both arms told the image is mirrored.** Tasks 0, 1 and 7, one
+matched pair per task and state: development states 0 and 1 at `f47ff9f`, and
+the held-out state 2 at `4800819`, the commit before it, which still refused a
+test lift of exactly 5 cm.
 
 | | raw Sol | World Use |
 |---|---|---|
-| episodes that satisfied the success check | 2 of 6 | 6 of 6 |
+| development states: satisfied the success check | 4 of 6 | 6 of 6 |
+| held-out state: satisfied the success check | 2 of 3 | 2 of 3 |
+| how the others ended | gave up 2, claimed done 1 | claimed done 1 |
+| model calls over the nine pairs, total and median | 338, 36 | 105, 11 |
+| counted steps | 4,530 | 6,111 |
+| input and output tokens | 2,215,097 and 31,281 | 599,463 and 8,998 |
+| estimated cost at the assumed prices | $3.94 | $0.67 |
+| wall time | 3,381 s | 3,057 s |
+
+On the six pairs in which both arms succeeded, the World Use arm used 62% fewer
+calls and 60% fewer input tokens, and 55% more steps. On held-out task 7 both
+arms declared the task done and the check disagreed. The World Use arm had
+taken the tomato sauce for the alphabet soup; the raw arm took the right can,
+and its record does not show what the check rejected.
+
+**The same development pairs before that sentence.** At `c418a71` the raw arm
+was told only what upstream tells it:
+
+| | raw Sol | World Use |
+|---|---|---|
+| satisfied the success check | 2 of 6 | 6 of 6 |
 | how the others ended | gave up 3, claimed done 1 | |
 | model calls, total and median | 260, 43.5 | 71, 12.5 |
 | counted steps | 3,651 | 3,659 |
-| input and output tokens | 1,841,150 and 25,654 | 390,582 and 6,371 |
 | estimated cost at the assumed prices | $3.30 | $0.42 |
-| wall time | 2,914 s | 2,140 s |
 
-On the two pairs in which both arms succeeded, the World Use arm used 74% fewer
-calls and 79% fewer input tokens, and 16% more steps. Over every basket pair
-from `b61545e` on, ten in all, the World Use arm succeeded in nine and raw Sol
-in three.
+Raw Sol went from two successes to four on these six pairs, and from a median
+43.5 calls to 35.5, once it was told the image is mirrored. With one episode
+per cell that is a suggestion, not a measurement, but it is the likelier reading
+that part of the earlier gap was the raw arm misreading a mirrored image.
 
-**The other seven tasks.** At `e1f4c5e` each was run once, on state 0:
+**The other seven tasks.** At `e1f4c5e`, before the sentence, each was run once
+on state 0:
 
 | task | raw Sol | calls | est. USD | World Use | calls | est. USD |
 |---|---|---|---|---|---|---|
@@ -300,92 +321,54 @@ in three.
 
 Each arm succeeded once, on different tasks. The World Use arm made 130 calls
 for an estimated $1.17 where raw Sol made 415 for $7.01, and it twice declared
-a task done that the success check rejects. In a second pair on task 0 at this
-commit raw Sol reached the step limit after 73 calls and the World Use arm
-again declared an unfinished task done.
+a task done that the success check rejects: in tasks 4 and 6 it rim-grasped
+both mugs and the pudding and set them down on the side the mirrored image
+shows. Tasks 4 and 6 were run again at `4800819` with the sentence. In task 4
+the World Use arm succeeded in 13 calls and raw Sol gave up after 35. In task 6
+both arms declared done and the check disagreed; the World Use arm had put the
+pudding on the correct side, 5 cm beyond the strip beside the plate that the
+task accepts.
 
-Why the World Use arm fell short on these:
+Where the World Use arm fell short:
 
-- Tasks 4 and 6 name a left plate and the right of a plate. The front camera's
-  image as both arms receive it is mirrored: the task's left is the image's
-  right. The arm rim-grasped both mugs and the pudding and set them down, on the
-  side the image shows. Raw Sol did not get as far in either task.
-- The third claim, on task 0, put the tomato sauce and the butter in the basket
-  as soup and sauce. Raw Sol's false completion at `b61545e` was the same kind
-  of mistake. Nothing in these tools checks what a selected region is.
+- Nothing in these tools checks what a selected region is. Two of its five
+  false completions took one grocery for another: the butter for the tomato
+  sauce on task 0 at `e1f4c5e`, the tomato sauce for the soup on held-out task
+  7. Raw Sol's false completion at `b61545e` was the same kind of mistake.
 - The bowl was taken by its rim on the fourth attempt and set in the drawer, and
   the steps ran out while the drawer was being pushed shut. One moka pot reached
   the stove and the second slipped when the two touched. The mug for the
   microwave was lifted by its rim and lost on the microwave's roof during the
   carry. The book was never held. A grasp from above, even with a rim offset,
   holds these objects poorly or not at all.
+- It uses more simulator steps than raw Sol on the pairs both complete, and its
+  successful episodes ended between 497 and 855 of the 900 allowed.
 - On task 5 `locate` returned a point above the camera for a clipped selection.
   Looks that meet less than 5 cm below the camera are now discarded.
 
 What these results do not show:
 
-- Each cell is one episode. Sol's raw outcomes on task 0 state 0 across five runs
-  were two successes, one false completion, one give-up and one step limit; the
-  World Use arm's across the last three were two successes and one false
-  completion.
-- The basket states are the ones the tools were developed on. Task 0 state 0 had
-  been run with three earlier versions of the World Use arm, which failed twice,
-  and tasks 1 and 7 once each. The other seven tasks were run once and not
-  iterated on. Held-out state 2 has not been run.
+- Each cell is one episode. Sol's raw outcomes on task 0 state 0 across six runs
+  were two successes, one false completion, two give-ups and one step limit.
+- The development states are the ones the tools were written against. Task 0
+  state 0 had been run with three earlier versions of the World Use arm, which
+  failed twice. The held-out state was run once, after the tools were finished.
+  The one change made after it, accepting a 5 cm test lift, removes a refusal
+  that seven of the eight development episodes at `e1f4c5e` had also hit.
+- The other seven tasks were run once and not iterated on, and only tasks 4 and
+  6 have been run since both arms were told about the mirrored image.
 - The World Use arm is told the wrist camera's mount and the hand's dimensions.
   The raw arm is not.
 
 [paid-results.jsonl](paid-results.jsonl) has one row per arm of every paid pair,
 with the commit that produced it, how the episode ended, calls, counted steps,
-wall time, tokens and estimated cost at the assumed prices. The raw arm is the
-same condition at every commit; the World Use arm is the tree at that commit.
-Wall times were not controlled for other load on the machine. A pair in which
-the transport refused a request has one row, for the arm that was running, and
-no result for either arm. All pairs together cost an estimated $19.72, $29.82
-at the conservative rate the transport reserves.
-
-| commit | task | state | arm | ended | calls | steps | est. USD |
-|---|---|---|---|---|---|---|---|
-| `6d73def` | 0 | 0 | raw | success | 49 | 653 | 0.66 |
-| `6d73def` | 0 | 0 | World Use | gave up | 21 | 331 | 0.20 |
-| `da32947` | 0 | 0 | raw | success | 44 | 557 | 0.50 |
-| `da32947` | 0 | 0 | World Use | step limit | 23 | 900 | 0.24 |
-| `b61545e` | 0 | 0 | raw | claimed done, not successful | 58 | 727 | 0.96 |
-| `b61545e` | 0 | 0 | World Use | success | 13 | 762 | 0.10 |
-| `b61545e` | 7 | 0 | raw | success | 49 | 531 | 0.63 |
-| `b61545e` | 7 | 0 | World Use | success | 15 | 818 | 0.12 |
-| `72d0fca` | 0 | 1 | raw | stopped by the spending guard | 64 | 656 | 1.07 |
-| `72d0fca` | 1 | 0 | raw | stopped by the spending guard | 60 | 828 | 1.05 |
-| `72d0fca` | 1 | 1 | raw | step limit | 52 | 900 | 0.75 |
-| `72d0fca` | 1 | 1 | World Use | success | 11 | 708 | 0.07 |
-| `c418a71` | 0 | 0 | raw | gave up | 54 | 744 | 0.82 |
-| `c418a71` | 0 | 0 | World Use | success | 13 | 610 | 0.08 |
-| `c418a71` | 0 | 1 | raw | claimed done, not successful | 36 | 522 | 0.37 |
-| `c418a71` | 0 | 1 | World Use | success | 13 | 576 | 0.08 |
-| `c418a71` | 1 | 0 | raw | gave up | 53 | 669 | 0.79 |
-| `c418a71` | 1 | 0 | World Use | success | 12 | 650 | 0.07 |
-| `c418a71` | 1 | 1 | raw | success | 34 | 462 | 0.32 |
-| `c418a71` | 1 | 1 | World Use | success | 13 | 784 | 0.08 |
-| `c418a71` | 7 | 0 | raw | success | 51 | 641 | 0.68 |
-| `c418a71` | 7 | 0 | World Use | success | 9 | 497 | 0.04 |
-| `c418a71` | 7 | 1 | raw | gave up | 32 | 613 | 0.32 |
-| `c418a71` | 7 | 1 | World Use | success | 11 | 542 | 0.06 |
-| `e1f4c5e` | 0 | 0 | raw | step limit | 73 | 900 | 1.37 |
-| `e1f4c5e` | 0 | 0 | World Use | claimed done, not successful | 13 | 727 | 0.09 |
-| `e1f4c5e` | 2 | 0 | raw | step limit | 56 | 900 | 0.90 |
-| `e1f4c5e` | 2 | 0 | World Use | success | 15 | 388 | 0.09 |
-| `e1f4c5e` | 3 | 0 | raw | success | 49 | 697 | 0.77 |
-| `e1f4c5e` | 3 | 0 | World Use | step limit | 34 | 900 | 0.44 |
-| `e1f4c5e` | 4 | 0 | raw | gave up | 74 | 882 | 1.47 |
-| `e1f4c5e` | 4 | 0 | World Use | claimed done, not successful | 14 | 851 | 0.10 |
-| `e1f4c5e` | 5 | 0 | raw | gave up | 54 | 651 | 0.82 |
-| `e1f4c5e` | 5 | 0 | World Use | gave up | 19 | 674 | 0.16 |
-| `e1f4c5e` | 6 | 0 | raw | gave up | 61 | 838 | 1.06 |
-| `e1f4c5e` | 6 | 0 | World Use | claimed done, not successful | 12 | 651 | 0.08 |
-| `e1f4c5e` | 8 | 0 | raw | gave up | 61 | 871 | 1.00 |
-| `e1f4c5e` | 8 | 0 | World Use | gave up | 23 | 875 | 0.21 |
-| `e1f4c5e` | 9 | 0 | raw | gave up | 60 | 686 | 1.00 |
-| `e1f4c5e` | 9 | 0 | World Use | gave up | 13 | 403 | 0.09 |
+wall time, tokens and estimated cost at the assumed prices. The World Use arm
+is the tree at that commit. The raw arm is one condition up to `ea1173a` and
+another from `4800819`, as described under Conditions. Wall times were not
+controlled for other load on the machine. A pair in which the transport refused
+a request has one row, for the arm that was running, and no result for either
+arm. All 32 pairs together cost an estimated $26.05, $39.92 at the conservative
+rate the transport reserves.
 
 ## Rebuild the runtime
 
