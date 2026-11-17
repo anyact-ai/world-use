@@ -152,8 +152,6 @@ def test_a_camera_fixed_to_the_tool_sees_from_wherever_the_tool_is():
         for rise in (0.14, 0.03):
             assert k.run({"do": "line", "up": rise}).ok
             frame = camera.capture(k, depth=True)
-            # The view is the mount carried by the tool pose of the same physics state.
-            np.testing.assert_allclose(frame.view.T, mount.on(frame.tool).T, atol=1e-12)
             picture = np.asarray(frame.image).astype(float)
             ys, xs = np.nonzero((picture[..., 0] > 200) & (picture[..., 0] > 1.5 * picture[..., 2]))
             assert len(xs) > 200
@@ -164,6 +162,15 @@ def test_a_camera_fixed_to_the_tool_sees_from_wherever_the_tool_is():
         assert heights[1] - heights[0] == pytest.approx(0.03, abs=5e-3) and camera.calibration_id == frame.calibration
         with pytest.raises(ValueError, match="mirrored"):
             k.body.render(View(frame.view.T, -208.5, 208.5, 160, 120, 320, 240))
+        # A calibration replaces the mount the kernel believes, for every later frame, and not the lens.
+        believed = View(mount.T @ np.diag([1, 1, 1, 1]) + np.array([[0, 0, 0, 0.01]] + [[0] * 4] * 3),
+                        208.5, 208.5, 160, 120, 320, 240)
+        camera.view = believed
+        again = [camera.capture(k) for _ in range(2)]
+        assert camera.view is believed and again[0].calibration == again[1].calibration != frame.calibration
+        np.testing.assert_allclose(again[1].view.T[:3, 3] - frame.view.T[:3, 3], frame.tool[:3, :3] @ [0.01, 0, 0],
+                                   atol=1e-9)
+        np.testing.assert_array_equal(np.asarray(again[1].image), np.asarray(frame.image))
     finally:
         k.close()
 

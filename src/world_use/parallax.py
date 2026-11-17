@@ -31,7 +31,7 @@ class Look:
     view: View                  # the camera when the frame was taken, in the base frame
     hand: np.ndarray            # the tool point then, base frame, metres
     center: Sequence[float] | None = None
-    bbox: Sequence[float] | None = None     # x0, y0, x1, y1
+    bbox: Sequence[float] | None = None     # x0, y0, x1, y1; x1 and y1 are one past the last pixel
 
     @property
     def whole(self) -> bool:
@@ -39,7 +39,7 @@ class Look:
         if self.center is None or self.bbox is None:
             return False
         x0, y0, x1, y1 = self.bbox
-        return min(x0, y0) > 0 and x1 < self.view.width - 1 and y1 < self.view.height - 1
+        return min(x0, y0) > 0 and x1 < self.view.width and y1 < self.view.height
 
 
 def ray(view: View, pixel) -> tuple[np.ndarray, np.ndarray]:
@@ -88,7 +88,7 @@ def footprint(view: View, region: dict, depth_m: float) -> dict | None:
     return dict(across_m=width, along_m=float(np.linalg.norm(along)), across=(across / width).tolist())
 
 
-def locate(move: Callable[[np.ndarray], Outcome], look: Callable[[], Look], *, camera: str, arrive_m: float,
+def locate(move: Callable[[np.ndarray], Outcome], look: Callable[[], Look], *, arrive_m: float,
            assumed_z: float | None = None, known=None) -> Outcome:
     """Move the hand level until it is over a region its camera tracks, and report where the region is.
 
@@ -144,12 +144,12 @@ def locate(move: Callable[[np.ndarray], Outcome], look: Callable[[], Look], *, c
                                found)
             goal = fix[:2]
         elif not visible:
-            return Outcome("surprise", "locate", f"the selected region is not visible in the {camera} image",
+            return Outcome("surprise", "locate", "the selected region is not visible to the hand's camera",
                            dict(moves=moves),
-                           hint=f"hover with the object in the {camera} view and select it there; "
+                           hint="hover with the object in that camera's view and select it there; "
                                 "later stages did not run")
         elif moves >= MAX_MOVES:
-            return Outcome("stopped", "locate", f"the region could not be placed from the {camera} views",
+            return Outcome("stopped", "locate", "the region could not be placed from these looks",
                            dict(moves=moves))
         elif known is not None and not moves and np.linalg.norm(known[:2] - seen.hand[:2]) > arrive_m:
             goal = known[:2]

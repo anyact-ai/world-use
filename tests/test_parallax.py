@@ -38,8 +38,9 @@ class Hand:
         low, high = pixels.min(axis=0), pixels.max(axis=0)
         if not self.half:
             low, high = low - [10, 15], high + [10, 15]
-        # A tracker reports the part inside the image: its box and that part's centre.
-        box = [*np.clip(low, 0, 255), *np.clip(high, 0, 255)]
+        # A tracker reports the part inside the image: its box, ending one past the last pixel, and that
+        # part's centre.
+        box = [*np.clip(low, 0, 256), *np.clip(high, 0, 256)]
         return Look(view, self.position.copy(), [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2], box)
 
     def move(self, goal):
@@ -53,7 +54,7 @@ class Hand:
 
 
 def found(hand, **options):
-    return locate(hand.move, hand.look, camera="wrist", arrive_m=0.012, **options)
+    return locate(hand.move, hand.look, arrive_m=0.012, **options)
 
 
 def test_the_hand_ends_over_the_region_and_reports_where_it_is():
@@ -94,9 +95,17 @@ def test_a_region_the_image_cuts_off_is_placed_only_from_looks_at_all_of_it():
     assert result.data["extent_m"] == pytest.approx([0.18, 0.18], abs=6e-3)
 
 
+def test_a_region_is_whole_unless_its_box_reaches_the_image_border():
+    hand = Hand([0.0, 0.0, 0.45])
+    # A box ends one past its last pixel: 255 leaves the last column of a 256-pixel image free.
+    assert Look(hand.view, hand.position, [100, 100], [1, 1, 255, 255]).whole
+    assert not Look(hand.view, hand.position, [100, 100], [1, 1, 256, 200]).whole
+    assert not Look(hand.view, hand.position, [100, 100], [0, 1, 200, 200]).whole
+
+
 def test_a_move_that_fails_ends_the_search_with_its_outcome():
     hand = Hand([0.07, -0.04, 0.45])
-    result = locate(lambda goal: Outcome("stopped", "move", "still converging"), hand.look, camera="wrist",
+    result = locate(lambda goal: Outcome("stopped", "move", "still converging"), hand.look,
                     arrive_m=0.012)
     assert result.status == "stopped" and result.message == "still converging" and hand.looks == 1
 
@@ -119,14 +128,14 @@ def test_looks_that_meet_behind_the_camera_place_nothing():
         seen = look()
         return Look(seen.view, seen.hand, [128 + 500 * hand.position[0], 128 + 500 * hand.position[1]], seen.bbox)
 
-    result = locate(hand.move, moving_with_the_camera, camera="wrist", arrive_m=0.012)
+    result = locate(hand.move, moving_with_the_camera, arrive_m=0.012)
     assert not result.ok and "x" not in result.data
 
 
 def test_a_region_that_is_not_visible_ends_the_search_before_any_move():
     hand = Hand([0.07, -0.04, 0.45], visible=lambda looks: False)
     result = found(hand)
-    assert result.status == "surprise" and "wrist image" in result.message and not hand.goals
+    assert result.status == "surprise" and not hand.goals
 
 
 def test_a_region_lost_after_it_was_placed_keeps_its_position():
@@ -212,7 +221,8 @@ def test_the_simulated_arm_finds_a_block_with_its_wrist_camera_and_picks_it_up_t
         ys, xs = np.nonzero((picture[..., 0] > 200) & (picture[..., 0] > 1.5 * picture[..., 2]))
         if len(xs) < 50:
             return Look(frame.view, frame.tool[:3, 3])
-        return Look(frame.view, frame.tool[:3, 3], [xs.mean(), ys.mean()], [xs.min(), ys.min(), xs.max(), ys.max()])
+        box = [xs.min(), ys.min(), xs.max() + 1, ys.max() + 1]
+        return Look(frame.view, frame.tool[:3, 3], [xs.mean(), ys.mean()], box)
 
     def move(goal):
         to = k.world.from_base("work", [*goal, k.tool[2, 3]])
@@ -221,7 +231,7 @@ def test_the_simulated_arm_finds_a_block_with_its_wrist_camera_and_picks_it_up_t
     try:
         k.enable()
         assert k.run([{"do": "line", "up": 0.14}, {"do": "line", "forward": start[0], "left": start[1]}]).ok
-        found = locate(move, look, camera="wrist", arrive_m=0.01)
+        found = locate(move, look, arrive_m=0.01)
         top = truth.boxes["block"].pose[:3, 3] + [0, 0, 0.05]
         assert found.ok and found.data["looks"] >= 2
         assert [found.data[key] for key in "xyz"] == pytest.approx(top, abs=0.01)

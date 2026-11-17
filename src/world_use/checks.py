@@ -93,16 +93,16 @@ class Following:
 
     A free hand follows a moving command at a lag and gains on it every step. Call update after each
     control step with the measured position and the command that step applied: it returns True once the
-    hand has gained less than progress_m toward a command more than lead_m ahead of it, `steps` times
+    hand has gained less than progress_m toward a command more than lead_m ahead of it, twice
     running. Nearer than lead_m nothing is concluded, because a hand still carrying momentum can drift
     from its command for a few steps, which settling waits out. This needs no torque sensing; it does
     not say what holds the hand. travel_m is the distance the hand moved over the last step.
     """
 
-    def __init__(self, position, *, lead_m: float, progress_m: float, steps: int = 2):
-        if not (np.isfinite([lead_m, progress_m]).all() and lead_m > 0 and progress_m > 0 and steps >= 1):
-            raise ValueError("following needs a positive lead, progress and step count")
-        self.lead_m, self.progress_m, self.steps = lead_m, progress_m, steps
+    def __init__(self, position, *, lead_m: float, progress_m: float):
+        if not (np.isfinite([lead_m, progress_m]).all() and lead_m > 0 and progress_m > 0):
+            raise ValueError("following needs a positive lead and progress")
+        self.lead_m, self.progress_m = lead_m, progress_m
         self.before = np.array(position, float)
         self.held, self.travel_m = 0, 0.
 
@@ -114,4 +114,4 @@ class Following:
         self.travel_m = float(np.linalg.norm(here - self.before))
         self.held = self.held + 1 if gained < self.progress_m else 0
         self.before = here
-        return self.held >= self.steps
+        return self.held >= 2

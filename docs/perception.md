@@ -205,10 +205,11 @@ tool pose. A negative focal length describes an image published mirrored (`fx`) 
 
 `world_use.parallax` turns looks at one tracked region into a position. One look fixes a ray;
 `triangulate(looks)` returns the point nearest the rays once two camera positions are 3 cm apart and the
-point lies at least 5 cm in front of every one, and otherwise nothing. `locate(move, look, camera=...,
-arrive_m=...)` is the bounded loop around it: look, move the hand level, look again, until the hand is
-over the point the looks fix. `look()` returns a `Look` (the frame's view, the tool point and the region's
-centre and box in native pixels); `move(xy)` runs through your own executor and returns its `Outcome`.
+point lies at least 5 cm in front of every one, and otherwise nothing. `locate(move, look, arrive_m=...)`
+is the bounded loop around it: look, move the hand level, look again, until the hand is over the point
+the looks fix. `look()` returns a `Look` (the frame's view, the tool point and the region's centre and box
+in native pixels, the box ending one past its last pixel as the tracker reports it); `move(xy)` runs
+through your own executor and returns its `Outcome`.
 Like the [manipulation procedures](adapters.md#bounded-manipulation-procedures) it sends no command
 itself, so it works over the kernel client or another controller. A done result has `x, y, z` in the base
 frame, the looks and moves it took, `pixel` while the region is visible and `extent_m` when the whole
@@ -227,7 +228,8 @@ gripper's fingers close along to take it by that side. A region that covers only
 that part's narrow side.
 
 `MountedSimCamera(name, mount, body)` renders such a camera in the simulator from the tool pose of the same
-physics state. [`tests/test_parallax.py`](../tests/test_parallax.py) locates a block with it to within a
+physics state. Its `view` is the mount, so a calibration replaces the mount the kernel believes.
+[`tests/test_parallax.py`](../tests/test_parallax.py) locates a block with it to within a
 centimetre and picks it up there, with the kernel told nothing about the block. The
 [LIBERO runner](../examples/libero) uses the same functions for a simulated Panda's wrist camera.
 

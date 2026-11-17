@@ -390,19 +390,18 @@ class SimCamera(Camera):
 
 
 class MountedSimCamera(SimCamera):
-    """A simulated camera fixed to the tool. Its lens is its view in the tool frame; each frame carries the
-    base-frame view for the tool pose of the same physics state. The calibration identity stands for the
-    unchanged mount."""
+    """A simulated camera fixed to the tool. Its lens and its `view` are in the tool frame: the true mount
+    and the one the kernel believes. Each frame carries that view placed at the tool pose of the same
+    physics state."""
 
     def snap(self, k) -> Image.Image:
         return self.capture(k).image
 
     def capture(self, k, *, depth=False) -> Frame:
+        mount, revision = self._calibration
         image, distance, tool, timestamp = self.body.capture(self.lens, mounted=True)
-        view = self.lens.on(tool)
-        self._calibration = (view, self.calibration_id)
-        return Frame(image, self.name, timestamp=timestamp, view=view, depth=distance if depth else None,
-                     calibration=self.calibration_id, tool=tool)
+        return Frame(image, self.name, timestamp=timestamp, view=mount.on(tool),
+                     depth=distance if depth else None, calibration=revision, tool=tool)
 
 
 def equirect_dirs(u, v) -> np.ndarray:

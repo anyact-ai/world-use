@@ -87,13 +87,13 @@ def test_a_stall_that_must_last_ignores_the_turning_points_of_a_swinging_arm():
     assert plateau.update(i / 20 + .05, [.03]) == "stalled" and .7 <= plateau.elapsed_s < .8
 
 
-def lagging_hand(wall=None, gain=.33, steps=30, **check):
+def lagging_hand(wall=None):
     """A hand that closes a third of the gap to a command advancing 1 cm a step, until a wall stops it."""
     hand, command = np.zeros(3), np.zeros(3)
-    following = Following(hand, lead_m=.03, progress_m=.001, **check)
-    for step in range(1, steps + 1):
+    following = Following(hand, lead_m=.03, progress_m=.001)
+    for step in range(1, 31):
         command = command + [.01, 0, 0] if command[0] < .2 else command
-        hand = hand + gain * (command - hand)
+        hand = hand + .33 * (command - hand)
         if wall is not None:
             hand[0] = min(hand[0], wall)
         if following.update(hand, command):
