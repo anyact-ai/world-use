@@ -324,6 +324,75 @@ that differs between LIBERO scenes.
 
 ## Paid results
 
+**The full evaluation at `529a7f3`.** The finished tools against Sol alone on all
+ten tasks: the twenty development cases (states 0 and 1), the basket tasks'
+held-out state 2 a second time, and held-out state 3 of every task three times.
+State 3 had never been run before. Each pair runs both arms from the same start
+and counts only when both finished in one run.
+
+| | pairs | raw Sol solved | World Use solved | calls raw / WU | est. USD raw / WU | steps raw / WU |
+|---|---|---|---|---|---|---|
+| development states 0 and 1 | 20 | 5 | 8 | 911 / 333 | 12.83 / 3.07 | 12,423 / 13,127 |
+| held-out state 2, second run | 3 | 2 | 2 | 138 / 39 | 1.80 / 0.28 | 2,045 / 2,207 |
+| held-out state 3, three runs | 30 | 10 | 18 | 1,404 / 501 | 20.37 / 4.71 | 18,179 / 19,085 |
+| all | 53 | 17 | 28 | 2,453 / 873 | 35.01 / 8.06 | 32,647 / 34,419 |
+
+Over all 53 pairs the median episode took 50 calls alone and 14 with World Use,
+and 19.3 million input tokens became 6.4 million. On the 13 pairs both arms
+solved, World Use made 69% fewer calls, sent 71% fewer input tokens and took 4%
+more steps. World Use alone solved 15 pairs, raw Sol alone 4. Of the episodes
+that failed, raw Sol gave up in 27, claimed done in 8 and ran out of steps in 1;
+World Use gave up in 14, claimed done in 10 and ran out of steps in 1.
+
+| task | raw Sol | World Use | held-out state 3, raw / WU | mean calls raw / WU |
+|---|---|---|---|---|
+| 0: soup and tomato sauce into the basket | 6 of 6 | 3 of 6 | 3 / 2 of 3 | 48 / 13 |
+| 1: cream cheese and butter into the basket | 4 of 6 | 6 of 6 | 3 / 3 of 3 | 39 / 10 |
+| 2: turn on the stove, moka pot onto it | 2 of 5 | 5 of 5 | 1 / 3 of 3 | 40 / 16 |
+| 3: bowl into the bottom drawer, close it | 0 of 5 | 0 of 5 | 0 / 0 of 3 | 46 / 29 |
+| 4: two mugs onto their plates | 0 of 5 | 4 of 5 | 0 / 3 of 3 | 60 / 13 |
+| 5: book into the caddy | 1 of 5 | 1 of 5 | 1 / 1 of 3 | 44 / 12 |
+| 6: mug onto the plate, pudding right of it | 0 of 5 | 0 of 5 | 0 / 0 of 3 | 47 / 16 |
+| 7: soup and cream cheese into the basket | 3 of 6 | 5 of 6 | 1 / 3 of 3 | 44 / 12 |
+| 8: both moka pots onto the stove | 1 of 5 | 4 of 5 | 1 / 3 of 3 | 48 / 15 |
+| 9: mug into the microwave, close it | 0 of 5 | 0 of 5 | 0 / 0 of 3 | 47 / 31 |
+
+Where the World Use arm fell short:
+
+- Neither arm solved tasks 3, 6 or 9 in any episode. In the drawer and
+  microwave tasks grasps from above failed again and again, and World Use gave up
+  in nine of the ten episodes. In task 6 it set down the mug and the pudding
+  and declared done all five times; the check disagreed each time.
+- Task 0 is the one task raw Sol did better. World Use declared it done with the
+  wrong can on development state 1, as it did on task 7 state 0: nothing here
+  checks what a selected region is. On held-out state 2 it gave up with the soup
+  leaning on the basket's rim, and in one run of state 3 it ran out of steps.
+- In one run of task 5 state 3 it released the book in what it took for the back
+  compartment and declared done after five calls; the check disagreed.
+- It took 5% more simulator steps over all 53 pairs.
+
+What these results do not show:
+
+- The development states are the ones the tools were written against; on them
+  World Use solved 8 of 20 to raw Sol's 5. State 3 was run after the tools were
+  finished and not inspected to change them: 18 of 30 to 10.
+- Three runs of one state per task leave per-task differences of one or two
+  episodes within run-to-run spread: in task 7 state 3 one raw run solved the
+  task and two did not.
+- 23 attempts were cut off by network errors, an estimated $10.34, and their
+  pairs were run again in new campaign folders; task 4 state 3's third run took
+  nine attempts. Seven raw arms had finished before their attempt was stopped.
+  Five agree with the counted run, and the other two went one each way.
+- The World Use arm is told the wrist camera's mount and the hand's dimensions.
+  The raw arm is not.
+
+This round, the thirteen-case development check at `1ef0e65` and the evaluation
+together made 89 attempts for an estimated $55.03, $101.57 at the conservative
+rate the transport reserves.
+
+**Earlier runs.** The results below come from the tools before their move into
+the library, and are the evidence for the changes described under Conditions.
+
 **Basket tasks, both arms told the image is mirrored.** Tasks 0, 1 and 7, one
 matched pair per task and state: development states 0 and 1 at `f47ff9f`, and
 the held-out state 2 at `4800819`, the commit before it, which still refused a
@@ -385,7 +454,7 @@ both arms declared done and the check disagreed; the World Use arm had put the
 pudding on the correct side, 5 cm beyond the strip beside the plate that the
 task accepts.
 
-Where the World Use arm fell short:
+Where the World Use arm fell short in those runs:
 
 - Nothing in these tools checks what a selected region is. Two of its five
   false completions took one grocery for another: the butter for the tomato
@@ -402,7 +471,7 @@ Where the World Use arm fell short:
 - On task 5 `locate` returned a point above the camera for a clipped selection.
   Looks that meet less than 5 cm below the camera are now discarded.
 
-What these results do not show:
+What those results do not show:
 
 - Each cell is one episode. Sol's raw outcomes on task 0 state 0 across six runs
   were two successes, one false completion, two give-ups and one step limit.
@@ -423,8 +492,10 @@ is the tree at that commit. The raw arm is one condition up to `ea1173a` and
 another from `4800819`, as described under Conditions. Wall times were not
 controlled for other load on the machine. A pair in which the transport refused
 a request has one row, for the arm that was running, and no result for either
-arm. All 32 pairs together cost an estimated $26.05, $39.92 at the conservative
-rate the transport reserves.
+arm. `report.py tables` prints each case's results and the totals by role,
+overall and by task from these rows. All
+their pairs together cost an estimated $81.05, $130.09 at the conservative rate
+the transport reserves, not counting each pair's preflight probe.
 
 ## Rebuild the runtime
 
