@@ -15,9 +15,12 @@ from PIL import Image
 
 BASE_URL = os.environ.get("LIBERO_AZURE_BASE_URL", "https://example.openai.azure.com/openai/v1").rstrip("/")
 HOST = urlsplit(BASE_URL).hostname
-MODEL = "gpt-6.1-sol"
-# Published LLM_LIBERO price row; estimates, not an Azure billing reconciliation.
-RATES = dict(input=2.0, cached_input=0.1, conservative_input=2.5, output=10.0)
+MODEL = "gpt-6.2-sol"
+# Published prices in USD per million tokens; estimates, not an Azure billing reconciliation. A request
+# is reserved and charged at the dearest input rate, the cache write's.
+RATES = dict(input=2.0, cached_input=0.1, cache_write=2.5, conservative_input=2.5, output=10.0)
+# Waits before trying again a request whose connection was never made.
+CONNECT_RETRY_S = (2.0, 5.0, 10.0)
 
 
 class BudgetStop(RuntimeError):
@@ -60,7 +63,7 @@ def estimate_input(body):
 
 class AzureBudget(httpx.BaseTransport):
     def __init__(
-        self, folder: Path, *, key: str, total=15.0, per_arm=7.4, seconds=7200, inner=None, max_output_tokens=3072
+        self, folder: Path, *, key: str, total, per_arm, seconds, inner=None, max_output_tokens=3072, sleep=time.sleep
     ):
         folder.mkdir(parents=True, exist_ok=False)
         endpoint = urlsplit(BASE_URL)
@@ -77,7 +80,7 @@ class AzureBudget(httpx.BaseTransport):
         self.folder, self.key = folder, key
         self.total, self.per_arm = total, per_arm
         self.deadline = time.monotonic() + seconds
-        self.max_output_tokens = max_output_tokens
+        self.max_output_tokens, self.sleep = max_output_tokens, sleep
         # An explicit HTTPTransport otherwise ignores HTTPX's client proxy defaults.
         self.inner = inner or httpx.HTTPTransport(
             proxy=os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy"), retries=0
@@ -148,7 +151,17 @@ class AzureBudget(httpx.BaseTransport):
                     )
                 },
             )
-            response = self.inner.handle_request(outgoing)
+            for wait in (*CONNECT_RETRY_S, None):
+                try:
+                    response = self.inner.handle_request(outgoing)
+                    break
+                except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                    # No connection, or no TLS session on it, was made, so the request was never sent and
+                    # used nothing. Any later failure may have been billed and is not tried again.
+                    if wait is None:
+                        raise
+                    self.record(event="connect_retry", request=ident, error_type=type(exc).__name__)
+                    self.sleep(wait)
             response.read()
             if response.status_code != 200:
                 self.record(event="usage_unknown", request=ident, http_status=response.status_code)
@@ -157,13 +170,19 @@ class AzureBudget(httpx.BaseTransport):
             (self.folder / f"{ident}-response.json").write_bytes(response.content)
             usage = payload.get("usage") or {}
             inp, out = usage.get("input_tokens"), usage.get("output_tokens")
-            cached = (usage.get("input_tokens_details") or {}).get("cached_tokens", 0)
-            if any(type(n) is not int or n < 0 for n in (inp, out, cached)) or cached > inp:
+            details = usage.get("input_tokens_details") or {}
+            cached, written = details.get("cached_tokens", 0), details.get("cache_write_tokens", 0)
+            if any(type(n) is not int or n < 0 for n in (inp, out, cached, written)) or cached + written > inp:
                 raise BudgetStop("invalid or missing usage; reservation retained")
             if inp > tokens or out > self.max_output_tokens:
                 raise BudgetStop("actual usage exceeded reservation; campaign stopped")
             charge = (inp * RATES["conservative_input"] + out * RATES["output"]) / 1e6
-            cost = ((inp - cached) * RATES["input"] + cached * RATES["cached_input"] + out * RATES["output"]) / 1e6
+            cost = (
+                (inp - cached - written) * RATES["input"]
+                + cached * RATES["cached_input"]
+                + written * RATES["cache_write"]
+                + out * RATES["output"]
+            ) / 1e6
             self.used += charge - reserve
             self.arm_used += charge - reserve
             self.estimated += cost

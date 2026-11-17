@@ -94,7 +94,7 @@ calls and steps remain. Tool completion is not task success. Decide from fresh c
 
 # A camera that does not move and does not look along the vertical, so vertical travel of a held
 # object shifts its image. The wrist camera rises with the hand; a straight-down view only rescales.
-FIXED_CAMERAS = frozenset({"agentview"})
+FIXED_CAMERA = "agentview"
 TRAVEL_M = 0.015  # shorter vertical hand travel is not compared
 SIDEWAYS_M = 0.02  # nor is travel with more sideways motion: only vertical travel was measured
 UNCHANGED_IOU = 0.9
@@ -138,7 +138,7 @@ def wrist_view(eef_state):
 def region_evidence(target, reference, after, hand_from=None):
     """Did a selected region stay put while the hand measurably rose or sank?
 
-    Compares the region in two observations from one of FIXED_CAMERAS, with no observation
+    Compares the region in two observations from FIXED_CAMERA, with no observation
     of it in between, against the hand's travel since hand_from (default: the reference).
     Returns None when they cannot be compared. An unchanged region did not travel with the
     hand: the hand holds something else or nothing, or the selection sits on another object.
@@ -147,7 +147,7 @@ def region_evidence(target, reference, after, hand_from=None):
     """
     old = next((t for t in reference.get("targets", []) if t.get("target") == target), None)
     new = next((t for t in after.get("targets", []) if t.get("target") == target), None)
-    if old is None or new is None or new.get("camera") not in FIXED_CAMERAS:
+    if old is None or new is None or new.get("camera") != FIXED_CAMERA:
         return None
     motion = new.get("motion") or {}
     moved = np.subtract(after["eef_state"][:3], (hand_from or reference)["eef_state"][:3])
@@ -419,7 +419,6 @@ class WorldTools:
         found = locate(
             move,
             look,
-            camera="wrist",
             arrive_m=ARM_TOLERANCE[0],
             assumed_z=None if floor_z is None else floor_z + 0.05,
             known=self.located.get(name),
@@ -712,7 +711,7 @@ class WorldTools:
                     )
 
                 outcome = self._place(
-                    pending["args"], dict(kind="confirm_state", fingerprint=pending["fingerprint"]), approved
+                    pending["args"], dict(kind="confirm_state", fingerprint=pending["fingerprint"]), approved, {}
                 )
                 kept = pending["args"]
                 return self._procedure(
@@ -722,9 +721,9 @@ class WorldTools:
         except (KeyError, ValueError, TypeError) as exc:
             return self._result(dict(status="refused", message=str(exc)))
 
-    def _place(self, args, move, assess, facts=None):
+    def _place(self, args, move, assess, facts):
         return procedures.place(
-            lambda command: self._descend(command, {} if facts is None else facts),
+            lambda command: self._descend(command, facts),
             self.observe,
             move=move,
             release=self._move({"gripper": 0}, "place_release", expected=OPEN_MM),

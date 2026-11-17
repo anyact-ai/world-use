@@ -41,11 +41,11 @@ MIRRORED = (
 
 
 def source_hashes():
-    """Every file here that decides what a run does. validation.json is the record of these, not one of them."""
+    """Every file here that decides what a run does."""
     return {
         p.name: hashlib.sha256(p.read_bytes()).hexdigest()
         for p in sorted(SOURCE.iterdir())
-        if p.suffix in (".py", ".txt", ".toml", ".json") and p.name != "validation.json"
+        if p.suffix in (".py", ".txt", ".toml")
     }
 
 
@@ -245,10 +245,10 @@ def main():
     parser.add_argument(
         "--arms", choices=ARMS, default="both", help="world_use runs only that arm, reusing an earlier raw result"
     )
-    parser.add_argument("--total-budget", type=float, default=15.0, help="conservative USD cap for this pair")
-    parser.add_argument("--arm-budget", type=float, default=7.4, help="conservative USD cap for each arm")
-    parser.add_argument("--deadline-seconds", type=float, default=7200, help="wall-clock limit for this pair")
-    parser.add_argument("--episode-seconds", type=float, default=1800, help="wall-clock limit for each episode")
+    parser.add_argument("--total-budget", type=float, default=7.0, help="conservative USD cap for this pair")
+    parser.add_argument("--arm-budget", type=float, default=3.4, help="conservative USD cap for each arm")
+    parser.add_argument("--deadline-seconds", type=float, default=6000, help="wall-clock limit for this pair")
+    parser.add_argument("--episode-seconds", type=float, default=3000, help="wall-clock limit for each episode")
     args = parser.parse_args()
     try:
         check_case(args.task, args.state, args.held_out)

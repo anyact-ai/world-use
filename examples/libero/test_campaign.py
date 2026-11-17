@@ -12,7 +12,7 @@ from run import check_case, episode
 
 @pytest.mark.parametrize(
     ("task", "state", "held_out", "refusal"),
-    [(0, 2, False, "held-out"), (4, 3, False, "held-out"), (0, 0, True, "held-out"), (2, 5, False, "not a case")],
+    [(0, 4, False, "held-out"), (4, 6, False, "held-out"), (0, 0, True, "held-out"), (2, 3, False, "not a case")],
 )
 def test_a_case_runs_only_in_its_listed_role(tmp_path, task, state, held_out, refusal):
     with pytest.raises(ValueError, match=refusal):
@@ -22,13 +22,13 @@ def test_a_case_runs_only_in_its_listed_role(tmp_path, task, state, held_out, re
 
 def test_listed_cases_run_in_their_role():
     check_case(9, 1, False)
-    check_case(7, 2, True)
-    check_case(9, 3, True)
+    check_case(7, 4, True)
+    check_case(9, 6, True)
 
 
 def test_held_out_cases_need_their_own_authorization(monkeypatch, tmp_path, capsys):
-    argv = ["campaign.py", str(tmp_path), "0:0", "0:3", "--cap", "9", "--pair-cap", "3", "--arm-cap", "1.5"]
-    monkeypatch.setattr(sys, "argv", [*argv, "--authorization", "yes"])
+    argv = ["campaign.py", str(tmp_path), "0:0", "0:4", "--cap", "9", "--pair-cap", "3", "--arm-cap", "1.5"]
+    monkeypatch.setattr(sys, "argv", [*argv, "--authorization", "yes", "--validation", "validation.json"])
     with pytest.raises(SystemExit):
         campaign.main()
     assert "--held-out-authorization" in capsys.readouterr().err
@@ -44,14 +44,16 @@ def ledger(folder, charge, settled=True):
 
 
 def fake_pairs(charges, launched):
-    """A run.py stand-in: each pair charges the next amount (None leaves usage unknown) and finishes both arms."""
+    """A run.py stand-in: each attempt charges the next amount and finishes both arms. None is an attempt the
+    transport stopped in its first arm with usage unknown; a negative amount is one its own cap stopped."""
 
     def call(args, **_):
         output = args[0]
         launched.append(output.name)
         charge = charges.pop(0)
-        ledger(output, charge or 1.0, settled=charge is not None)
-        summary = dict(protocol=dict(arms=["baseline", "world_use"]), results=[{}, {}])
+        ledger(output, abs(charge or 1.0), settled=charge is not None)
+        finished = charge is not None and charge > 0
+        summary = dict(protocol=dict(arms=["baseline", "world_use"]), results=[{}, {}] if finished else [])
         (output / "summary.json").write_text(json.dumps(summary))
         return 0
 
@@ -70,7 +72,7 @@ def test_admission_counts_finished_charges_and_running_caps(tmp_path):
     pairs.run_all([(task, 0, 1) for task in range(4)], workers=1, stagger=0)
     # 0 + 4, 3 + 4 and 6 + 4 fit the cap; 9 + 4 does not.
     assert launched == ["task00_init00", "task01_init00", "task02_init00"]
-    assert pairs.spent() == (9, False)
+    assert pairs.spent() == 9
 
 
 def test_running_pairs_hold_their_full_cap(tmp_path):
@@ -78,11 +80,18 @@ def test_running_pairs_hold_their_full_cap(tmp_path):
     assert [pairs.admit(name) for name in "abc"] == [True, True, False]
 
 
-def test_unknown_usage_stops_admission(tmp_path):
+def test_a_pair_stopped_with_unknown_usage_is_tried_again_and_stays_charged(tmp_path):
     launched = []
-    pairs = fake_campaign(tmp_path, 100, [None, 1], launched)
-    pairs.run_all([(0, 0, 1), (1, 0, 1)], workers=1, stagger=0)
-    assert launched == ["task00_init00"]
+    pairs = fake_campaign(tmp_path, 100, [None, 2, None, None, None, -3, 1], launched)
+    pairs.run_all([(0, 0, 1), (1, 0, 1), (2, 0, 1), (3, 0, 1)], workers=1, stagger=0)
+    assert launched == [
+        "task00_init00", "task00_init00_retry1",                          # stopped, then finished
+        "task01_init00", "task01_init00_retry1", "task01_init00_retry2",  # three attempts and no more
+        "task02_init00",                                                  # its own cap would stop it again
+        "task03_init00",
+    ]  # fmt: skip
+    # Each unsettled reservation is kept in full beside the settled charges.
+    assert pairs.spent() == 1 + 2 + 3 * 1 + 3 + 1
 
 
 def test_repeats_get_their_own_folders_and_an_interrupted_attempt_is_retried(tmp_path):

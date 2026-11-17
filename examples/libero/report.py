@@ -1,4 +1,4 @@
-"""Paid-run results: collect campaign folders into compact rows, and print the README's comparison tables.
+"""Paid-run results: collect campaign folders into compact rows, and print comparison tables from them.
 
 usage: report.py collect RESULTS_JSONL COMMIT=CAMPAIGN_DIR [COMMIT=CAMPAIGN_DIR ...]
        report.py tables RESULTS_JSONL
@@ -42,7 +42,7 @@ def pair_rows(commit, pair):
     if repeat:
         head["repeat"] = int(repeat)
     done = {r["arm"] for r in report.get("results", [])}
-    stopped = [arm for arm in protocol.get("arms", ARM) if arm not in done]
+    stopped = [arm for arm in protocol["arms"] if arm not in done]
     if report.get("stopped") and stopped:
         # The transport refused a request. The pair is no comparison: one row, for the arm that was running,
         # charged with the whole pair, and no result for an arm that finished before it.

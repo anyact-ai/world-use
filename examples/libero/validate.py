@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import subprocess
 import sys
@@ -20,12 +19,16 @@ from inspect_robots_libero.tasks import libero_10_task
 from run import MIRRORED, SOURCE, episode, runtime_manifest, source_hashes
 from world_tools import wrist_view
 
+# Where two cans stand in task 0, state 0, for the synthetic policy and for scoring it; never used by paid runs.
+FIXTURES = dict(soup=(-0.1002, -0.152), tomato=(-0.1173, 0.0557))
+
 
 class Scripted(AzureBudget):
     def __init__(self, folder):
         self.driver = self.world = self.reference = self.script = None
         self.requests = []
-        super().__init__(folder, key="offline-test-key", inner=httpx.MockTransport(self.respond))
+        inner = httpx.MockTransport(self.respond)
+        super().__init__(folder, key="offline-test-key", total=7.0, per_arm=3.4, seconds=6000, inner=inner)
 
     def bind_driver(self, driver, world):
         self.driver, self.world = driver, world
@@ -44,11 +47,11 @@ class Scripted(AzureBudget):
             ]
             name, args = commands[index - 1]
         else:
-            # Pixel and pose fixtures for task 0, state 0 serve only this synthetic policy, never paid runs.
+            # Pixel fixtures for task 0, state 0 serve only this synthetic policy, never paid runs.
             if self.script is None:
                 state = self.driver.observation.state["eef_state"]
                 here = dict(zip(("x", "y", "z"), map(float, state[:3]), strict=True))
-                soup, tomato = dict(x=-0.1002, y=-0.152), dict(x=-0.1173, y=0.0557)
+                soup, tomato = (dict(zip("xy", FIXTURES[name], strict=True)) for name in ("soup", "tomato"))
 
                 def grasp(at, **select):
                     return (
@@ -192,23 +195,6 @@ def reference(folder, transport):
         env.close()
 
 
-def scripted_fingerprint(folder, steps):
-    """What a change that should not alter behaviour must leave alone in the scripted episode:
-    the commands the simulator applied, every result the policy was told and the prompt it was given."""
-    told = [m["content"] for m in json.loads((folder / "transcript.json").read_text()) if m["role"] == "tool"]
-    applied = [[round(v, 9) for v in step["approved"]] for step in steps]
-
-    def digest(value):
-        return hashlib.sha256(json.dumps(value).encode()).hexdigest()
-
-    return dict(
-        steps=len(steps),
-        applied_commands_sha256=digest(applied),
-        told_results_sha256=digest(told),
-        system_prompt_sha256=hashlib.sha256((folder / "system-prompt.txt").read_bytes()).hexdigest(),
-    )
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
@@ -299,15 +285,10 @@ def main():
         assert carried["mask_iou"] < 0.9 and all(a["outcome"]["kind"] == "not_assessed" for a in held["assessments"])
         # From hovers 5 cm off, the wrist views put both cans within the fingers' reach of their true places.
         (located,) = (o["located"] for o in outcomes if "located" in o)
-        fixtures = dict(soup=(-0.1002, -0.152), tomato=(-0.1173, 0.0557))
-        placed = dict(
-            soup=float(np.hypot(located["x"] - fixtures["soup"][0], located["y"] - fixtures["soup"][1])),
-            tomato=float(
-                np.hypot(
-                    centred["centred"]["x"] - fixtures["tomato"][0], centred["centred"]["y"] - fixtures["tomato"][1]
-                )
-            ),
-        )
+        found = dict(soup=located, tomato=centred["centred"])
+        placed = {
+            name: float(np.hypot(found[name]["x"] - x, found[name]["y"] - y)) for name, (x, y) in FIXTURES.items()
+        }
         assert max(placed.values()) < 0.015 and located["looks"] >= 2
         assert centred["status"] == "done" and [s["status"] for s in centred["stages"]] == ["done"] * 5
         assert 50 <= centred["observations"]["after"]["aperture_mm"] <= 75
@@ -326,7 +307,6 @@ def main():
             wrist_placement_error_m={k: round(v, 4) for k, v in placed.items()},
             initial_observations_identical=True,
             repeated_capture_regions_identical=True,
-            scripted_world_use=scripted_fingerprint(args.output / "world_use", actual_steps),
         )
     finally:
         transport.dispose()

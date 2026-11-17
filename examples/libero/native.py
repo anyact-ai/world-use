@@ -37,7 +37,7 @@ STABLE_S = 2 / HZ  # three consecutive samples
 # running, is held by something. Nearer than that a hand still carrying momentum from an unsettled
 # move can be drifting away from its command for a few steps, which settling waits out. A descent
 # that may end on contact starts from a hand at rest above the pose, so half that lead is enough.
-LEAD_M, CONTACT_LEAD_M, PROGRESS_M, HELD_STEPS = 0.03, 0.015, 0.001, 2
+LEAD_M, CONTACT_LEAD_M, PROGRESS_M = 0.03, 0.015, 0.001
 # A swinging hand also makes no progress while it turns round. A stall is one that lasts.
 STALL_STEPS = 5
 RELIEF_STEPS = 12
@@ -103,7 +103,6 @@ class Driver:
         self.frames.sync(observation)
         self.last_action = None
         self.changed = []  # (step, approver flags) for each applied action that differs from its request
-        self.aperture_change = 0.0
         self.record_observation()
 
     def record(self, filename, row):
@@ -131,7 +130,6 @@ class Driver:
         if raw.shape != (10,) or not np.isfinite(raw).all():
             raise ValueError("invalid native action")
         approved = self.approver.review(action, self.store)
-        aperture = self.aperture_mm()
         result = self.embodiment.step(approved)
         self.steps += 1
         if approved is not action:
@@ -140,7 +138,6 @@ class Driver:
         self.frames.sync(self.observation)
         self.success = bool(result.terminated and result.info.get("success"))
         self.last_action = approved
-        self.aperture_change = self.aperture_mm() - aperture
         actual_steps = self.embodiment.last["steps"]
         if actual_steps != self.steps:
             raise RuntimeError(f"unaccounted simulator steps: {actual_steps} != {self.steps}")
@@ -166,12 +163,10 @@ class Driver:
         return float(abs(q[0] - q[1]) * 1000)
 
     def measure(self):
-        """Measured state. A nonzero last-step aperture change means the fingers are still moving."""
         return dict(
             env_step=self.steps,
             eef_state=self.observation.state["eef_state"].tolist(),
             aperture_mm=self.aperture_mm(),
-            aperture_change_mm=round(self.aperture_change, 2),
         )
 
     def applied(self, target, since):
@@ -318,7 +313,6 @@ class Driver:
             self.observation.state["eef_state"][:3],
             lead_m=CONTACT_LEAD_M if command.get("contact_ok") else LEAD_M,
             progress_m=PROGRESS_M,
-            steps=HELD_STEPS,
         )
 
         def held_up():

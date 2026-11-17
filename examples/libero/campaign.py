@@ -1,9 +1,10 @@
 """Run matched LIBERO pairs under one campaign cap: one admission authority, a separate run.py output per pair.
 
 A pair is admitted only while the conservative charge of finished attempts plus the full caps of running
-ones leaves room for another full pair cap. Any attempt with unknown usage stops further admission. An
-interrupted attempt keeps its folder and its charge; its retry goes to a new `_retryN` folder. Each repeat
-of a case is its own pair, in a `_repeatN` folder after the first.
+ones leaves room for another full pair cap. An attempt the transport stopped with unknown usage, or one
+that was interrupted, keeps its folder and its charge, the unsettled request's whole reservation included,
+and the pair is tried again in a `_retryN` folder, three attempts in all. Each repeat of a case is its own
+pair, in a `_repeatN` folder after the first.
 """
 
 from __future__ import annotations
@@ -22,6 +23,8 @@ ROOT = SOURCE.parents[1]
 sys.path.insert(0, str(ROOT / "src"))  # the library of this tree, as the pairs it starts import it
 
 from run import ARMS, ROLES  # noqa: E402
+
+ATTEMPTS = 3
 
 
 def charge(folder: Path) -> tuple[float, bool]:
@@ -43,7 +46,7 @@ def complete(folder: Path) -> bool:
     if not summary.exists():
         return False
     report = json.loads(summary.read_text())
-    return len(report.get("results", [])) == len(report["protocol"].get("arms", ARMS["both"]))
+    return len(report.get("results", [])) == len(report["protocol"]["arms"])
 
 
 class Campaign:
@@ -53,22 +56,17 @@ class Campaign:
         self.lock = threading.Lock()
         self.running: dict[str, float] = {}
 
-    def spent(self) -> tuple[float, bool]:
-        total, unknown = 0.0, False
-        for attempt in sorted(self.folder.glob("task*_init*")):
-            if attempt.is_dir() and attempt.name not in self.running:
-                c, u = charge(attempt)
-                total, unknown = total + c, unknown or u
-        return total, unknown
+    def spent(self) -> float:
+        attempts = (a for a in self.folder.glob("task*_init*") if a.is_dir() and a.name not in self.running)
+        return sum(charge(attempt)[0] for attempt in attempts)
 
     def admit(self, name: str) -> bool:
         with self.lock:
-            total, unknown = self.spent()
-            running = sum(self.running.values())
-            if unknown or total + running + self.pair_cap > self.cap:
+            total, running = self.spent(), sum(self.running.values())
+            if total + running + self.pair_cap > self.cap:
                 print(
                     f"NOT ADMITTED {name}: finished {total:.2f} + running {running:.2f} + pair {self.pair_cap:.2f} "
-                    f"> cap {self.cap:.2f} or unknown usage={unknown}",
+                    f"> cap {self.cap:.2f}",
                     flush=True,
                 )
                 return False
@@ -77,26 +75,32 @@ class Campaign:
 
     def run(self, task: int, state: int, repeat: int) -> None:
         base = f"task{task:02d}_init{state:02d}" + (f"_repeat{repeat}" if repeat > 1 else "")
-        retry = 0
-        while (self.folder / (name := base + (f"_retry{retry}" if retry else ""))).exists():
-            if complete(self.folder / name):
-                print(f"SKIP {base}: already complete", flush=True)
+        for attempt in range(ATTEMPTS):
+            name = base + (f"_retry{attempt}" if attempt else "")
+            folder = self.folder / name
+            if not folder.exists():
+                if not self.admit(name):
+                    return
+                started = time.monotonic()
+                logs = [(self.folder / f"{name}.{stream}").open("w") for stream in ("stdout", "stderr")]
+                try:
+                    code = self.call(self.run_args(task, state, folder), cwd=ROOT, stdout=logs[0], stderr=logs[1])
+                finally:
+                    for log in logs:
+                        log.close()
+                    with self.lock:
+                        self.running.pop(name, None)
+                c, u = charge(folder)
+                wall = time.monotonic() - started
+                print(f"FINISHED {name} exit={code} charge={c:.3f} unknown={u} wall={wall:.0f}s", flush=True)
+            if complete(folder):
                 return
-            retry += 1
-        if not self.admit(name):
-            return
-        started = time.monotonic()
-        try:
-            with (self.folder / f"{name}.stdout").open("w") as out, (self.folder / f"{name}.stderr").open("w") as err:
-                code = self.call(self.run_args(task, state, self.folder / name), cwd=ROOT, stdout=out, stderr=err)
-        finally:
-            with self.lock:
-                self.running.pop(name, None)
-        c, u = charge(self.folder / name)
-        wall = time.monotonic() - started
-        print(f"FINISHED {name} exit={code} charge={c:.3f} unknown={u} wall={wall:.0f}s", flush=True)
+            # A pair its own cap or deadline stopped would stop there again.
+            if (folder / "summary.json").exists() and not charge(folder)[1]:
+                return
+        print(f"UNFINISHED {base}: {ATTEMPTS} attempts", flush=True)
 
-    def run_all(self, cases, workers: int, stagger: float = 20) -> tuple[float, bool]:
+    def run_all(self, cases, workers: int, stagger: float = 20) -> float:
         self.folder.mkdir(parents=True, exist_ok=True)
         queue = list(cases)
 
@@ -114,9 +118,9 @@ class Campaign:
             time.sleep(stagger)  # stagger simulator and tracker start-up
         for thread in threads:
             thread.join()
-        total, unknown = self.spent()
-        print(f"CAMPAIGN conservative charge {total:.3f} of cap {self.cap:.2f}; unknown usage: {unknown}", flush=True)
-        return total, unknown
+        total = self.spent()
+        print(f"CAMPAIGN conservative charge {total:.3f} of cap {self.cap:.2f}", flush=True)
+        return total
 
 
 def main():
@@ -130,7 +134,7 @@ def main():
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--repeats", type=int, default=1, help="pairs per case")
     parser.add_argument("--arms", choices=ARMS, default="both")
-    parser.add_argument("--validation", type=Path, default=SOURCE / "validation.json")
+    parser.add_argument("--validation", type=Path, required=True, help="validation.json made in this runtime")
     parser.add_argument("--authorization", required=True, help="the user's words approving this paid scope")
     parser.add_argument("--held-out-authorization", help="the user's words approving these held-out tests")
     args = parser.parse_args()
@@ -155,7 +159,7 @@ def main():
             "--output", str(output.resolve()), "--task", str(task), "--state", str(state), "--arms", args.arms,
             "--authorization", args.held_out_authorization if test else args.authorization,
             *(["--held-out"] if test else []), "--total-budget", str(args.pair_cap), "--arm-budget", str(args.arm_cap),
-            "--episode-seconds", "3000", "--deadline-seconds", "6000", "--execute-paid-rollouts",
+            "--execute-paid-rollouts",
         ]  # fmt: skip
 
     os.environ["PYTHONPATH"] = str(ROOT / "src")

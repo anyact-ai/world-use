@@ -12,7 +12,6 @@ from inspect_robots.types import Observation, StepResult
 from inspect_robots_agent._llm import ToolCall
 from inspect_robots_libero.embodiment import LiberoEmbodiment
 from native import Driver, Frames, fingerprint
-from run import episode
 from world_tools import WorldTools, wrist_view
 
 from world_use.behaviors import Outcome
@@ -24,14 +23,6 @@ def observation():
         # Tool y along world x and the approach axis straight down, as at the start of an episode.
         state={"eef_state": np.array([0, 0, 0, 0, 1, 0, 1, 0, 0, 0.0]), "gripper_qpos": np.array([0.02, -0.02])},
     )
-
-
-@pytest.mark.parametrize(("state", "held_out"), [(2, False), (0, True)])
-def test_the_reserved_state_runs_only_as_a_held_out_test(tmp_path, state, held_out):
-    # Refused before a simulator starts or a request is reserved.
-    with pytest.raises(ValueError, match="held-out"):
-        episode(tmp_path / "arm", "baseline", None, state=state, held_out=held_out)
-    assert not (tmp_path / "arm").exists()
 
 
 def test_capture_identity_survives_wrapper_and_new_capture_changes_it():
@@ -76,6 +67,14 @@ def request():
     return httpx.Request("POST", BASE_URL + "/responses", json=dict(model=MODEL, input=[], tools=[]))
 
 
+def guard(folder, handle, *, key="test", total=15.0, waits=None):
+    def sleep(s):
+        waits.append(s)
+
+    transport = httpx.MockTransport(handle)
+    return AzureBudget(folder / "api", key=key, total=total, per_arm=7.4, seconds=7200, inner=transport, sleep=sleep)
+
+
 @pytest.mark.parametrize("case", ["network", "status", "usage", "oversized"])
 def test_unknown_usage_blocks_any_following_dispatch(tmp_path, case):
     sent = []
@@ -90,7 +89,7 @@ def test_unknown_usage_blocks_any_following_dispatch(tmp_path, case):
             return response(usage=False)
         return httpx.Response(200, json={"status": "completed", "usage": {"input_tokens": 999999, "output_tokens": 1}})
 
-    budget = AzureBudget(tmp_path / "api", key="test", inner=httpx.MockTransport(handle))
+    budget = guard(tmp_path, handle)
     budget.begin("baseline")
     for _ in range(2):
         with pytest.raises(BudgetStop):
@@ -103,7 +102,7 @@ def test_unknown_usage_blocks_any_following_dispatch(tmp_path, case):
 
 def test_caps_deadline_and_destination_prevent_dispatch(tmp_path):
     sent = []
-    budget = AzureBudget(tmp_path / "api", key="test", total=0.001, inner=httpx.MockTransport(lambda r: sent.append(r)))
+    budget = guard(tmp_path, sent.append, total=0.001)
     budget.begin("baseline")
     with pytest.raises(BudgetStop):
         budget.handle_request(request())
@@ -123,7 +122,7 @@ def test_settlement_and_no_credentials_in_journal(tmp_path):
         sent.append(req)
         return response()
 
-    budget = AzureBudget(tmp_path / "api", key="test-private-key", inner=httpx.MockTransport(handle))
+    budget = guard(tmp_path, handle, key="test-private-key")
     budget.begin("baseline")
     budget.handle_request(request())
     assert sent[0].headers["api-key"] == "test-private-key"
@@ -133,6 +132,30 @@ def test_settlement_and_no_credentials_in_journal(tmp_path):
     assert not budget.uncertain
     for p in (tmp_path / "api").iterdir():
         assert "test-private-key" not in p.read_text()
+
+
+@pytest.mark.parametrize(("failures", "sent"), [(2, 3), (4, 4)])
+def test_a_request_whose_connection_was_never_made_is_sent_again_a_few_times(tmp_path, failures, sent):
+    attempts, waits = [], []
+
+    def handle(req):
+        attempts.append(req)
+        if len(attempts) <= failures:
+            raise httpx.ConnectError("no tunnel")
+        return response()
+
+    budget = guard(tmp_path, handle, waits=waits)
+    budget.begin("baseline")
+    if failures < sent:
+        budget.handle_request(request())
+        assert not budget.uncertain and budget.calls == 1 and budget.estimated == pytest.approx(0.0003)
+    else:
+        with pytest.raises(BudgetStop):
+            budget.handle_request(request())
+        assert budget.uncertain
+    assert len(attempts) == sent and len(waits) == min(failures, 3)
+    journal = [json.loads(line)["event"] for line in (tmp_path / "api" / "ledger.jsonl").read_text().splitlines()]
+    assert journal.count("connect_retry") == len(waits) and journal.count("reserved") == 1
 
 
 class FakeDriver:
@@ -305,7 +328,7 @@ def wrist_scene(tools, thing, visible=lambda looks: True, half=0.0, shape=None):
             # The tracker reports the part inside the image: its box and that part's centre.
             corners = [thing + [dx, dy, 0] for dx in (-half, half) for dy in (-half, half)]
             px = np.array([wrist_view(eef()).project(c)[0][0] for c in corners], dtype=float)
-            box = [*np.clip(px.min(axis=0), 0, 255), *np.clip(px.max(axis=0), 0, 255)]
+            box = [*np.clip(px.min(axis=0), 0, 256), *np.clip(px.max(axis=0), 0, 256)]
             u, v = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
         seen = dict(valid=True, camera="wrist", center=[u, v], bbox=box)
         if shape:
@@ -485,17 +508,7 @@ def test_a_region_missing_from_the_wrist_view_stops_before_any_descent():
     tools.tracking.observe = lambda names: [dict(target=n, valid=False, tracking="lost") for n in names]
     tools.tracking.targets["object"]["camera"] = "wrist"
     result = grasp(tools)
-    assert result["status"] == "surprise" and "wrist image" in result["message"] and not tools.driver.commands
-
-
-def test_a_region_the_tracker_drops_after_it_was_placed_keeps_its_position():
-    tools = tools_fixture()
-    thing = np.array([0.07, -0.04, 0.45])
-    wrist_scene(tools, thing, visible=lambda looks: looks <= 2)
-    result = grasp(tools)
-    approach = next(c for c in tools.driver.commands if c.get("stage") == "grasp_approach")
-    assert result["status"] == "done" and result["centred"]["region"].startswith("lost")
-    assert [approach["targets"][k] for k in "xy"] == pytest.approx(thing[:2], abs=5e-3)
+    assert result["status"] == "surprise" and "not visible" in result["message"] and not tools.driver.commands
 
 
 def test_locate_reports_where_a_wrist_region_is_without_descending():
@@ -650,13 +663,11 @@ def test_place_issues_a_release_receipt_unless_the_region_stayed_behind_a_vertic
     assert [c.get("stage") for c in tools.driver.commands] == ["place_approach"]
 
 
-def test_place_passes_its_travel_height_to_the_approach_and_refuses_one_that_is_not_a_height():
+def test_place_refuses_a_travel_height_that_is_not_a_number():
     tools = tools_fixture()
     request = dict(object_target="object", move={"x": 0.1, "z": 0.45}, withdraw={"z": 0.7}, expect_grip_mm=[5, 70])
-    tools.execute(call("place", travel_z=0.7, **request), tools.driver.observation)
-    assert tools.driver.commands[0]["travel_z"] == 0.7 and tools.pending
     refused = json.loads(tools.execute(call("place", travel_z="high", **request), tools.driver.observation).note)
-    assert refused["status"] == "refused" and len(tools.driver.commands) == 1
+    assert refused["status"] == "refused" and not tools.driver.commands
 
 
 class Hand(LiberoEmbodiment):
@@ -734,8 +745,6 @@ def test_close_returns_a_stable_hand_with_its_measured_opening(tmp_path, object_
     out = d.execute(stage({"gripper": 1}, "grasp_close", expect_mm=[20, 40]))
     assert (out.status, out.data["gripper"]) == (status, gripper)
     assert out.data["aperture_mm"] == pytest.approx(object_mm or 0, abs=3)
-    # Empty fingers creep over their last millimetres; they are at their end, not still closing.
-    assert abs(out.data["aperture_change_mm"]) < (1 if gripper == "reached_end" else 0.3)
     # A hand at rest ends the wait; only motion still under way may use the whole bound.
     assert out.data["executed_steps"] < 31
     if status == "surprise":
@@ -746,7 +755,7 @@ def test_a_hand_still_moving_at_the_bound_is_not_reported_as_stable(tmp_path):
     d = driver(tmp_path, finger_gain=0.01)
     out = d.execute(stage({"gripper": 1}, "grasp_close", expect_mm=[20, 78]))
     assert out.status == "stopped" and out.data["gripper"] == "still_moving"
-    assert out.data["aperture_change_mm"] < 0 and out.data["executed_steps"] == 31
+    assert out.data["executed_steps"] == 31
 
 
 def test_fingers_still_creeping_open_inside_the_expected_opening_have_released(tmp_path):
