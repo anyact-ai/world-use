@@ -522,10 +522,12 @@ test when the library is not installed in the agent environment.
 [`cases.toml`](cases.toml) lists every task and initial state the runner accepts,
 each with a role. Development cases, states 0 and 1 of every task, are for
 iteration. A held-out case runs only with `--held-out`, as a test of finished
-tools, and is never inspected to tune them: state 2 of tasks 0, 1 and 7 has been
-run and reported once, and state 3 of every task has never been run. The runner
-refuses an unlisted case, a held-out case without `--held-out` and a development
-case with it.
+tools, and is never inspected to tune them. Both held-out states listed are spent:
+state 2 of tasks 0, 1 and 7 has been run twice and state 3 of every task three
+times, all reported under Paid results. A test of changed tools needs states
+never run, added to the file with the held-out role; LIBERO has 50 per task. The
+runner refuses an unlisted case, a held-out case without `--held-out` and a
+development case with it.
 
 ## Run the authorized pilot
 
@@ -568,7 +570,8 @@ records the arms run.
 
 Append the campaign's pairs, labelled with the commit they ran, to the compact
 rows, and print the comparison tables. The tables use each case's latest commit
-for each arm and report repeats as solved k of n:
+for each arm, report repeats as solved k of n, and total every episode of those
+runs by role, overall and by task:
 
 ```sh
 python examples/libero/report.py collect examples/libero/paid-results.jsonl \

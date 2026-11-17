@@ -156,9 +156,11 @@ def test_report_collects_repeats_and_infrastructure_stops_and_tables_the_latest_
     assert rows[2]["tool_calls"] == {"move_to": 30} and rows[3]["procedure_outcomes"] == {}
 
     table = report.tables(rows)
-    assert "| 0 | 0 | basket development | `b` | 1 of 2 | `b` | 2 of 2 | 40 / 11 |" in table
-    assert "held-out" not in table.split("Totals")[0]  # a stopped pair is not a result
-    assert "| basket development | World Use | 2 of 2 | 11 |" in table and "†" not in table
+    assert "| 0 | 0 | development | `b` | 1 of 2 | `b` | 2 of 2 | 40 / 11 |" in table
+    assert "held_out" not in table  # a stopped pair is not a result
+    # Totals add up episodes, not the cases' means: 10 + 12 calls, median 11.
+    assert "| development | World Use | 2 of 2 | 22, 11 |" in table and "| task 0 | raw | 1 of 2 | 80, 40 |" in table
+    assert "†" not in table
 
     # A later World Use run alone is tabled beside the earlier raw run, and marked if it began elsewhere.
     alone = tmp_path / "alone"
@@ -166,5 +168,5 @@ def test_report_collects_repeats_and_infrastructure_stops_and_tables_the_latest_
     pair(alone / "task00_init00", [("world_use", True, 9)], initial="b" * 64)
     report.collect(out, [f"c={alone}"])
     table = report.tables([json.loads(line) for line in out.read_text().splitlines()])
-    assert "| 0 | 0 † | basket development | `b` | 1 of 2 | `c` | 1 of 1 | 40 / 9 |" in table
+    assert "| 0 | 0 † | development | `b` | 1 of 2 | `c` | 1 of 1 | 40 / 9 |" in table
     assert "did not start from the same initial observation" in table

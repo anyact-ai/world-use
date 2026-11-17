@@ -15,8 +15,7 @@ from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parent
 CASES = tomllib.loads((SOURCE / "cases.toml").read_text())["case"]
-HELD_OUT = {(c["task"], c["state"]) for c in CASES if c["role"] == "held_out"}
-BASKET = (0, 1, 7)
+ROLE = {(c["task"], c["state"]): c["role"] for c in CASES}
 PAIR = re.compile(r"task\d\d_init\d\d(?:_repeat(\d+))?(?:_retry\d+)?")
 ARM = dict(baseline="raw", world_use="world_use")
 
@@ -123,27 +122,31 @@ def summarize(runs):
     )
 
 
-def group(task, state):
-    if (task, state) in HELD_OUT:
-        return "held-out"
-    return "basket development" if task in BASKET else "other tasks"
-
-
 def number(value):
     return f"{value:,.0f}" if value == round(value) else f"{value:,.1f}"
 
 
+def totals(runs):
+    """Sums over episodes: solved, calls (and the median episode's), estimated cost, steps, input tokens."""
+    calls = sorted(r["calls"] for r in runs)
+    median = (calls[(len(calls) - 1) // 2] + calls[len(calls) // 2]) / 2
+    return (
+        f"{sum(r['success'] for r in runs)} of {len(runs)} | {sum(calls):,}, {number(median)} "
+        f"| {sum(r['estimated_usd'] for r in runs):.2f} | {sum(r['steps'] for r in runs):,} "
+        f"| {sum(r['input_tokens'] for r in runs):,}"
+    )
+
+
 def tables(rows):
     chosen = latest(rows)
-    cases = sorted({(task, state) for task, state, _ in chosen}, key=lambda c: (group(*c), c))
+    cases = sorted({(task, state) for task, state, _ in chosen}, key=lambda c: (ROLE[c], c))
     lines = [
         "Latest run of each case; calls, cost and steps are means over its repeats.",
         "",
-        "| task | state | group | raw commit | raw solved | World Use commit | World Use solved "
+        "| task | state | role | raw commit | raw solved | World Use commit | World Use solved "
         "| calls raw / WU | est. USD raw / WU | steps raw / WU |",
         "|---|---|---|---|---|---|---|---|---|---|",
     ]
-    totals = collections.defaultdict(lambda: collections.defaultdict(collections.Counter))
     unmatched = False
     for case in cases:
         runs = {arm: chosen.get((*case, arm)) for arm in ("raw", "world_use")}
@@ -151,32 +154,29 @@ def tables(rows):
         cells = []
         for arm in ("raw", "world_use"):
             cells += [f"`{runs[arm][0]['commit']}`", f"{s[arm]['solved']} of {s[arm]['n']}"] if s[arm] else ["", ""]
-            if s[arm]:
-                totals[group(*case)][arm].update(s[arm])
         for key, fmt in (("calls", number), ("estimated_usd", "{:.2f}".format), ("steps", number)):
             cells.append(" / ".join(fmt(s[arm][key]) if s[arm] else "-" for arm in ("raw", "world_use")))
         # Arms run in one pair start from one observation. Rows paired across campaigns are checked here.
         starts = {r["initial"] for arm_runs in runs.values() for r in arm_runs or () if "initial" in r}
         unmatched = unmatched or len(starts) > 1
         mark = " †" if len(starts) > 1 else ""
-        lines.append(f"| {case[0]} | {case[1]}{mark} | {group(*case)} | " + " | ".join(cells) + " |")
+        lines.append(f"| {case[0]} | {case[1]}{mark} | {ROLE[case]} | " + " | ".join(cells) + " |")
     if unmatched:
         lines += ["", "† The arms' runs of this case did not start from the same initial observation."]
     lines += [
         "",
-        "Totals over those cases (sums of the per-case means).",
+        "Totals over every episode of those runs.",
         "",
-        "| group | arm | solved | calls | est. USD | steps |",
-        "|---|---|---|---|---|---|",
+        "| cases | arm | solved | calls, total and median | est. USD | steps | input tokens |",
+        "|---|---|---|---|---|---|---|",
     ]
-    for name in ("basket development", "held-out", "other tasks"):
+    groups = [(role, [c for c in cases if ROLE[c] == role]) for role in dict.fromkeys(ROLE[c] for c in cases)]
+    groups += [("all", cases)] + [(f"task {t}", [c for c in cases if c[0] == t]) for t in sorted({c[0] for c in cases})]
+    for name, which in groups:
         for arm, label in (("raw", "raw"), ("world_use", "World Use")):
-            t = totals[name][arm]
-            if t:
-                lines.append(
-                    f"| {name} | {label} | {t['solved']} of {t['n']} | {number(t['calls'])} "
-                    f"| {t['estimated_usd']:.2f} | {number(t['steps'])} |"
-                )
+            runs = [r for case in which for r in chosen.get((*case, arm), ())]
+            if runs:
+                lines.append(f"| {name} | {label} | {totals(runs)} |")
     return "\n".join(lines)
 
 

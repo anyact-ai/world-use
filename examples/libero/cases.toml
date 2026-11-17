@@ -1,7 +1,8 @@
 # LIBERO-10 cases for the matched pilot; run.py refuses a task and initial state not listed here.
 # Development states are for iteration. A held-out state is run only as a test of finished tools
-# and is never inspected to tune them. Held-out state 2 of the basket tasks (0, 1, 7) has been run
-# and reported once; held-out state 3 has never been run.
+# and is never inspected to tune them. Both held-out states have been run and reported: state 2 of
+# the basket tasks (0, 1, 7) twice, state 3 of every task three times at 529a7f3. A further test of
+# changed tools needs states never run; LIBERO has 50 per task.
 case = [
   { task = 0, state = 0, role = "development" },
   { task = 0, state = 1, role = "development" },
