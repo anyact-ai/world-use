@@ -5,12 +5,12 @@
     "agent-requirements.txt": "dc865f41059c163718c91bb0ccd7f712b849c8f03d8a982e362a201eb94ccc70",
     "budget.py": "59ca1d7fd3d7c0e615d6ca21a9eadf1eec768a84ca2222fbbbf37b49326e0028",
     "campaign.py": "aab9a1f4461ca51caabdde6080f10c3f9f3eab182fa5022cd33d03adb299a20a",
-    "cases.toml": "e6555607df3ceb44b4d5d0c6cadee57260b120a7b9ade32cd1a8afeeccc04de0",
+    "cases.toml": "9f2a7642fec062e3d12c318d9d71b8423322b9b9d1c67177af266f70ddb54123",
     "native.py": "68821ae4ac46e583c7d2e81917648443a2b4751579011a96609fa538ec94ff32",
-    "report.py": "c154b91bee13ee6c629d7e9a74299c8a4bfc922592dbf7ff6a0c2dfef1e77bef",
+    "report.py": "9a4e1f032bded40d195a54bdbe7ec66a1e08cc3a2231067236bafeec57b31241",
     "run.py": "e3c756136f882ab70e13302847840a5538a99a67a1942a72e09d47e6f7821033",
     "sim-requirements.txt": "dbaec293790695dedabd929bc9b9a75c074a8ce827308fa66d331924b8f0b996",
-    "test_campaign.py": "32c71c1e08f81ffebc1d6a056489419e6fdcba922c41fb2463079efac7072a60",
+    "test_campaign.py": "658ab86f0f0f6444d9f4439264240a828f7342bd50f76f5c43f1d7c3af977fd1",
     "test_runner.py": "f58cc7264d336efc93e85873a4dd9c7b52b8b3fba451964fe7d5283df7d13bb2",
     "validate.py": "7391eee5d53d838a68187e2136c07aeaffa375bf91c3b41ee344aa58610dece2",
     "world_tools.py": "f1ed28bab257ee2e8d833d92038a6e7e9a89560c9ed1f403b591575f24f6111d"
@@ -289,7 +289,7 @@
     "calls": 4,
     "estimated_usd": 0.0048,
     "budget_charge_usd": 0.0050000000000000044,
-    "wall_seconds": 17.230171031999816
+    "wall_seconds": 16.886384895000447
   },
   "world_use": {
     "arm": "world_use",
@@ -303,7 +303,7 @@
     "calls": 18,
     "estimated_usd": 0.021599999999999998,
     "budget_charge_usd": 0.02250000000000002,
-    "wall_seconds": 139.9578750630003
+    "wall_seconds": 141.67134600900135
   },
   "empty_grasp_stopped_before_lift": true,
   "applied_command_offset_reported_m": 0.019999999999999907,
