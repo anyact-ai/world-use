@@ -287,27 +287,35 @@ percent of its speed, they tell free motion, contact and a blocked move apart in
 every case tried; they fail only for a slow arm that keeps 85 percent of its speed.
 Measuring each arm's response was therefore not built.
 
-**Four changes after the move.** Each is a new condition.
+**Three changes after the move.** Each is a new condition.
 
 - *Remembered positions.* A position found for a target is kept until the target
   is selected again or a grasp closes on it. Locating or grasping it again confirms
   it with one look instead of working it out again.
 - *Looks without waiting.* A look needs the pose it is taken from, not a hand at
-  rest, so centring moves end on arrival, and the rise to a travel height runs into
-  the level carry at that height. In the recorded development episodes 36 percent
-  of the World Use arm's steps were waits.
+  rest, so centring moves end on arrival. In the recorded development episodes 36
+  percent of the World Use arm's steps were waits. A scripted two-can task takes
+  486 steps where it took 511, and locating the basket 16 where it took 28.
 - *Fingers across the narrow side.* `locate` and `grasp` report the narrowest box
   around the region (`across_mm`, `along_mm`). Given no yaw and no offset, a
   grasp of a region the policy outlined with a box in the wrist camera, clearly
   longer than wide and with a narrow side of at most 70 mm, turns the fingers
   across it. A point can select only part of an object, so a point selection
-  never turns the hand. Grasps stay vertical.
+  never turns the hand. Grasps stay vertical. In the development check the book of
+  task 5, never held before, was taken this way at the first attempt.
+
+Two more were built, measured on development states and removed.
+
+- *Carrying the travel height through the level leg*, so the rise need not stop
+  first, saved about five steps per placement. The arm holds a height about 9 mm
+  off its command at the far side of the table, and adding that to the arrival
+  error stalled a placement that the level leg alone would have completed.
 - *A review before done.* LIBERO ends an episode by itself when its check passes,
-  so a `done` from the policy is always a claim the check rejects. The tools cannot
-  know that and do not use it. The first `done` is answered once with a review: the
-  hand rises to the highest it has been, the result lists what was grasped and
-  released, and the policy is asked to check each named object in the images that
-  follow before calling `done` again.
+  so a `done` from the policy is always a claim the check rejects; the tools do not
+  know that. The first `done` was answered once with a raised look and a list of
+  what was grasped and released. In four false completions it changed nothing:
+  each time the policy's belief was wrong, not its view. Twice it had taken the
+  tomato sauce for the alphabet soup.
 
 Not built: re-seeding a lost region from its remembered position, because a region
 that leaves the wrist view is needed again only through its coordinates; and a

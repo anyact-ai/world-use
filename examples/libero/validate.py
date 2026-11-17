@@ -111,8 +111,6 @@ class Scripted(AzureBudget):
                             expect_grip_mm=[50, 75],
                         ),
                     ),
-                    # The first done is answered with the review; nothing ends.
-                    ("done", dict(summary="Offline review check.", hindsight="none")),
                     ("give_up", dict(reason="Offline procedure checks complete.", hindsight="none")),
                 ]
             entry = self.script[index - 1]
@@ -313,9 +311,6 @@ def main():
         assert max(placed.values()) < 0.015 and located["looks"] >= 2
         assert centred["status"] == "done" and [s["status"] for s in centred["stages"]] == ["done"] * 5
         assert 50 <= centred["observations"]["after"]["aperture_mm"] <= 75
-        # The first done ended nothing and listed the grasps; the hand was already as high as it had been.
-        (review,) = (o for o in outcomes if o.get("status") == "review")
-        assert [h["object"] for h in review["handled"]] == ["fixture_object", "fixture_wrist"]
         # Selection and repeated observation share the actual simulator capture.
         assert outcomes[0]["frame"] == outcomes[1]["frame"]
         observed = outcomes[2]["targets"]

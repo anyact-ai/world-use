@@ -89,11 +89,6 @@ when the native approvers changed your commands: a move issued while the arm sti
 previous command can end short, and repeating the move covers the rest.
 A surprise is a measurement, not the end of the task: correct its cause and try again while
 calls and steps remain. Tool completion is not task success. Decide from fresh camera evidence.
-Your first done does not end the episode. It is answered once with a review: the result lists
-what was grasped and released, and the hand first rises to the highest it has rested at between
-your calls, when it is lower and more than 60 steps remain, so both cameras see the work. Check
-the images that follow against the instruction, object by object, then call done again or keep
-working.
 """
 
 
@@ -118,7 +113,6 @@ WRIST = View(
 OPEN_MM = [70, 85]  # fingers this far apart have let go, or made room, even while they still creep
 FIT_MM = 70  # the widest narrow side the fingers are turned to take: 78 mm of opening less clearance
 LONGER = 1.3  # a region this much longer than it is wide has a narrow side to take it by
-REVIEW_STEPS = 60  # with fewer steps than this left, the review does not spend any on rising
 CLOSE_STEPS = 120
 SETTLE_STEPS = 40  # raised high above the table the arm needs about 25 steps to stop swinging
 
@@ -353,9 +347,6 @@ class WorldTools:
         self.seen = None
         self.located = {}  # where each target was last found; forgotten once it is reselected or taken
         self.outlined = set()  # targets selected with a box around them, whose region is the whole object
-        self.handled = []  # what was grasped and released, for the review before done
-        self.reviewed = False
-        self.top_z = float(driver.observation.state["eef_state"][2])
 
     def schemas(self):
         return self.native.schemas() + copy.deepcopy(SCHEMAS)
@@ -509,37 +500,7 @@ class WorldTools:
         if result.error:
             raise ValueError(result.error)
 
-    def _review(self):
-        """The one check before the episode ends: an unobstructed look and what the tools did."""
-        state = self.driver.observation.state["eef_state"]
-        risen = None
-        if self.top_z - float(state[2]) > ARM_TOLERANCE[0] and self.driver.max_steps - self.driver.steps > REVIEW_STEPS:
-            # The highest the hand has been is a height it can be at; from there both cameras see more.
-            risen = self.driver.execute(self._move({"z": self.top_z}, "review_rise"))
-        last = {}
-        for row in self.handled:
-            facts = {k: v for k, v in row.items() if k != "object"}
-            # A new grasp starts the object's account again; a release adds to the grasp before it.
-            last[row["object"]] = facts if "grasp" in facts else {**last.get(row["object"], {}), **facts}
-        return self._result(
-            dict(
-                status="review",
-                message="This is the one check before the episode ends, not an error. Look at the images that "
-                "follow"
-                + (", taken with the hand raised out of the way" if risen is not None and risen.ok else "")
-                + ". For every object the instruction names, find it and say where it is now. If each is "
-                "the object you meant and is where the instruction asks, call done again. Otherwise keep "
-                "working: nothing has ended.",
-                handled=[dict(object=name, **facts) for name, facts in last.items()],
-                **self.driver.measure(),
-            )
-        )
-
     def execute(self, call, observation):
-        self.top_z = max(self.top_z, float(self.driver.observation.state["eef_state"][2]))
-        if call.name == "done" and not self.reviewed:
-            self.reviewed, self.pending = True, None
-            return self._review()
         if call.name in ("done", "give_up"):
             self.pending = None
             return self.native.execute(call, observation)
@@ -682,7 +643,6 @@ class WorldTools:
                 )
                 if len(ran) > 1:
                     self.located.pop(name, None)  # fingers that closed may have moved it
-                self.handled.append(dict(object=name, grasp=outcome.status))
                 return self._procedure(outcome, name, **found)
             if call.name == "place":
                 self.pending = None
@@ -751,16 +711,10 @@ class WorldTools:
                         dict(verified=False, policy_note=args["note"]),
                     )
 
-                kept = pending["args"]
-                released = dict(object=kept["object_target"])
-                at = self.driver.observation.state["eef_state"][:2]
-                released["released_at"] = [float(at[0]), float(at[1])]
-                if (where := self.located.get(kept.get("destination_target"))) is not None:
-                    released["from_located_destination_mm"] = round(1000 * float(np.hypot(*(at - where[:2]))))
                 outcome = self._place(
                     pending["args"], dict(kind="confirm_state", fingerprint=pending["fingerprint"]), approved
                 )
-                self.handled.append(dict(released, release=outcome.status))
+                kept = pending["args"]
                 return self._procedure(
                     outcome, *(kept[k] for k in ("object_target", "destination_target") if k in kept)
                 )

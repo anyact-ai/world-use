@@ -173,7 +173,7 @@ def tools_fixture(camera=None, **motion):
     tools.driver = FakeDriver()
     tools.native = tools.driver.tools
     tools.pending = tools.seen = None
-    tools.located, tools.outlined, tools.handled, tools.reviewed, tools.top_z = {}, set(), [], False, 0.5
+    tools.located, tools.outlined = {}, set()
     captures = iter(range(100))
 
     def observe(names):
@@ -441,34 +441,6 @@ def test_a_round_or_wide_region_leaves_the_fingers_as_they_are():
         assert "r00" not in approach["targets"]
 
 
-def test_the_first_done_is_answered_with_one_review_and_the_second_ends_the_episode():
-    tools = tools_fixture()
-    tools.driver.max_steps, tools.top_z = 900, 0.72
-    ended = []
-    validate = tools.native.execute
-
-    def native(call, *rest):
-        return (ended.append(call.name) or "ended") if call.name == "done" else validate(call, *rest)
-
-    tools.native.execute = native
-    assert grasp(tools)["status"] == "done"
-    done = ToolCall(id="test", name="done", arguments=json.dumps(dict(summary="Fixture.")))
-    review = json.loads(tools.execute(done, tools.driver.observation).note)
-    # Nothing ended: the hand rose to the highest it has been, and the policy is told what was handled.
-    assert review["status"] == "review" and not ended and "call done again" in review["message"]
-    assert tools.driver.commands[-1]["stage"] == "review_rise" and tools.driver.commands[-1]["targets"] == {"z": 0.72}
-    assert review["handled"] == [dict(object="object", grasp="done")]
-    assert tools.execute(done, tools.driver.observation) == "ended" and ended == ["done"]
-
-
-def test_a_review_with_few_steps_left_spends_none_on_rising():
-    tools = tools_fixture()
-    tools.driver.max_steps, tools.driver.steps, tools.top_z = 900, 870, 0.72
-    done = ToolCall(id="test", name="done", arguments=json.dumps(dict(summary="Fixture.")))
-    review = json.loads(tools.execute(done, tools.driver.observation).note)
-    assert review["status"] == "review" and not tools.driver.commands and "raised" not in review["message"]
-
-
 @pytest.mark.parametrize(("stalls", "status"), [(1, "done"), (2, "surprise")])
 def test_one_centring_move_that_stops_short_of_a_guessed_goal_still_brings_a_new_look(stalls, status):
     tools = tools_fixture()
@@ -506,25 +478,6 @@ def test_fingers_that_will_not_open_end_a_grasp_at_its_first_centring_move():
     tools.driver.execute = jammed
     result = grasp(tools)
     assert result["status"] == "surprise" and len(tools.driver.commands) == 1
-
-
-def test_the_review_reports_an_object_from_its_last_grasp_on():
-    tools = tools_fixture()
-    tools.driver.max_steps = 900
-    tools.handled = [
-        dict(object="can", grasp="done"),
-        dict(object="can", release="done", released_at=[0.1, 0.2]),
-        dict(object="can", grasp="surprise"),
-        dict(object="box", grasp="done"),
-        dict(object="box", release="done", released_at=[0.3, 0.2], from_located_destination_mm=12),
-    ]
-    done = ToolCall(id="test", name="done", arguments=json.dumps(dict(summary="Fixture.")))
-    review = json.loads(tools.execute(done, tools.driver.observation).note)
-    # The earlier release of the can is not shown as following the grasp that failed after it.
-    assert review["handled"] == [
-        dict(object="can", grasp="surprise"),
-        dict(object="box", grasp="done", release="done", released_at=[0.3, 0.2], from_located_destination_mm=12),
-    ]
 
 
 def test_a_region_missing_from_the_wrist_view_stops_before_any_descent():

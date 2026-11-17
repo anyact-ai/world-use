@@ -236,8 +236,8 @@ class Driver:
             targets = {**targets, "z": float(self.observation.state["eef_state"][2]) + command["rise_m"]}
         legs = {**command, "travel_z": None, "above_first": False, "contact_ok": False, "rise_m": None, "rest": True}
 
-        def leg(part, **change):
-            out = self.execute({**legs, "targets": part, **change})
+        def leg(part):
+            out = self.execute({**legs, "targets": part})
             if "above_request_m" in out.data:
                 # A leg that stalled is short of the stage's request, not of its own.
                 state = self.observation.state["eef_state"]
@@ -249,15 +249,12 @@ class Driver:
             return out
 
         travel = command.get("travel_z")
-        level = {k: v for k, v in targets.items() if k != "z"}
         if travel is not None and travel - float(self.observation.state["eef_state"][2]) > ARM_TOLERANCE[0]:
-            # The level leg that follows holds this height, so the hand need not stop at the top first.
-            rise = leg({"z": travel}, rest=False)
+            rise = leg({"z": travel})
             if not rise.ok:
                 return rise
-            level["z"] = travel
         if command.get("above_first") and "z" in targets and len(targets) > 1:
-            first = leg(level)
+            first = leg({k: v for k, v in targets.items() if k != "z"})
             if not first.ok:
                 return first
         result = self.tools.execute(
