@@ -109,7 +109,7 @@ def pair(folder, results, *, task=0, state=0, stopped=None, initial="a" * 64):
         total_budget_charge_usd=0.3,
     )
     for arm, success, calls in results:
-        if stopped and arm == "baseline":
+        if success is None:  # the arm the transport stopped has no result
             continue
         (folder / arm).mkdir()
         (folder / arm / "transcript.json").write_text(json.dumps([dict(tool_calls=[dict(name="move_to")] * calls)]))
@@ -132,7 +132,9 @@ def test_report_collects_repeats_and_infrastructure_stops_and_tables_the_latest_
     pair(old / "task00_init00", [("baseline", True, 40), ("world_use", False, 20)])
     pair(new / "task00_init00", [("baseline", False, 30), ("world_use", True, 10)])
     pair(new / "task00_init00_repeat2", [("baseline", True, 50), ("world_use", True, 12)])
-    pair(new / "task00_init02", [("baseline", True, 64)], state=2, stopped="request would exceed budget")
+    pair(new / "task00_init02", [("baseline", None, 64)], state=2, stopped="request would exceed budget")
+    # A pair stopped in its second arm: the finished first arm is no comparison either.
+    pair(new / "task00_init03", [("baseline", True, 30), ("world_use", None, 5)], state=3, stopped="request failed")
     out = tmp_path / "results.jsonl"
     report.collect(out, [f"a={old}", f"b={new}"])
     report.collect(out, [f"b={new}"])  # nothing new to add
@@ -146,8 +148,9 @@ def test_report_collects_repeats_and_infrastructure_stops_and_tables_the_latest_
         ("b", "task00_init00_repeat2", "raw", True, 2),
         ("b", "task00_init00_repeat2", "world_use", True, 2),
         ("b", "task00_init02", "raw", None, None),
+        ("b", "task00_init03", "world_use", None, None),
     ]
-    stop = rows[-1]
+    stop = rows[-2]
     assert stop["ended"] == "infrastructure stop: request would exceed budget"
     assert (stop["calls"], stop["input_tokens"], stop["estimated_usd"]) == (1, 6400, 0.2)
     assert rows[2]["tool_calls"] == {"move_to": 30} and rows[3]["procedure_outcomes"] == {}

@@ -33,7 +33,7 @@ def usage(ledger):
 
 
 def pair_rows(commit, pair):
-    """Rows for each arm of one pair folder: a result per finished arm, and one for an arm the transport stopped."""
+    """Rows for one pair folder: a result per arm, or one row for the arm the transport stopped."""
     report = json.loads((pair / "summary.json").read_text())
     protocol = report["protocol"]
     ledger = [json.loads(line) for line in (pair / "api" / "ledger.jsonl").read_text().splitlines()]
@@ -42,20 +42,21 @@ def pair_rows(commit, pair):
     head = dict(commit=commit, pair=pair.name, task=protocol["task_id"], state=protocol["initial_state"])
     if repeat:
         head["repeat"] = int(repeat)
-    rows = []
     done = {r["arm"] for r in report.get("results", [])}
     stopped = [arm for arm in protocol.get("arms", ARM) if arm not in done]
     if report.get("stopped") and stopped:
-        # The transport refused a request: no result for the arm that was running, and later arms never ran.
+        # The transport refused a request. The pair is no comparison: one row, for the arm that was running,
+        # charged with the whole pair, and no result for an arm that finished before it.
         arm = stopped[0]
         steps = pair / arm / "execution" / "steps.jsonl"
-        rows.append(dict(
+        return [dict(
             head, arm=ARM[arm], success=None, ended="infrastructure stop: " + report["stopped"]["reason"],
             calls=sum(r["event"] == "settled" and r["arm"] == arm for r in ledger),
             steps=len(steps.read_text().splitlines()) if steps.exists() else 0, wall_seconds=0, **tokens[arm],
             estimated_usd=round(report["total_estimated_usd"], 3),
             conservative_usd=round(report["total_budget_charge_usd"], 3), tool_calls={},
-        ))  # fmt: skip
+        )]  # fmt: skip
+    rows = []
     for result in report.get("results", []):
         arm = result["arm"]
         tools, outcomes = collections.Counter(), collections.Counter()
