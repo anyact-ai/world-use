@@ -197,12 +197,15 @@ class Driver:
         that no longer follows, and a hand that stopped short is commanded to where it
         is, so that it stops pushing and the next move starts from rest.
 
-        A stage may ask for five things a raw move does not do. travel_z first rises
-        straight up to that height when the hand is below it. above_first moves level
-        to above the pose and settles there before descending, so the hand comes straight
-        down. contact_ok accepts a descent that contact stopped directly above the pose.
-        rise_m replaces the target height with the measured height plus that rise.
-        rest=False accepts arrival at the pose without waiting for the hand to stop there.
+        A stage may ask for four things a raw move does not do. travel_z first rises
+        straight up to that height when the hand is below it. via is a point the hand
+        goes to through free space, level and then to its height, before a straight line
+        to the pose; x, y or z it leaves out are the pose's x, y and the hand's height,
+        so an empty via is the point above the pose and the hand comes straight down.
+        On that line, and only there, contact that stops the hand short of the pose is
+        an accepted end. rise_m replaces the target height with the measured height plus
+        that rise. rest=False accepts arrival at the pose without waiting for the hand
+        to stop there.
         """
         kind = command["kind"]
         if kind == "confirm_state":
@@ -229,7 +232,7 @@ class Driver:
         targets, started = command["targets"], self.steps
         if command.get("rise_m") is not None:
             targets = {**targets, "z": float(self.observation.state["eef_state"][2]) + command["rise_m"]}
-        legs = {**command, "travel_z": None, "above_first": False, "contact_ok": False, "rise_m": None, "rest": True}
+        legs = {**command, "travel_z": None, "via": None, "rise_m": None, "rest": True}
 
         def leg(part):
             out = self.execute({**legs, "targets": part})
@@ -248,10 +251,15 @@ class Driver:
             rise = leg({"z": travel})
             if not rise.ok:
                 return rise
-        if command.get("above_first") and "z" in targets and len(targets) > 1:
-            first = leg({k: v for k, v in targets.items() if k != "z"})
-            if not first.ok:
-                return first
+        via = command.get("via")
+        if via is not None:
+            # Turn and open the hand on the level leg, away from what it is about to approach.
+            level = {k: via.get(k, v) for k, v in targets.items() if k != "z"} | {k: via[k] for k in "xy" if k in via}
+            down = {"z": via["z"]} if "z" in via else {}
+            for part in (level, down) if "z" in targets or via else ():
+                if part and not (out := leg(part)).ok:
+                    return out
+        origin = np.array(self.observation.state["eef_state"][:3], dtype=float)
         result = self.tools.execute(
             ToolCall(
                 id="native",
@@ -311,7 +319,7 @@ class Driver:
         settle = command.get("settle_steps", 0)
         following = Following(
             self.observation.state["eef_state"][:3],
-            lead_m=CONTACT_LEAD_M if command.get("contact_ok") else LEAD_M,
+            lead_m=CONTACT_LEAD_M if via is not None else LEAD_M,
             progress_m=PROGRESS_M,
         )
 
@@ -376,23 +384,24 @@ class Driver:
                 break
         later = "inspect and choose another command; later stages did not run"
         if arm_state == "stalled":
-            state = self.observation.state["eef_state"]
-            level = float(np.linalg.norm(state[:2] - target[:2]))
-            above = float(state[2] - target[2])
-            # Stopped over the pose with only height left to go: the palm met the object or the
-            # fingertips met the table. A hand pushed aside is still a failed approach.
+            # Stopped on its line to the pose with only some of the line left to go: the palm met
+            # the object, the fingertips met the table or what is pushed stopped. A hand pushed off
+            # the line is still a failed approach.
+            line = target[:3] - origin
+            along = line / max(float(np.linalg.norm(line)), 1e-9)
+            left = target[:3] - self.observation.state["eef_state"][:3]
+            short = float(left @ along)
             contact = (
-                command.get("contact_ok")
-                and level <= ARM_TOLERANCE[0]
+                via is not None
+                and float(np.linalg.norm(left - short * along)) <= ARM_TOLERANCE[0]
                 and errors()[1] <= ARM_TOLERANCE[1]
-                and above > 0
+                and short > 0
             )
-            # Stop pressing: command the hand to rest at its height, over the pose when it
-            # stopped there and otherwise where it is.
+            # Stop pressing: command the hand to rest where it is, on the line when it stopped there.
             for _ in range(RELIEF_STEPS):
                 pose = np.append(self.observation.state["eef_state"][:9], final.data[9])
                 if contact:
-                    pose[:2], pose[3:9] = target[:2], target[3:9]
+                    pose[:3], pose[3:9] = target[:3] - short * along, target[3:9]
                 hold = Action(data=pose)
                 if violated := advance(hold):
                     return violated
@@ -401,8 +410,8 @@ class Driver:
             if contact:
                 self.record_observation()
                 data = report("stopped_on_contact")
-                data["above_request_m"] = round(above, 4)
-                return Outcome("done", kind, "the descent met contact above the requested height", data)
+                data["short_m"] = round(short, 4)
+                return Outcome("done", kind, "the approach met contact short of the requested pose", data)
         self.record_observation()
         if arm_state != "arrived":
             stalled = arm_state == "stalled"

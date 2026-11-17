@@ -27,8 +27,11 @@ prompt is upstream's plus that sentence.
   camera with a point or a box and EdgeTAM follows it.
 - `locate`: the position and size of a region selected in the wrist camera.
 - `grasp`: open, centre over the region, descend, close, test-lift, in one call.
-- `place` and `release_placement`: rise, carry, descend and pause before release;
-  the release needs a one-use decision tied to the unchanged observations.
+- `place` and `release_placement`: rise, carry, approach from above or through a
+  point the model names, and pause before release; the release needs a one-use
+  decision tied to the unchanged observations.
+- `push`: closed fingers along a straight line until its end or until contact
+  stops them, for a drawer, a door or sliding an object.
 
 The model chooses the regions, heights, expected finger opening and where to put
 things. The tools measure and report; image overlap and finger opening do not
@@ -45,10 +48,11 @@ about them. It names no task, object or coordinate.
   `WRIST` in `world_tools.py` is that mount. A position is remembered until its
   target is selected again or a grasp closes on it.
 - **Arrival and contact.** A hand has arrived when it is within 12 mm of its pose
-  and at rest. A descent that contact stops directly above its pose is accepted
-  and reported, so the model can ask for a height it cannot judge; the hand is
-  then commanded to rest instead of pressing on. A hand that stops gaining on its
-  command anywhere else is a surprise. These use
+  and at rest. The last leg of a grasp, a placement or a push is a straight line,
+  down by default, and contact that stops the hand on that line short of its
+  pose is accepted and reported, so the model can ask for a height it cannot
+  judge; the hand is then commanded to rest instead of pressing on. A hand that
+  stops gaining on its command anywhere else is a surprise. These use
   [`checks.Following` and `Settling`](../../docs/adapters.md#measured-completion).
 - **Fingers across the narrow side.** For a region the model outlined with a box
   in the wrist camera, clearly longer than wide and at most 70 mm across, a
@@ -76,7 +80,8 @@ Simulator truth scores them and never reaches a policy.
 ## Limits
 
 - Nothing checks what a selected region is.
-- Grasps come from above. A rim offset takes mugs, bowls and pots.
+- The hand stays vertical: grasps come from above, and a rim offset takes mugs,
+  bowls and pots.
 - The World Use arm is told the wrist camera's mount and the hand's dimensions.
   The raw arm is not.
 - A pair is one episode per arm. Repeat pairs or run more states before reading
@@ -225,9 +230,10 @@ development check; `protocol.json` records the arms run.
 
 The campaign admits a pair only while the conservative charge of its finished
 attempts plus the full caps of running pairs leaves room for one more pair cap.
-A pair the transport stopped with unknown usage, or one that was interrupted,
-keeps its folder and its charge and is tried again in a `_retryN` folder, three
-attempts in all. Pairs found complete in the folder are skipped, and each repeat
+A pair that did not finish both arms, stopped by the transport, a lost simulator
+or an interruption, keeps its folder and its charge and is tried again in a
+`_retryN` folder, three attempts in all. Each pair holds a simulator of about
+3 GB, so choose `--workers` to fit the machine's memory. Pairs found complete in the folder are skipped, and each repeat
 after the first has its own `_repeatN` folder.
 
 Append the campaign's pairs, labelled with the commit they ran, to the compact

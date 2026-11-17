@@ -45,15 +45,14 @@ def ledger(folder, charge, settled=True):
 
 def fake_pairs(charges, launched):
     """A run.py stand-in: each attempt charges the next amount and finishes both arms. None is an attempt the
-    transport stopped in its first arm with usage unknown; a negative amount is one its own cap stopped."""
+    transport stopped in its first arm, with a request's usage unknown."""
 
     def call(args, **_):
         output = args[0]
         launched.append(output.name)
         charge = charges.pop(0)
-        ledger(output, abs(charge or 1.0), settled=charge is not None)
-        finished = charge is not None and charge > 0
-        summary = dict(protocol=dict(arms=["baseline", "world_use"]), results=[{}, {}] if finished else [])
+        ledger(output, charge or 1.0, settled=charge is not None)
+        summary = dict(protocol=dict(arms=["baseline", "world_use"]), results=[] if charge is None else [{}, {}])
         (output / "summary.json").write_text(json.dumps(summary))
         return 0
 
@@ -80,18 +79,17 @@ def test_running_pairs_hold_their_full_cap(tmp_path):
     assert [pairs.admit(name) for name in "abc"] == [True, True, False]
 
 
-def test_a_pair_stopped_with_unknown_usage_is_tried_again_and_stays_charged(tmp_path):
+def test_a_pair_that_did_not_finish_is_tried_again_and_stays_charged(tmp_path):
     launched = []
-    pairs = fake_campaign(tmp_path, 100, [None, 2, None, None, None, -3, 1], launched)
-    pairs.run_all([(0, 0, 1), (1, 0, 1), (2, 0, 1), (3, 0, 1)], workers=1, stagger=0)
+    pairs = fake_campaign(tmp_path, 100, [None, 2, None, None, None, 1], launched)
+    pairs.run_all([(0, 0, 1), (1, 0, 1), (2, 0, 1)], workers=1, stagger=0)
     assert launched == [
         "task00_init00", "task00_init00_retry1",                          # stopped, then finished
         "task01_init00", "task01_init00_retry1", "task01_init00_retry2",  # three attempts and no more
-        "task02_init00",                                                  # its own cap would stop it again
-        "task03_init00",
+        "task02_init00",
     ]  # fmt: skip
     # Each unsettled reservation is kept in full beside the settled charges.
-    assert pairs.spent() == 1 + 2 + 3 * 1 + 3 + 1
+    assert pairs.spent() == 1 + 2 + 3 * 1 + 1
 
 
 def test_repeats_get_their_own_folders_and_an_interrupted_attempt_is_retried(tmp_path):

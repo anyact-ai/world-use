@@ -50,7 +50,7 @@ concludes nothing. Tracking is evidence, not a precondition.
 grasp opens the fingers, moves level to above the pose and then straight down. The approach z is
 the lowest height you allow: if the hand meets contact directly above the pose, with the palm on
 a tall object or the fingertips on the table, it stops there, so ask for a low z when you cannot
-judge height, and descent_ended_above_request_m says where: far above the object's own height
+judge height, and approach_ended_short_m says how far above it: far above the object's own height
 means something else held the hand up. It then closes, checks the measured opening against your
 expected range in millimetres, rises by lift z minus approach z, and checks again. It stops at
 the first failed check and never carries, retreats or retries. Judge from both cameras whether
@@ -71,18 +71,31 @@ the centre of the wrist region, on a side clear of any handle, so one finger goe
 the approach z 2-3 cm below the rim top instead of a low z.
 place rises straight up to travel_z when the hand is below it, moves level to above your release
 pose, descends with the grip monitored and stops early on contact the same way, then returns
-BEFORE opening with a one-use checkpoint. Its descent_ended_above_request_m tells a landing on
+BEFORE opening with a one-use checkpoint. Its approach_ended_short_m tells a landing on
 the surface you meant from one on something higher, such as a rim. Choose a travel_z that clears
 everything on the way, the destination's rim included, by more than the held object hangs below
-the fingertips. Inspect the views, then call release_placement to open and withdraw, or correct
-the pose. Any motion or reselection voids the checkpoint. Two objects for one container go side
+the fingertips. To come at the release pose from the side instead of from above, into a shelf or
+an oven, give via: the hand moves level to over that point, down to it and then straight to the
+pose, stopping early on contact along that line, and after the release it leaves through via
+before going to your withdraw pose. Put via in front of the opening at the height of the pose,
+far enough out that the hand and what it holds are clear of the frame. Inspect the views, then
+call release_placement to open and withdraw, or correct the pose. Any motion or reselection
+voids the checkpoint. Two objects for one container go side
 by side along its longer extent: release the first a fifth of that extent to one side of the
 located centre and the second a fifth to the other side, so neither lands on the other or on
 a wall.
+push closes the fingers and moves them in a straight line from start to end, to shut a drawer or
+a door or to slide something along a surface. It goes to start through free space, rising to
+travel_z first when you give one, so put start a few centimetres clear of what you push, on the
+side you push from, with the fingertips at the height of its middle. The line ends at end or
+where contact stops the hand: pushed says which, with travelled_mm and short_mm. Put end a few
+centimetres past where the thing should stop, since a drawer or door that reaches its stop holds
+the hand there. The hand then backs off 2 cm. A hinged door moves along an arc: push it along two
+or three straight lines. yaw_deg turns the finger axis as in grasp.
 Every interpolation and settling step counts toward the 900-step episode limit; one clean pick
 and place takes about 200.
-Results report measurements. arm: arrived; stopped_on_contact (above_request_m is how far above
-the requested height); not_approaching (something stopped or shoved the hand: above_request_m
+Results report measurements. arm: arrived; stopped_on_contact (short_m is how far short of the
+requested pose, along the line of approach); not_approaching (something stopped or shoved the hand: above_request_m
 and aside_m say where it rests relative to the request); still_converging. gripper: reached_end
 (fully closed or open, nothing between the fingers); stopped_apart; still_moving. applied appears
 when the native approvers changed your commands: a move issued while the arm still trails the
@@ -114,6 +127,8 @@ OPEN_MM = [70, 85]  # fingers this far apart have let go, or made room, even whi
 FIT_MM = 70  # the widest narrow side the fingers are turned to take: 78 mm of opening less clearance
 LONGER = 1.3  # a region this much longer than it is wide has a narrow side to take it by
 CLOSE_STEPS = 120
+PUSH_M = (0.02, 0.4)  # shortest and longest line of one push
+BACK_OFF_M = 0.02
 SETTLE_STEPS = 40  # raised high above the table the arm needs about 25 steps to stop swinging
 
 
@@ -250,6 +265,9 @@ RANGE = dict(
     maxItems=2,
     description="Expected measured finger separation [min,max] in mm, with 4 <= min < max <= 78.",
 )
+POINT = dict(type="object")
+TRAVEL = dict(type="number", description="Height in metres to rise to before moving level.")
+YAW = dict(type="number", description="Turn of the finger axis about the vertical: 0 along world y, 90 along world x.")
 SELECTION = dict(
     type="object",
     description="A region in one camera's current image: {camera, point: [x, y]} or {camera, box: [x0, y0, x1, y1]}.",
@@ -296,10 +314,7 @@ SCHEMAS = [
                 maxItems=2,
                 description="[dx, dy] in metres from the centre of a wrist-selected region to the grasp point.",
             ),
-            yaw_deg=dict(
-                type="number",
-                description="Turn of the finger axis about the vertical: 0 along world y, 90 along world x.",
-            ),
+            yaw_deg=YAW,
             approach=TARGETS,
             lift=TARGETS,
             expect_grip_mm=RANGE,
@@ -309,21 +324,36 @@ SCHEMAS = [
     ),
     schema(
         "place",
-        "Rise to travel_z, move above your release pose and descend to it or to contact above it while "
-        "monitoring grip, then return BEFORE opening so you can inspect fresh views. Withdrawal is only "
+        "Rise to travel_z, move above your release pose, or over via when given, and approach the pose "
+        "or contact short of it while monitoring grip, then return BEFORE opening so you can inspect fresh "
+        "views. Withdrawal is only "
         "executed after a separate release decision. select_destination binds destination_target first, "
         "in the same call.",
         dict(
             object_target=TEXT,
             destination_target=TEXT,
             select_destination=SELECTION,
-            travel_z=dict(type="number", description="Height in metres to rise to before moving level."),
+            travel_z=TRAVEL,
+            via=dict(POINT, description="{x, y, z} to pass through just before the release pose and on the way out."),
             move=TARGETS,
             withdraw=TARGETS,
             expect_grip_mm=RANGE,
             note=TEXT,
         ),
         ["object_target", "move", "withdraw", "expect_grip_mm", "note"],
+    ),
+    schema(
+        "push",
+        "Close the fingers, go to start through free space, then move in a straight line to end or to "
+        "where contact stops the hand, and back off 2 cm. For shutting a drawer or door or sliding an object.",
+        dict(
+            start=dict(POINT, description="{x, y, z} where the line begins, clear of what is pushed."),
+            end=dict(POINT, description="{x, y, z} where the line ends, at or beyond where the pushing should stop."),
+            yaw_deg=YAW,
+            travel_z=TRAVEL,
+            note=TEXT,
+        ),
+        ["start", "end", "note"],
     ),
     schema(
         "release_placement",
@@ -457,18 +487,75 @@ class WorldTools:
         feedback = procedures.feedback(outcome)
         return self._result(dict(feedback, **facts), dict(procedure_brief(feedback, bound), **facts))
 
-    def _descend(self, command, facts):
-        """Execute a stage, noting where an approach that met contact or stalled ended."""
+    def _approach(self, command, facts):
+        """Execute a stage, noting how far short of its pose an approach that met contact ended."""
         outcome = self.driver.execute(command)
-        if command.get("stage") in ("grasp_approach", "place_approach") and "above_request_m" in outcome.data:
-            # Where the descent ended says what it met: the object, the surface or something else.
-            facts.update(descent_ended_above_request_m=outcome.data["above_request_m"])
+        if "short_m" in outcome.data:
+            # Where the approach ended says what it met: the object, the surface or something else.
+            facts.update(approach_ended_short_m=outcome.data["short_m"])
         return outcome
+
+    @staticmethod
+    def _point(value, name):
+        if (
+            not isinstance(value, dict)
+            or value.keys() != {"x", "y", "z"}
+            or any(type(v) not in (float, int) or not math.isfinite(v) for v in value.values())
+        ):
+            raise ValueError(f"{name} is a point: x, y and z in metres")
+        return {k: float(v) for k, v in value.items()}
+
+    @staticmethod
+    def _yaw(args):
+        yaw = args.get("yaw_deg")
+        if yaw is not None and (type(yaw) not in (float, int) or not -90 <= yaw <= 90):
+            raise ValueError("yaw_deg is between -90 and 90")
+        return yaw
 
     def _move(self, targets, stage, *, monitor=None, expected=None, settle=SETTLE_STEPS):
         return dict(
             kind="move", targets=targets, stage=stage, settle_steps=settle, monitor_mm=monitor, expect_mm=expected
         )
+
+    @staticmethod
+    def _travel(args):
+        travel = args.get("travel_z")
+        if travel is not None and (type(travel) not in (float, int) or not math.isfinite(travel)):
+            raise ValueError("travel_z must be a height in metres")
+        return travel
+
+    def _push(self, args):
+        """Fingers closed, to start through free space, then straight to end or to where contact stops the hand."""
+        start, end = self._point(args["start"], "start"), self._point(args["end"], "end")
+        line = np.array([end[k] - start[k] for k in "xyz"])
+        length = float(np.linalg.norm(line))
+        if length < PUSH_M[0] or length > PUSH_M[1]:
+            raise ValueError(f"a push runs {PUSH_M[0] * 100:g}-{PUSH_M[1] * 100:g} cm from start to end")
+        turn = {} if (yaw := self._yaw(args)) is None else turned(yaw)
+        stages = [
+            self._move({"gripper": 1}, "push_close"),
+            dict(self._move({**end, **turn}, "push"), travel_z=self._travel(args), via=start),
+        ]
+        pushed = {}
+        for command in stages:
+            outcome = self._approach(command, pushed)
+            if not outcome.ok:
+                return self._result(outcome.feedback(), dict(status=outcome.status, **outcome.data))
+        here = np.array(self.driver.observation.state["eef_state"][:3])
+        short = pushed.get("approach_ended_short_m", 0.0)
+        # Leave what was pushed: back along the line, but never past where the push began.
+        back = here - line / length * min(BACK_OFF_M, max(length - short, 0.0))
+        retreat = self.driver.execute(self._move(dict(zip("xyz", map(float, back), strict=True)), "push_back_off"))
+        told = dict(
+            status=retreat.status,
+            pushed=dict(
+                ended="stopped_on_contact" if "approach_ended_short_m" in pushed else "reached_end",
+                travelled_mm=round(1000 * (length - short)),
+                short_mm=round(1000 * short),
+            ),
+            **self.observe(),
+        )
+        return self._result(told)
 
     @staticmethod
     def _range(value):
@@ -569,9 +656,7 @@ class WorldTools:
                 if any(offset) and not wrist:
                     raise ValueError("offset is measured from a region selected in the wrist camera")
                 approach = dict(args["approach"], gripper=0)
-                if (yaw := args.get("yaw_deg")) is not None:
-                    if type(yaw) not in (float, int) or not -90 <= yaw <= 90:
-                        raise ValueError("yaw_deg is between -90 and 90")
+                if (yaw := self._yaw(args)) is not None:
                     approach.update(turned(yaw))
                 if "select" in args:
                     self._select(name, args["select"])
@@ -594,7 +679,7 @@ class WorldTools:
                             over.update(turned(fit))
                             found.update(fingers_turned_to_yaw_deg=fit)
                         command = dict(command, targets=dict(command["targets"], **over))
-                    outcome = self._descend(command, found)
+                    outcome = self._approach(command, found)
                     ran.append(outcome.ok)
                     return outcome
 
@@ -629,9 +714,7 @@ class WorldTools:
                 outcome = procedures.grasp(
                     run,
                     observe,
-                    approach=dict(
-                        self._move(approach, "grasp_approach", expected=OPEN_MM), above_first=True, contact_ok=True
-                    ),
+                    approach=dict(self._move(approach, "grasp_approach", expected=OPEN_MM), via={}),
                     # Fingers closing across a box that is not square to them turn it first, slowly.
                     close=self._move({"gripper": 1}, "grasp_close", expected=grip, settle=CLOSE_STEPS),
                     check=dict(kind="check_grip", expect_mm=grip),
@@ -648,9 +731,9 @@ class WorldTools:
                 grip = self._range(args["expect_grip_mm"])
                 for key in ("move", "withdraw"):
                     self._validate_pose(args[key])
-                travel = args.get("travel_z")
-                if travel is not None and (type(travel) not in (float, int) or not math.isfinite(travel)):
-                    raise ValueError("travel_z must be a height in metres")
+                travel = self._travel(args)
+                if "via" in args:
+                    self._point(args["via"], "via")
                 if "select_destination" in args:
                     self._select(args["destination_target"], args["select_destination"])
                 bound = [args[k] for k in ("object_target", "destination_target") if k in args]
@@ -684,13 +767,13 @@ class WorldTools:
                     )
 
                 move = dict(
-                    self._move(args["move"], "place_approach", monitor=grip),
-                    travel_z=travel,
-                    above_first=True,
-                    contact_ok=True,
+                    self._move(args["move"], "place_approach", monitor=grip), travel_z=travel, via=args.get("via", {})
                 )
                 facts = {}
                 return self._procedure(self._place(args, move, pause, facts), *bound, **facts)
+            if call.name == "push":
+                self.pending = None
+                return self._push(args)
             if call.name == "release_placement":
                 pending, self.pending = self.pending, None
                 if (
@@ -722,8 +805,16 @@ class WorldTools:
             return self._result(dict(status="refused", message=str(exc)))
 
     def _place(self, args, move, assess, facts):
+        def run(command):
+            if command.get("stage") == "place_withdraw" and "via" in args:
+                # Out the way it came in, before anything else.
+                back = self.driver.execute(self._move(args["via"], "place_withdraw"))
+                if not back.ok:
+                    return back
+            return self._approach(command, facts)
+
         return procedures.place(
-            lambda command: self._descend(command, facts),
+            run,
             self.observe,
             move=move,
             release=self._move({"gripper": 0}, "place_release", expected=OPEN_MM),

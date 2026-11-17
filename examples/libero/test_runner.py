@@ -174,6 +174,7 @@ class FakeDriver:
         self.steps += command["kind"] == "move"
         self.pose.update({k: v for k, v in command.get("targets", {}).items() if k in self.pose})
         self.pose["z"] += command.get("rise_m") or 0
+        self.observation.state["eef_state"][:3] = list(self.pose.values())
         return Outcome("done", command["kind"], "fixture measured check")
 
     def record(self, *args):
@@ -574,17 +575,68 @@ def test_a_lost_region_is_reported_and_blocks_neither_grasp_nor_place():
     assert placed["status"] == "stopped" and placed["checkpoint"] == "before_release" and tools.pending
 
 
-def test_grasp_and_place_report_how_far_above_the_request_a_descent_ended(monkeypatch):
-    tools = tools_fixture()
+def contact(tools, monkeypatch, *stages, short_m=0.096):
+    """The fixture's driver meets contact that far short of the pose in these stages."""
     execute = tools.driver.execute
-    held = Outcome("done", "move", "fixture: contact", dict(arm="stopped_on_contact", above_request_m=0.096))
-    approach = ("grasp_approach", "place_approach")
-    monkeypatch.setattr(tools.driver, "execute", lambda c: held if c.get("stage") in approach else execute(c))
-    assert grasp(tools)["descent_ended_above_request_m"] == 0.096
+    held = Outcome("done", "move", "fixture: contact", dict(arm="stopped_on_contact", short_m=short_m))
+
+    def run(command):
+        tools.driver.commands.append(command) if command.get("stage") in stages else None
+        return held if command.get("stage") in stages else execute(command)
+
+    monkeypatch.setattr(tools.driver, "execute", run)
+
+
+def test_grasp_and_place_report_how_far_short_of_the_pose_an_approach_ended(monkeypatch):
+    tools = tools_fixture()
+    contact(tools, monkeypatch, "grasp_approach", "place_approach")
+    assert grasp(tools)["approach_ended_short_m"] == 0.096
     request = call("place", object_target="object", move={"z": 0.45}, withdraw={"z": 0.6}, expect_grip_mm=[5, 70])
     placed = json.loads(tools.execute(request, tools.driver.observation).note)
     # A can that came down on a rim still pauses for the policy, which is told how high it stopped.
-    assert placed["checkpoint"] == "before_release" and placed["descent_ended_above_request_m"] == 0.096
+    assert placed["checkpoint"] == "before_release" and placed["approach_ended_short_m"] == 0.096
+
+
+def test_a_place_through_a_point_comes_in_and_leaves_by_it():
+    tools = tools_fixture()
+    via = dict(x=0.0, y=-0.2, z=0.5)
+    request = dict(object_target="object", move={"y": 0.0, "z": 0.5}, withdraw={"z": 0.7}, expect_grip_mm=[5, 70])
+    tools.execute(call("place", via=via, travel_z=0.7, **request), tools.driver.observation)
+    approach = tools.driver.commands[0]
+    assert (approach["stage"], approach["via"], approach["travel_z"]) == ("place_approach", via, 0.7)
+    tools.execute(call("release_placement", checkpoint=tools.pending["id"]), tools.driver.observation)
+    out = [c["targets"] for c in tools.driver.commands if c.get("stage") == "place_withdraw"]
+    assert out == [via, {"z": 0.7}]
+    refused = call("place", via={"x": 0.0, "y": -0.2}, **request)
+    assert json.loads(tools.execute(refused, tools.driver.observation).note)["status"] == "refused"
+
+
+def test_a_push_closes_the_fingers_runs_its_line_and_backs_off_along_it(monkeypatch):
+    tools = tools_fixture()
+    start, end = dict(x=0.0, y=-0.1, z=0.45), dict(x=0.0, y=0.1, z=0.45)
+    told = json.loads(tools.execute(call("push", start=start, end=end, travel_z=0.6), tools.driver.observation).note)
+    close, line, back = tools.driver.commands
+    assert (close["stage"], close["targets"]) == ("push_close", {"gripper": 1})
+    assert (line["targets"], line["via"], line["travel_z"]) == (end, start, 0.6)
+    assert told["status"] == "done" and told["pushed"] == dict(ended="reached_end", travelled_mm=200, short_mm=0)
+    assert back["targets"] == pytest.approx(dict(x=0.0, y=0.08, z=0.45))
+    # A drawer that reaches its stop holds the hand there: the push says how far it went.
+    tools.driver.commands.clear()
+    contact(tools, monkeypatch, "push", short_m=0.05)
+    tools.driver.pose.update(y=0.05, z=0.45)
+    told = json.loads(tools.execute(call("push", start=start, end=end), tools.driver.observation).note)
+    assert told["pushed"] == dict(ended="stopped_on_contact", travelled_mm=150, short_mm=50)
+    assert tools.driver.commands[-1]["targets"]["y"] == pytest.approx(0.03)
+
+
+@pytest.mark.parametrize(
+    "change", [dict(start={"x": 0.0, "y": 0.0}), dict(end=dict(x=0.0, y=-0.09, z=0.45)), dict(yaw_deg=120)]
+)
+def test_a_push_without_two_points_a_line_between_them_or_a_possible_turn_is_refused(change):
+    tools = tools_fixture()
+    request = dict(start=dict(x=0.0, y=-0.1, z=0.45), end=dict(x=0.0, y=0.1, z=0.45)) | change
+    told = json.loads(tools.execute(call("push", **request), tools.driver.observation).note)
+    assert told["status"] == "refused" and not tools.driver.commands
 
 
 def test_a_grasp_that_stops_before_its_lift_reports_no_lift_evidence(monkeypatch):
@@ -716,8 +768,9 @@ class Hand(LiberoEmbodiment):
         if self.floor_z is not None and self.pos[2] < self.floor_z:
             self.pos[2] = self.floor_z
             self.pos[0] += self.shove  # an obstacle that deflects the hand sideways
-        if self.wall_x is not None:
-            self.pos[0] = min(self.pos[0], self.wall_x)
+        if self.wall_x is not None and self.pos[0] > self.wall_x:
+            self.pos[0] = self.wall_x
+            self.pos[1] += self.shove
         self.command = float(np.clip(self.command + self.ramp * np.sign(2 * data[9] - 1), 0, 1))
         half = self.half_mm + self.finger_gain * (40 * (1 - self.command) - self.half_mm)
         if self.object_mm is not None:
@@ -789,18 +842,42 @@ def test_a_blocked_arm_returns_early_as_not_approaching(tmp_path):
 )
 def test_only_contact_directly_above_the_pose_ends_a_descent_that_allows_it(tmp_path, shove, status, arm):
     d = driver(tmp_path, floor_z=0.5, shove=shove)
-    out = d.execute(stage({"z": 0.47}, "grasp_approach", contact_ok=True))
+    out = d.execute(stage({"z": 0.47}, "grasp_approach", via={}))
     assert (out.status, out.data["arm"]) == (status, arm)
     if out.ok:
-        assert out.data["above_request_m"] == pytest.approx(0.03, abs=2e-3)
+        assert out.data["short_m"] == pytest.approx(0.03, abs=2e-3)
         # The next stage rises from where the hand stopped, not from the height it asked for.
         lift = d.execute(stage({}, "grasp_test_lift", rise_m=0.04))
         assert lift.ok and d.observation.state["eef_state"][2] == pytest.approx(0.54, abs=0.012)
 
 
+@pytest.mark.parametrize(
+    ("shove", "status", "arm"), [(0.0, "done", "stopped_on_contact"), (0.01, "surprise", "not_approaching")]
+)
+def test_a_level_line_also_ends_on_contact_met_along_it(tmp_path, shove, status, arm):
+    d = driver(tmp_path, wall_x=0.05, shove=shove)
+    out = d.execute(stage({"x": 0.1}, "push", via={"x": 0.0}))
+    assert (out.status, out.data["arm"]) == (status, arm)
+    if out.ok:
+        # What the fingers pushed stopped 5 cm short of the line's end, and the hand rests there on the line.
+        assert out.data["short_m"] == pytest.approx(0.05, abs=2e-3)
+        assert d.last_action.data[:3] == pytest.approx([0.05, 0, 0.6], abs=2e-3)
+
+
+def test_a_point_to_pass_through_is_reached_level_and_then_in_height_before_the_line_to_the_pose(tmp_path):
+    d = driver(tmp_path)
+    out = d.execute(stage({"x": 0.1, "y": 0.0, "z": 0.5}, "place_approach", via={"x": 0.0, "y": 0.1, "z": 0.5}))
+    rows = [json.loads(line) for line in (d.output / "steps.jsonl").read_text().splitlines()]
+    sinks = next(i for i, row in enumerate(rows) if row["approved"][2] < 0.6 - 1e-9)
+    leaves = next(i for i, row in enumerate(rows) if row["approved"][0] > 1e-9)
+    assert rows[sinks - 1]["state"]["eef_state"][:3] == pytest.approx([0, 0.1, 0.6], abs=0.012)
+    assert rows[leaves - 1]["state"]["eef_state"][:3] == pytest.approx([0, 0.1, 0.5], abs=0.012)
+    assert out.ok and d.observation.state["eef_state"][:3] == pytest.approx([0.1, 0, 0.5], abs=0.012)
+
+
 def test_a_level_first_approach_is_over_the_pose_before_it_descends(tmp_path):
     d = driver(tmp_path)
-    out = d.execute(stage({"x": 0.1, "z": 0.5}, "grasp_approach", above_first=True))
+    out = d.execute(stage({"x": 0.1, "z": 0.5}, "grasp_approach", via={}))
     rows = [json.loads(line) for line in (d.output / "steps.jsonl").read_text().splitlines()]
     descent = next(i for i, row in enumerate(rows) if row["approved"][2] < 0.6 - 1e-9)
     assert abs(rows[descent - 1]["state"]["eef_state"][0] - 0.1) <= 0.012
@@ -809,9 +886,9 @@ def test_a_level_first_approach_is_over_the_pose_before_it_descends(tmp_path):
 
 def test_a_descent_blocked_far_above_its_request_ends_early_and_stops_pushing(tmp_path):
     d = driver(tmp_path, floor_z=0.55)
-    out = d.execute(stage({"z": 0.43}, "place_approach", contact_ok=True))
+    out = d.execute(stage({"z": 0.43}, "place_approach", via={}))
     assert out.ok and out.data["arm"] == "stopped_on_contact"
-    assert out.data["above_request_m"] == pytest.approx(0.12, abs=2e-3)
+    assert out.data["short_m"] == pytest.approx(0.12, abs=2e-3)
     # The command had 17 steps to run and then a wait; it ended a few steps after the hand stopped following.
     assert out.data["executed_steps"] < 21
     # The applied command came back to the hand, so the next move is not held back by the approvers.
@@ -822,7 +899,7 @@ def test_a_descent_blocked_far_above_its_request_ends_early_and_stops_pushing(tm
 
 def test_a_hand_that_met_contact_slightly_off_the_pose_comes_to_rest_over_it(tmp_path):
     d = driver(tmp_path, floor_z=0.5, shove=0.002)
-    out = d.execute(stage({"z": 0.47}, "grasp_approach", contact_ok=True))
+    out = d.execute(stage({"z": 0.47}, "grasp_approach", via={}))
     assert out.ok and out.data["arm"] == "stopped_on_contact"
     rows = [json.loads(line) for line in (d.output / "steps.jsonl").read_text().splitlines()]
     slid = max(row["state"]["eef_state"][0] for row in rows)
@@ -832,7 +909,7 @@ def test_a_hand_that_met_contact_slightly_off_the_pose_comes_to_rest_over_it(tmp
 
 def test_a_level_leg_that_stalls_reports_how_far_the_hand_is_from_the_whole_request(tmp_path):
     d = driver(tmp_path, wall_x=0.05)
-    out = d.execute(stage({"x": 0.1, "z": 0.45}, "place_approach", above_first=True, contact_ok=True))
+    out = d.execute(stage({"x": 0.1, "z": 0.45}, "place_approach", via={}))
     # The hand never came down: it is still 15 cm above the release height and 5 cm short of it.
     assert out.status == "surprise" and out.data["arm"] == "not_approaching"
     assert out.data["above_request_m"] == pytest.approx(0.15, abs=2e-3)
@@ -855,11 +932,11 @@ def test_a_swinging_arm_has_arrived_only_at_rest_and_its_turning_points_are_not_
     ("case", "hand", "command", "arm"),
     [
         ("free", {}, dict(targets={"x": 0.15}), "arrived"),
-        ("descent", {}, dict(targets={"x": 0.1, "z": 0.5}, above_first=True, contact_ok=True), "arrived"),
+        ("descent", {}, dict(targets={"x": 0.1, "z": 0.5}, via={}), "arrived"),
         (
             "contact",
             dict(floor_z=0.5),
-            dict(targets={"x": 0.1, "z": 0.45}, above_first=True, contact_ok=True),
+            dict(targets={"x": 0.1, "z": 0.45}, via={}),
             "stopped_on_contact",
         ),
         ("blocked", dict(wall_x=0.05), dict(targets={"x": 0.15}), "not_approaching"),
@@ -890,7 +967,7 @@ def test_a_travel_height_is_reached_before_any_level_motion(tmp_path):
     d = driver(tmp_path)
     d.execute(stage({"z": 0.5}, "grasp_approach"))
     start = len((d.output / "steps.jsonl").read_text().splitlines())
-    out = d.execute(stage({"x": 0.1, "z": 0.52}, "place_approach", travel_z=0.62, above_first=True))
+    out = d.execute(stage({"x": 0.1, "z": 0.52}, "place_approach", travel_z=0.62, via={}))
     rows = [json.loads(line) for line in (d.output / "steps.jsonl").read_text().splitlines()][start:]
     level = next(i for i, row in enumerate(rows) if row["approved"][0] > 1e-9)
     assert rows[level - 1]["state"]["eef_state"][2] == pytest.approx(0.62, abs=0.012)
@@ -901,7 +978,7 @@ def test_a_travel_height_is_reached_before_any_level_motion(tmp_path):
     # A hand already above the travel height does not come down to it.
     d.execute(stage({"z": 0.66}, "move"))
     start = len((d.output / "steps.jsonl").read_text().splitlines())
-    d.execute(stage({"x": 0.0, "z": 0.52}, "place_approach", travel_z=0.62, above_first=True))
+    d.execute(stage({"x": 0.0, "z": 0.52}, "place_approach", travel_z=0.62, via={}))
     rows = [json.loads(line) for line in (d.output / "steps.jsonl").read_text().splitlines()][start:]
     assert rows[0]["approved"][2] == pytest.approx(0.66, abs=0.012) and rows[0]["approved"][0] < 0.1
 

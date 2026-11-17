@@ -1,10 +1,10 @@
 """Run matched LIBERO pairs under one campaign cap: one admission authority, a separate run.py output per pair.
 
 A pair is admitted only while the conservative charge of finished attempts plus the full caps of running
-ones leaves room for another full pair cap. An attempt the transport stopped with unknown usage, or one
-that was interrupted, keeps its folder and its charge, the unsettled request's whole reservation included,
-and the pair is tried again in a `_retryN` folder, three attempts in all. Each repeat of a case is its own
-pair, in a `_repeatN` folder after the first.
+ones leaves room for another full pair cap. An attempt that did not finish both arms, stopped by the
+transport, a lost simulator or an interruption, keeps its folder and its charge, an unsettled request's
+whole reservation included, and the pair is tried again in a `_retryN` folder, three attempts in all.
+Each repeat of a case is its own pair, in a `_repeatN` folder after the first.
 """
 
 from __future__ import annotations
@@ -94,9 +94,6 @@ class Campaign:
                 wall = time.monotonic() - started
                 print(f"FINISHED {name} exit={code} charge={c:.3f} unknown={u} wall={wall:.0f}s", flush=True)
             if complete(folder):
-                return
-            # A pair its own cap or deadline stopped would stop there again.
-            if (folder / "summary.json").exists() and not charge(folder)[1]:
                 return
         print(f"UNFINISHED {base}: {ATTEMPTS} attempts", flush=True)
 
