@@ -6,14 +6,14 @@
     "budget.py": "59ca1d7fd3d7c0e615d6ca21a9eadf1eec768a84ca2222fbbbf37b49326e0028",
     "campaign.py": "aab9a1f4461ca51caabdde6080f10c3f9f3eab182fa5022cd33d03adb299a20a",
     "cases.toml": "e6555607df3ceb44b4d5d0c6cadee57260b120a7b9ade32cd1a8afeeccc04de0",
-    "native.py": "fb21f84faac5ea0464cbf272872f3172fc62452b42ea7313290386be915a6681",
+    "native.py": "68821ae4ac46e583c7d2e81917648443a2b4751579011a96609fa538ec94ff32",
     "report.py": "71482b28afff0952ce0ce1ad824539a580e5dae29e10104fbe65813de51429af",
     "run.py": "e3c756136f882ab70e13302847840a5538a99a67a1942a72e09d47e6f7821033",
     "sim-requirements.txt": "dbaec293790695dedabd929bc9b9a75c074a8ce827308fa66d331924b8f0b996",
     "test_campaign.py": "42f306911a07c1fc6a7a0b9ace541efe350d2fad9e480a2cab8cef290d0c6347",
-    "test_runner.py": "923df6054be0d1133f6879488e023ce919fd02aff912b64253bb55ac634d6f67",
-    "validate.py": "039057b4387c7b3d0b5d4f5b5ded26682e4887f28c9a4a8394efe9062141d548",
-    "world_tools.py": "5a82c7dbff5b1eead05de81a37e6949c7281b0d5b3dff38573ea109c6c9d7abb"
+    "test_runner.py": "f58cc7264d336efc93e85873a4dd9c7b52b8b3fba451964fe7d5283df7d13bb2",
+    "validate.py": "7391eee5d53d838a68187e2136c07aeaffa375bf91c3b41ee344aa58610dece2",
+    "world_tools.py": "f1ed28bab257ee2e8d833d92038a6e7e9a89560c9ed1f403b591575f24f6111d"
   },
   "real_simulator": true,
   "real_edgetam": true,
@@ -289,7 +289,7 @@
     "calls": 4,
     "estimated_usd": 0.0048,
     "budget_charge_usd": 0.0050000000000000044,
-    "wall_seconds": 17.18985413700011
+    "wall_seconds": 20.11326030500004
   },
   "world_use": {
     "arm": "world_use",
@@ -299,11 +299,11 @@
     "status": "give_up",
     "initial_observation_sha256": "0384bdf083bd225b3cf30238f18f7b49d05ae4cb64bc97e85262513c3a79d469",
     "instruction": "put both the alphabet soup and the tomato sauce in the basket",
-    "steps": 358,
-    "calls": 19,
-    "estimated_usd": 0.022799999999999997,
-    "budget_charge_usd": 0.02375000000000002,
-    "wall_seconds": 148.4777164029997
+    "steps": 332,
+    "calls": 18,
+    "estimated_usd": 0.021599999999999998,
+    "budget_charge_usd": 0.02250000000000002,
+    "wall_seconds": 195.180439058
   },
   "empty_grasp_stopped_before_lift": true,
   "applied_command_offset_reported_m": 0.019999999999999907,
@@ -324,9 +324,9 @@
   "initial_observations_identical": true,
   "repeated_capture_regions_identical": true,
   "scripted_world_use": {
-    "steps": 358,
-    "applied_commands_sha256": "b2dad7b97d89bb3a67497c0808dd0d4c7fd44558fe280a38dbac433d65ae6d25",
-    "told_results_sha256": "653610616e55da6d7a8d58f84db868b7d8f6c111cf448a9c36a49f8c6c797113",
-    "system_prompt_sha256": "feb04a2065fc13006c10443e8438fd841da4775f0574ccbf4f7635972d00b1ec"
+    "steps": 332,
+    "applied_commands_sha256": "9cc6e89a757fa55f6b9dcb4eb16d0141f5eca2a03f2a469228a8cbebfaf299b7",
+    "told_results_sha256": "62e9ba855d064dddb6928c78666f7359d620de9d39eca4d3443a4a92f46a3c13",
+    "system_prompt_sha256": "3333f2e97905295ca1ca442a64eefbc77bb4e007ae4a371dd1f2cbc580ebc440"
   }
 }
