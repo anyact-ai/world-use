@@ -117,6 +117,50 @@ def worker_replay(image: Image.Image) -> dict:
     return dict(observations=samples)
 
 
+def encoding_replay(image: Image.Image) -> dict:
+    """Sharing image features must preserve each target's independently predicted masks."""
+    point, box = seen(image)
+    samples, reference = [], []
+    with EdgeTAM(device="cpu", max_age_s=30) as root:
+        encode = root._model.get_image_features
+        calls = 0
+
+        def counted(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return encode(*args, **kwargs)
+
+        root._model.get_image_features = counted
+        for shared in (False, True):
+            root._features.clear()
+            calls = 0
+            masks = []
+            targets = [root.fork(), root.fork()]
+            started = time.monotonic()
+            try:
+                for index in range(3):
+                    frame = Frame(image.copy(), "encoding-replay")
+                    for target, prompt in zip(targets, ({"point": point}, {"box": box}), strict=True):
+                        if not shared:
+                            root._features.clear()
+                        observation = target.select(frame, **prompt) if index == 0 else target.update(frame)
+                        assert observation.status == "tracked"
+                        masks.append(observation.mask.copy())
+                        assert target.update(frame) is observation  # no history advancement on a duplicate
+                assert targets[0]._session is not targets[1]._session
+                assert calls == (3 if shared else 6), calls
+            finally:
+                for target in targets:
+                    target.close()
+            if shared:
+                assert all(np.array_equal(a, b) for a, b in zip(reference, masks, strict=True))
+            else:
+                reference = masks
+            samples.append(dict(shared=shared, encoder_calls=calls, masks=len(masks),
+                                wall_s=time.monotonic() - started))
+    return dict(runs=samples, identical_masks=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
@@ -150,6 +194,7 @@ def main():
         image = picture()
         report["replay"] = replay(image, root / "replay")
         report["worker_replay"] = worker_replay(image)
+        report["encoding_replay"] = encoding_replay(image)
         from rerun.chunk import RrdReader
         rrd = root / "displaced.rrd"
         subprocess.run([sys.executable, "-m", "world_use", "view", str(root / "displaced"), "--out", str(rrd)],

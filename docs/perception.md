@@ -161,13 +161,78 @@ adds two tools. `select_target(frame, target, point|box)` selects an object in a
 the same measurements as `measure_pixels`, with `tracking` set to `tracked` or `lost`.
 
 An agent often thinks for longer than the tracker accepts a picture's age (15 s). A selection made in such
-a picture is followed into a new picture before it is measured. A target the tracker loses is dropped, and
+a picture is followed into a new picture before it is measured. A target the tracker loses is retired, and
 the measurements made of it are withdrawn: a run that requires one stops before its next step. Select it
-again to continue. The tracker follows up to four targets and runs one request at a time; selecting a name
+again to continue. Repeated observations of that name return the retained loss instead of erasing the
+unresolved target; Python callers can enumerate `Tracking.lost` alongside active `Tracking.targets`.
+The tracker follows up to four targets and runs one request at a time; selecting a name
 again withdraws its previous measurements. A stopped provider withdraws all its targets. Each target keeps 256
 measurement IDs; before forgetting an older one, it withdraws it too, including from already accepted jobs.
 Nothing tracks in the background. In Python, `Tracking(client, TrackerProcess())` from
 `world_use.tracking` and `world_use.vision_worker` offers the same `select` and `observe`.
+
+Targets observing the same camera capture share one image encoding, while their prompts, masks and temporal
+histories remain independent. The cache holds one capture and is scoped to the loaded model and processor;
+camera, capture identity and image content must agree. Reading an existing capture again must preserve its
+`Frame.id` and monotonic `timestamp`. A new capture gets a new identity even when its pixels are unchanged.
+Reusing features never refreshes evidence age, and repeated frames do not advance tracking history.
+
+For an RGB camera without depth, select with `space="image"`. The same observe tool then returns
+native-pixel bounds, centre and mask area, with camera, frame identity, monotonic `captured_at` and age.
+Consecutive observations also report centre displacement, mask-area ratio and mask intersection-over-union
+(`motion.mask_iou`), referencing the earlier frame. These
+are image changes, not velocity or object motion in metres; camera motion and occlusion can change them.
+`camera_motion_compensated=False` makes that limitation explicit. A low overlap is a reason to inspect the
+RGB and reassess association, not proof of a wrong identity or a calibrated confidence score.
+`dominant_region` describes the largest connected mask component, including its bounds and centre,
+with `other_area_px` and `components` exposing disconnected predictions. A few isolated pixels can
+otherwise make the full mask's bounding box span unrelated objects. The raw mask is preserved; selecting
+the largest region does not establish that it is the intended object.
+The default `space="world"` preserves the metric RGB-D contract. Reselecting a target in either mode
+withdraws its earlier metric measurements.
+
+Image results have no measurement `id` and cannot satisfy `run(requires=...)`. A tracked mask does not
+verify object identity, retention, or support. Inspect the RGB and reacquire a lost target explicitly;
+do not interpret a new mask after loss as proof that it is the same object. Task programs can record
+the returned image evidence alongside their commands using the existing task recorder.
+
+## Positions from a camera on the hand
+
+A camera fixed to the hand measures no depth, but its pose follows from the tool pose in every frame.
+Describe it once as a `View` in the tool frame; `mount.on(tool_pose)` is the base-frame view for a measured
+tool pose. A negative focal length describes an image published mirrored (`fx`) or with its rows flipped
+(`fy`), with the principal point mirrored too (`width - 1 - cx` or `height - 1 - cy`), so pixels and points
+convert both ways without turning the image.
+
+`world_use.parallax` turns looks at one tracked region into a position. One look fixes a ray;
+`triangulate(looks)` returns the point nearest the rays once two camera positions are 3 cm apart and the
+point lies at least 5 cm in front of every one, and otherwise nothing. `locate(move, look, arrive_m=...)`
+is the bounded loop around it: look, move the hand level, look again, until the hand is over the point
+the looks fix. `look()` returns a `Look` (the frame's view, the tool point and the region's centre and box
+in native pixels, the box ending one past its last pixel as the tracker reports it); `move(xy)` runs
+through your own executor and returns its `Outcome`.
+Like the [manipulation procedures](adapters.md#bounded-manipulation-procedures) it sends no command
+itself, so it works over the kernel client or another controller. A done result has `x, y, z` in the base
+frame, the looks and moves it took, `pixel` while the region is visible and `extent_m` when the whole
+region is in view. A move that fails ends the search with that move's outcome.
+
+Only looks at the whole region place it once one has been had: the centre of a region the image border
+cuts off is not the region's centre. The result is a position of the region the tracker follows, with the
+tracker's errors in it. It has no measurement `id`, and it is invalidated by the object moving, not by age.
+Pass a position found earlier as `known`: the first move heads straight over it and one look that shows
+the region within `arrive_m` of it confirms it; a region that has moved is placed afresh.
+
+`dominant_region` also reports the narrowest box around the region: `width_px`, `length_px` and `axis_deg`,
+the direction of its length in the image. `footprint(view, region, depth_m)` turns that into metres for a
+region seen face-on at a known depth, with the base-frame direction across its narrow side, the one a
+gripper's fingers close along to take it by that side. A region that covers only part of an object has
+that part's narrow side.
+
+In the simulator, `body.capture(mount, mounted=True)` renders such a camera, given its mount in the tool
+frame, and returns the image, depth and tool pose of one physics state; `mount.on(tool)` is the view to look
+with. [`tests/test_parallax.py`](../tests/test_parallax.py) locates a block this way to within a
+centimetre and picks it up there, with the kernel told nothing about the block. The
+[LIBERO runner](../examples/libero) uses the same functions for a simulated Panda's wrist camera.
 
 ## Records
 
@@ -185,7 +250,9 @@ but object pose estimation, feature correspondence and grasp selection remain ta
 Calibration accuracy limits every measurement. `requires` checks age, calibration and withdrawal;
 it cannot detect an unobserved scene change.
 
-Workcell camera configuration assumes a fixed camera pose. The kitchen examples provide a custom
+Workcell camera configuration assumes a fixed camera pose; a camera on the hand is constructed in Python.
+The kitchen examples provide a custom
 [wrist camera](../examples/robocasa-lunchbox/sensor_views.py) that captures RGB-D, camera pose and tool pose
 from the same simulation state. Its calibration identity describes the mounting and intrinsics;
-each frame carries the current camera transform. Physical wrist-camera calibration is not implemented.
+each frame carries the current camera transform. Physical wrist-camera calibration is not implemented,
+and a position from parallax is only as good as the mount it is given.

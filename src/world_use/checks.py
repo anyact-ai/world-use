@@ -1,4 +1,4 @@
-"""Measured convergence for native controllers; this module never commands a robot."""
+"""Measured convergence and contact for native controllers; this module never commands a robot."""
 from __future__ import annotations
 
 from collections import deque
@@ -11,27 +11,43 @@ class Settling:
 
     Tolerances may mix units (e.g. metres and radians). The caller must set command_active=False while
     an approver/controller is still changing the applied target. Missing feedback is not convergence.
-    A stall is little progress over a full window, not a collision or unreachability diagnosis.
+    A stall is little progress over a full window, not a collision or unreachability diagnosis. An arm
+    that swings past its target also makes no progress while it turns round: stall_s is how long a stall
+    must last before it is reported.
     """
 
     def __init__(self, tolerances, timeout_s: float, window_s: float, progress_fraction: float = .05,
-                 stable_s: float = 0.):
+                 stable_s: float = 0., stall_s: float = 0.):
         self.tolerances = np.atleast_1d(np.asarray(tolerances, float)).copy()
         if (self.tolerances.ndim != 1 or not self.tolerances.size
                 or not np.isfinite(self.tolerances).all() or np.any(self.tolerances <= 0)):
             raise ValueError("settling tolerances must be finite and positive")
-        if (not np.isfinite([timeout_s, window_s, progress_fraction, stable_s]).all()
+        if (not np.isfinite([timeout_s, window_s, progress_fraction, stable_s, stall_s]).all()
                 or not 0 < window_s <= timeout_s or not 0 < progress_fraction < 1
-                or not 0 <= stable_s < timeout_s):
-            raise ValueError("settling needs 0 < window <= timeout and 0 < progress_fraction < 1")
+                or not 0 <= stable_s < timeout_s or stall_s < 0):
+            raise ValueError("settling needs 0 < window <= timeout, 0 < progress_fraction < 1, "
+                             "0 <= stable_s < timeout and stall_s >= 0")
         self.timeout_s, self.window_s, self.progress_fraction = timeout_s, window_s, progress_fraction
         self.started: float | None = None
         self.stamp: float | None = None
         self.samples: deque[tuple[float, np.ndarray]] = deque()
         self.elapsed_s = 0.
         self.stable_s, self.arrived_since = stable_s, None
+        self.stall_s, self.stalled_since = stall_s, None
 
     def update(self, stamp: float, errors, *, command_active: bool = True) -> str | None:
+        repeated = self.stamp == stamp
+        result = self._judge(stamp, errors, command_active)
+        if result != "stalled":
+            # A repeated sample says nothing new: it neither ends a stall nor extends it.
+            if not (repeated and command_active):
+                self.stalled_since = None
+            return result
+        if self.stalled_since is None:
+            self.stalled_since = stamp
+        return "stalled" if stamp - self.stalled_since + 1e-9 >= self.stall_s else None
+
+    def _judge(self, stamp: float, errors, command_active: bool) -> str | None:
         errors = np.atleast_1d(np.asarray(errors, float))
         if (not np.isfinite(stamp) or errors.shape != self.tolerances.shape
                 or not np.isfinite(errors).all() or np.any(errors < 0)):
@@ -73,3 +89,32 @@ class Settling:
         if np.any(unmet) and np.all(progress[unmet] < self.progress_fraction) and np.all(projected[unmet] > 1):
             return "stalled"
         return None
+
+
+class Following:
+    """Tell a position-controlled hand that something holds from one that only trails its command.
+
+    A free hand follows a moving command at a lag and gains on it every step. Call update after each
+    control step with the measured position and the command that step applied: it returns True once the
+    hand has gained less than progress_m toward a command more than lead_m ahead of it, twice
+    running. Nearer than lead_m nothing is concluded, because a hand still carrying momentum can drift
+    from its command for a few steps, which settling waits out. This needs no torque sensing; it does
+    not say what holds the hand. travel_m is the distance the hand moved over the last step.
+    """
+
+    def __init__(self, position, *, lead_m: float, progress_m: float):
+        if not (np.isfinite([lead_m, progress_m]).all() and lead_m > 0 and progress_m > 0):
+            raise ValueError("following needs a positive lead and progress")
+        self.lead_m, self.progress_m = lead_m, progress_m
+        self.before = np.array(position, float)
+        self.held, self.travel_m = 0, 0.
+
+    def update(self, position, command) -> bool:
+        here = np.array(position, float)
+        lead = np.asarray(command, float) - self.before
+        distance = float(np.linalg.norm(lead))
+        gained = float((here - self.before) @ lead) / distance if distance > self.lead_m else np.inf
+        self.travel_m = float(np.linalg.norm(here - self.before))
+        self.held = self.held + 1 if gained < self.progress_m else 0
+        self.before = here
+        return self.held >= 2

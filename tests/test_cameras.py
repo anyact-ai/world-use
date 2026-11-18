@@ -1,4 +1,4 @@
-"""360 cameras: pinhole cuts of an equirectangular picture, and where the world lands in them."""
+"""Pinhole views, 360 cameras cut into them, and where the world lands in their pictures."""
 import subprocess
 
 import numpy as np
@@ -6,7 +6,16 @@ import pytest
 from PIL import Image
 
 from world_use import World
-from world_use.cameras import Camera, CommandCamera, EquirectCut, FileCamera, equirect_dirs, equirect_uv, from_config
+from world_use.cameras import (
+    Camera,
+    CommandCamera,
+    EquirectCut,
+    FileCamera,
+    View,
+    equirect_dirs,
+    equirect_uv,
+    from_config,
+)
 from world_use.client import DaemonError
 
 
@@ -138,3 +147,26 @@ def test_command_camera_timeout_is_reported_to_the_client(monkeypatch, daemon):
         c.look("side")
     assert error.value.code == 502
     assert "side" in error.value.body["error"] and "0.25" in error.value.body["error"]
+
+
+def test_a_mirrored_image_converts_pixels_and_points_both_ways():
+    upright = View.look_at([0.4, -0.6, 0.5], [0.3, 0.0, 0.1], size=(320, 240))
+    # The same camera published mirrored left to right and with its rows flipped.
+    mirrored = View(upright.T, -upright.fx, -upright.fy, 319 - upright.cx, 239 - upright.cy, 320, 240)
+    points = np.array([[0.3, 0.0, 0.1], [0.25, 0.1, 0.0], [0.4, -0.1, 0.2]])
+    pixels, depth = upright.project(points)
+    flipped, same_depth = mirrored.project(points)
+    assert np.allclose(flipped, [319, 239] - pixels) and np.allclose(same_depth, depth)
+    assert np.allclose(mirrored.unproject(flipped, depth), points)
+    with pytest.raises(ValueError, match="nonzero focal"):
+        View(upright.T, 0.0, upright.fy, 160, 120, 320, 240)
+
+
+def test_a_view_given_in_a_moving_frame_follows_that_frame():
+    mount = View.look_at([0.0, 0.05, 0.1], [0.0, 0.0, -0.2], size=(320, 240))    # in the tool frame
+    tool = np.eye(4)
+    tool[:3, :3], tool[:3, 3] = [[0, -1, 0], [1, 0, 0], [0, 0, 1]], [0.3, 0.1, 0.4]
+    view = mount.on(tool)
+    point = np.array([0.02, -0.01, -0.2])                                         # also in the tool frame
+    assert np.allclose(view.project(tool[:3, :3] @ point + tool[:3, 3])[0], mount.project(point)[0])
+    assert (view.fx, view.cy, view.width) == (mount.fx, mount.cy, mount.width)

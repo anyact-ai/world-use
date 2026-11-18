@@ -139,6 +139,33 @@ def test_camera_projection_matches_off_axis_intrinsics_and_does_not_step_physics
         body.close()
 
 
+@pytest.mark.rendering
+def test_a_camera_fixed_to_the_tool_sees_from_wherever_the_tool_is():
+    k, truth = setup()
+    # Looks straight down from 5 cm ahead of the fingertips and 4 cm above them.
+    mount = View([[0, 1, 0, 0.05], [1, 0, 0, 0], [0, 0, -1, 0.04], [0, 0, 0, 1]], 208.5, 208.5, 160, 120, 320, 240)
+    top = truth.boxes["block"].pose[:3, 3] + [0, 0, 0.05]
+    try:
+        k.enable()
+        heights = []
+        for rise in (0.14, 0.03):
+            assert k.run({"do": "line", "up": rise}).ok
+            image, distance, tool, _ = k.body.capture(mount, mounted=True)
+            view = mount.on(tool)
+            picture = np.asarray(image).astype(float)
+            ys, xs = np.nonzero((picture[..., 0] > 200) & (picture[..., 0] > 1.5 * picture[..., 2]))
+            assert len(xs) > 200
+            (expected,), (depth,) = view.project(top)
+            np.testing.assert_allclose([xs.mean(), ys.mean()], expected, atol=3)
+            assert np.nanmedian(distance[ys, xs]) == pytest.approx(depth, abs=3e-3)
+            heights.append(view.T[2, 3])
+        assert heights[1] - heights[0] == pytest.approx(0.03, abs=5e-3)
+        with pytest.raises(ValueError, match="mirrored"):
+            k.body.render(View(view.T, -208.5, 208.5, 160, 120, 320, 240))
+    finally:
+        k.close()
+
+
 def test_an_incompatible_gripper_mapping_is_rejected():
     gripper = replace(MANIFEST.gripper, opens_along=(1, 0, 0))
     body = bodies.make("sim", manifest=replace(MANIFEST, gripper=gripper))

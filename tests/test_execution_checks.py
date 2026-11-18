@@ -7,7 +7,7 @@ import pytest
 from conftest import supported_object
 
 from world_use.behaviors import CheckGrip, Outcome, build
-from world_use.checks import Settling
+from world_use.checks import Following, Settling
 from world_use.errors import Refused
 from world_use.views import incident, job_text
 
@@ -70,6 +70,56 @@ def test_a_measurement_after_the_deadline_cannot_confirm_arrival():
 def measured_gripper(k, monkeypatch, position):
     read = k.body.read
     monkeypatch.setattr(k.body, "read", lambda: replace(read(), gripper=position(), gripper_tau=0.))
+
+
+def test_a_stall_that_must_last_ignores_the_turning_points_of_a_swinging_arm():
+    def swing(i):
+        return [.03 + .02 * abs(np.sin(i / 3))]         # passes near its target and turns round, again and again
+
+    brief, lasting = Settling([.008], 3, .2), Settling([.008], 3, .2, stall_s=.5)
+    assert any(brief.update(i / 20, swing(i)) == "stalled" for i in range(40))
+    assert all(lasting.update(i / 20, swing(i)) is None for i in range(40))
+    # A plateau is still reported, later by the time it had to last.
+    plateau = Settling([.008], 3, .2, stall_s=.5)
+    for i in range(40):
+        if plateau.update(i / 20, [.03]):
+            break
+    assert plateau.update(i / 20 + .05, [.03]) == "stalled" and .7 <= plateau.elapsed_s < .8
+    # Polled twice per sample, the repeat neither ends the stall nor delays it.
+    polled = Settling([.008], 3, .2, stall_s=.5)
+    seen = [polled.update(i / 20, [.03]) for i in range(40) for _ in range(2)]
+    assert "stalled" in seen and seen.index("stalled") // 2 == i
+
+
+def lagging_hand(wall=None):
+    """A hand that closes a third of the gap to a command advancing 1 cm a step, until a wall stops it."""
+    hand, command = np.zeros(3), np.zeros(3)
+    following = Following(hand, lead_m=.03, progress_m=.001)
+    for step in range(1, 31):
+        command = command + [.01, 0, 0] if command[0] < .2 else command
+        hand = hand + .33 * (command - hand)
+        if wall is not None:
+            hand[0] = min(hand[0], wall)
+        if following.update(hand, command):
+            return step, hand, following
+    return None, hand, following
+
+
+def test_a_hand_that_no_longer_gains_on_a_leading_command_is_held():
+    step, hand, _ = lagging_hand(wall=.05)
+    # Two steps without progress, once the command leads the stopped hand by more than 3 cm.
+    assert step is not None and hand[0] == .05 and step <= 12
+    free, hand, following = lagging_hand()
+    assert free is None and hand[0] == pytest.approx(.2, abs=1e-3) and following.travel_m < 1e-3
+
+
+def test_a_hand_near_its_command_is_not_judged_however_little_it_moves():
+    # Stopped 2 cm short of a command that no longer advances: settling decides that, not this check.
+    hand, command = np.array([.18, 0, 0]), np.array([.2, 0, 0])
+    following = Following(hand, lead_m=.03, progress_m=.001)
+    assert not any(following.update(hand, command) for _ in range(10))
+    with pytest.raises(ValueError, match="positive"):
+        Following(hand, lead_m=0, progress_m=.001)
 
 
 def test_joint_settling_stops_a_blocked_plan_and_cancels_queued_work(k, monkeypatch):
