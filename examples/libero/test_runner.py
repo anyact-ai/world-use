@@ -100,6 +100,26 @@ def test_unknown_usage_blocks_any_following_dispatch(tmp_path, case):
         budget.begin("world_use")
 
 
+def test_sealed_reasoning_is_sized_as_the_little_it_counts_for_and_plain_text_is_not(tmp_path):
+    sent = []
+
+    def handle(req):
+        sent.append(req)
+        return response()
+
+    def sized(item):
+        return httpx.Request("POST", BASE_URL + "/responses", json=dict(model=MODEL, input=[item], tools=[]))
+
+    budget = guard(tmp_path, handle)
+    budget.begin("baseline")
+    # Eighty calls' worth of sealed reasoning fits; the same bytes of text are a long context.
+    budget.handle_request(sized(dict(type="reasoning", encrypted_content="x" * 600_000, summary=[])))
+    assert len(sent) == 1 and not budget.uncertain
+    with pytest.raises(BudgetStop, match="ceiling"):
+        budget.handle_request(sized(dict(role="user", content="x" * 600_000)))
+    assert len(sent) == 1
+
+
 def test_caps_deadline_and_destination_prevent_dispatch(tmp_path):
     sent = []
     budget = guard(tmp_path, sent.append, total=0.001)
@@ -597,16 +617,13 @@ def test_grasp_and_place_report_how_far_short_of_the_pose_an_approach_ended(monk
     assert placed["checkpoint"] == "before_release" and placed["approach_ended_short_m"] == 0.096
 
 
-def test_a_place_through_a_point_comes_in_and_leaves_by_it():
+def test_a_place_through_a_point_approaches_from_it():
     tools = tools_fixture()
     via = dict(x=0.0, y=-0.2, z=0.5)
     request = dict(object_target="object", move={"y": 0.0, "z": 0.5}, withdraw={"z": 0.7}, expect_grip_mm=[5, 70])
     tools.execute(call("place", via=via, travel_z=0.7, **request), tools.driver.observation)
     approach = tools.driver.commands[0]
     assert (approach["stage"], approach["via"], approach["travel_z"]) == ("place_approach", via, 0.7)
-    tools.execute(call("release_placement", checkpoint=tools.pending["id"]), tools.driver.observation)
-    out = [c["targets"] for c in tools.driver.commands if c.get("stage") == "place_withdraw"]
-    assert out == [via, {"z": 0.7}]
     refused = call("place", via={"x": 0.0, "y": -0.2}, **request)
     assert json.loads(tools.execute(refused, tools.driver.observation).note)["status"] == "refused"
 
@@ -742,9 +759,12 @@ class Hand(LiberoEmbodiment):
         ramp=0.125,
         shove=0.0,
         momentum=0.0,
+        swing=0.0,
     ):
         super().__init__(task_id=0, output_dir="unused")
         self.pos, self.command, self.half_mm = np.array([0.0, 0.0, 0.6]), 0.0, 40.0
+        # Tool x and y in the world; turning displaces the hand by `swing` metres per unit of turn still to make.
+        self.rot, self.swing, self.sway = np.array([1.0, 0.0, 0.0, 0.0, -1.0, 0.0]), swing, 0.0
         self.momentum, self.velocity = momentum, np.zeros(3)
         self.object_mm, self.finger_gain, self.floor_z, self.shove = object_mm, finger_gain, floor_z, shove
         self.wall_x = wall_x
@@ -752,11 +772,10 @@ class Hand(LiberoEmbodiment):
         self.last = dict(steps=0)
 
     def observation(self):
-        rot = [1.0, 0.0, 0.0, 0.0, -1.0, 0.0]
         return Observation(
             images={"agentview": np.full((4, 4, 3), self.last["steps"] % 251, dtype=np.uint8)},
             state={
-                "eef_state": np.concatenate([self.pos, rot, [self.command]]),
+                "eef_state": np.concatenate([self.pos + [0, self.sway, 0], self.rot, [self.command]]),
                 "gripper_qpos": np.array([self.half_mm, -self.half_mm]) / 1000,
             },
         )
@@ -765,6 +784,8 @@ class Hand(LiberoEmbodiment):
         data = np.asarray(action.data, dtype=float)
         self.velocity = self.momentum * self.velocity + self.arm_gain * (data[:3] - self.pos)
         self.pos = self.pos + self.velocity
+        self.rot = self.rot + self.arm_gain * (data[3:9] - self.rot)
+        self.sway = self.swing * float(np.max(np.abs(data[3:9] - self.rot)))
         if self.floor_z is not None and self.pos[2] < self.floor_z:
             self.pos[2] = self.floor_z
             self.pos[0] += self.shove  # an obstacle that deflects the hand sideways
@@ -873,6 +894,16 @@ def test_a_point_to_pass_through_is_reached_level_and_then_in_height_before_the_
     assert rows[sinks - 1]["state"]["eef_state"][:3] == pytest.approx([0, 0.1, 0.6], abs=0.012)
     assert rows[leaves - 1]["state"]["eef_state"][:3] == pytest.approx([0, 0.1, 0.5], abs=0.012)
     assert out.ok and d.observation.state["eef_state"][:3] == pytest.approx([0.1, 0, 0.5], abs=0.012)
+
+
+def test_a_hand_that_swings_off_its_place_while_it_turns_is_not_taken_for_held(tmp_path):
+    d = driver(tmp_path, swing=0.15, arm_gain=0.1)
+    quarter = dict(r00=0.0, r10=1.0, r20=0.0, r01=1.0, r11=0.0, r21=0.0)
+    out = d.execute(stage(quarter, "grasp_approach"))
+    rows = [json.loads(line) for line in (d.output / "steps.jsonl").read_text().splitlines()]
+    # The turn carried the hand more than 3 cm from a command that never moved, for several steps.
+    assert sum(abs(row["state"]["eef_state"][1]) > 0.03 for row in rows) >= 3
+    assert out.ok and out.data["arm"] == "arrived" and out.data["rotation_column_error"] <= 0.12
 
 
 def test_a_level_first_approach_is_over_the_pose_before_it_descends(tmp_path):

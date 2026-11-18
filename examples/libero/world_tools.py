@@ -76,9 +76,10 @@ the surface you meant from one on something higher, such as a rim. Choose a trav
 everything on the way, the destination's rim included, by more than the held object hangs below
 the fingertips. To come at the release pose from the side instead of from above, into a shelf or
 an oven, give via: the hand moves level to over that point, down to it and then straight to the
-pose, stopping early on contact along that line, and after the release it leaves through via
-before going to your withdraw pose. Put via in front of the opening at the height of the pose,
-far enough out that the hand and what it holds are clear of the frame. Inspect the views, then
+pose, stopping early on contact along that line. Put via in front of the opening at the height
+of the pose, far enough out that the hand and what it holds are clear of the frame. After the
+release the hand goes straight to your withdraw pose, so choose one that takes the fingers off
+the object before any move sideways, and leave an enclosure with move_to. Inspect the views, then
 call release_placement to open and withdraw, or correct the pose. Any motion or reselection
 voids the checkpoint. Two objects for one container go side
 by side along its longer extent: release the first a fifth of that extent to one side of the
@@ -334,7 +335,7 @@ SCHEMAS = [
             destination_target=TEXT,
             select_destination=SELECTION,
             travel_z=TRAVEL,
-            via=dict(POINT, description="{x, y, z} to pass through just before the release pose and on the way out."),
+            via=dict(POINT, description="{x, y, z} to pass through just before the release pose."),
             move=TARGETS,
             withdraw=TARGETS,
             expect_grip_mm=RANGE,
@@ -540,7 +541,9 @@ class WorldTools:
         for command in stages:
             outcome = self._approach(command, pushed)
             if not outcome.ok:
-                return self._result(outcome.feedback(), dict(status=outcome.status, **outcome.data))
+                return self._result(
+                    outcome.feedback(), dict(status=outcome.status, message=outcome.message, **outcome.data)
+                )
         here = np.array(self.driver.observation.state["eef_state"][:3])
         short = pushed.get("approach_ended_short_m", 0.0)
         # Leave what was pushed: back along the line, but never past where the push began.
@@ -805,16 +808,8 @@ class WorldTools:
             return self._result(dict(status="refused", message=str(exc)))
 
     def _place(self, args, move, assess, facts):
-        def run(command):
-            if command.get("stage") == "place_withdraw" and "via" in args:
-                # Out the way it came in, before anything else.
-                back = self.driver.execute(self._move(args["via"], "place_withdraw"))
-                if not back.ok:
-                    return back
-            return self._approach(command, facts)
-
         return procedures.place(
-            run,
+            lambda command: self._approach(command, facts),
             self.observe,
             move=move,
             release=self._move({"gripper": 0}, "place_release", expected=OPEN_MM),

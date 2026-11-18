@@ -27,7 +27,7 @@ prompt is upstream's plus that sentence.
   camera with a point or a box and EdgeTAM follows it.
 - `locate`: the position and size of a region selected in the wrist camera.
 - `grasp`: open, centre over the region, descend, close, test-lift, in one call.
-- `place` and `release_placement`: rise, carry, approach from above or through a
+- `place` and `release_placement`: rise, carry, approach from above or from a
   point the model names, and pause before release; the release needs a one-use
   decision tied to the unchanged observations.
 - `push`: closed fingers along a straight line until its end or until contact
@@ -259,9 +259,10 @@ per episode unless `--total-budget`, `--arm-budget`, `--deadline-seconds` and
 `--episode-seconds` set others; all are recorded in `protocol.json`. Output
 directories must be new.
 
-Each request is reserved before it is sent, at half a token per byte of its text
-plus 8,192 per image, and refused above 200,000 tokens; that is at least six
-times what the service counted in every recorded request. A raw arm that uses
+Each request is reserved before it is sent, at half a token per byte of its text,
+an eighth per byte of the sealed reasoning the model gets back, and 8,192 per
+image, and refused above 200,000 tokens; that is at least five times what the
+service counted in every recorded request. A raw arm that uses
 all 80 calls needs about $2.70 of conservative allowance. A request whose
 connection was never made is sent again up to three times, since nothing was
 sent. Any other failure is not retried: its usage is unknown, its reservation

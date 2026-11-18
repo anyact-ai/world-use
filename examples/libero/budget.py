@@ -28,11 +28,14 @@ class BudgetStop(RuntimeError):
 
 
 def estimate_input(body):
-    images = 0
+    images = sealed = 0
 
     def walk(value):
-        nonlocal images
+        nonlocal images, sealed
         if isinstance(value, dict):
+            if value.get("type") == "reasoning" and isinstance(value.get("encrypted_content"), str):
+                sealed += len(value["encrypted_content"])
+                return {k: walk(v) for k, v in value.items() if k != "encrypted_content"}
             if value.get("type") == "input_image":
                 url = value.get("image_url", "")
                 if not url.startswith("data:image/png;base64,"):
@@ -52,10 +55,12 @@ def estimate_input(body):
     text = walk(body)
     if images > 4:
         raise BudgetStop("more than two observations of two cameras")
-    # Over the 394 requests recorded so far the service counted 0.10 tokens per byte of this text
-    # and 291 per image, at most 0.24 per byte in any request. Half a token per byte and 8192
-    # per image stayed at least six times the count in every one.
-    tokens = len(json.dumps(text, ensure_ascii=False).encode()) // 2 + images * 8192 + 4096
+    # In recorded requests the service counted at most 0.24 tokens per byte of this text and about
+    # 290 per image. The model's earlier reasoning comes back sealed, several kilobytes a call, and
+    # counted for almost nothing: over 388 requests the fit gives it no tokens at all. Half a token
+    # per byte of text, an eighth per sealed byte and 8192 per image stayed at least five times the
+    # count in every one of them.
+    tokens = len(json.dumps(text, ensure_ascii=False).encode()) // 2 + sealed // 8 + images * 8192 + 4096
     if tokens > 200000:
         raise BudgetStop("conservative short-context ceiling")
     return tokens

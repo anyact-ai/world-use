@@ -324,7 +324,10 @@ class Driver:
         )
 
         def held_up():
-            return following.update(self.observation.state["eef_state"][:3], np.asarray(self.last_action.data)[:3])
+            state, applied = self.observation.state["eef_state"], np.asarray(self.last_action.data)
+            held = following.update(state[:3], applied[:3])
+            # A hand still turning toward its command swings a few centimetres off its place by itself.
+            return held and float(np.max(np.abs(state[3:9] - applied[3:9]))) <= ARM_TOLERANCE[1]
 
         arm_state = hand_state = None
         for action in result.chunk.actions:
