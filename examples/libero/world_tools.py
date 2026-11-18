@@ -67,8 +67,9 @@ descent, and a turn of 30-60 degrees away from it can clear it. Fingers closing 
 that is not square to them turn it first, which takes tens of steps. Grasp a can, bottle or box
 at its centre with the fingers across its narrow side. A mug, bowl or pot is wider than the
 fingers: take it by the rim. Give grasp an offset of the rim radius along the finger axis from
-the centre of the wrist region, on a side clear of any handle, so one finger goes inside, with
-the approach z 2-3 cm below the rim top instead of a low z.
+the centre of the wrist region, so one finger goes inside, with the approach z 2-3 cm below the
+rim top instead of a low z. Choose a side clear of any handle and of neighbours, which the hand
+body meets up to 10 cm along the finger axis, and turn the fingers with yaw_deg to reach it.
 place rises straight up to travel_z when the hand is below it, moves level to above your release
 pose, descends with the grip monitored and stops early on contact the same way, then returns
 BEFORE opening with a one-use checkpoint. Its approach_ended_short_m tells a landing on
@@ -92,7 +93,9 @@ side you push from, with the fingertips at the height of its middle. The line en
 where contact stops the hand: pushed says which, with travelled_mm and short_mm. Put end a few
 centimetres past where the thing should stop, since a drawer or door that reaches its stop holds
 the hand there. The hand then backs off 2 cm. A hinged door moves along an arc: push it along two
-or three straight lines. yaw_deg turns the finger axis as in grasp.
+or three straight lines. yaw_deg turns the finger axis as in grasp. The hand body above the
+fingers can meet something else first: when a push stops with the thing still short of its
+place, try a lower line or the finger axis turned along the line.
 Every interpolation and settling step counts toward the 900-step episode limit; one clean pick
 and place takes about 200.
 Results report measurements. arm: arrived; stopped_on_contact (short_m is how far short of the
@@ -128,8 +131,7 @@ OPEN_MM = [70, 85]  # fingers this far apart have let go, or made room, even whi
 FIT_MM = 70  # the widest narrow side the fingers are turned to take: 78 mm of opening less clearance
 LONGER = 1.3  # a region this much longer than it is wide has a narrow side to take it by
 CLOSE_STEPS = 120
-PUSH_M = (0.02, 0.4)  # shortest and longest line of one push
-BACK_OFF_M = 0.02
+BACK_OFF_M = 0.02  # a finished push leaves what it pushed by this much
 SETTLE_STEPS = 40  # raised high above the table the arm needs about 25 steps to stop swinging
 
 
@@ -530,31 +532,30 @@ class WorldTools:
         start, end = self._point(args["start"], "start"), self._point(args["end"], "end")
         line = np.array([end[k] - start[k] for k in "xyz"])
         length = float(np.linalg.norm(line))
-        if length < PUSH_M[0] or length > PUSH_M[1]:
-            raise ValueError(f"a push runs {PUSH_M[0] * 100:g}-{PUSH_M[1] * 100:g} cm from start to end")
+        if length < 0.01:
+            raise ValueError("the start and end of a push are at least 1 cm apart")
         turn = {} if (yaw := self._yaw(args)) is None else turned(yaw)
         stages = [
             self._move({"gripper": 1}, "push_close"),
             dict(self._move({**end, **turn}, "push"), travel_z=self._travel(args), via=start),
         ]
-        pushed = {}
         for command in stages:
-            outcome = self._approach(command, pushed)
+            outcome = self.driver.execute(command)
             if not outcome.ok:
                 return self._result(
                     outcome.feedback(), dict(status=outcome.status, message=outcome.message, **outcome.data)
                 )
+        short = outcome.data.get("short_m")
         here = np.array(self.driver.observation.state["eef_state"][:3])
-        short = pushed.get("approach_ended_short_m", 0.0)
         # Leave what was pushed: back along the line, but never past where the push began.
-        back = here - line / length * min(BACK_OFF_M, max(length - short, 0.0))
+        back = here - line / length * min(BACK_OFF_M, max(length - (short or 0.0), 0.0))
         retreat = self.driver.execute(self._move(dict(zip("xyz", map(float, back), strict=True)), "push_back_off"))
         told = dict(
             status=retreat.status,
             pushed=dict(
-                ended="stopped_on_contact" if "approach_ended_short_m" in pushed else "reached_end",
-                travelled_mm=round(1000 * (length - short)),
-                short_mm=round(1000 * short),
+                ended="reached_end" if short is None else "stopped_on_contact",
+                travelled_mm=round(1000 * (length - (short or 0.0))),
+                short_mm=round(1000 * (short or 0.0)),
             ),
             **self.observe(),
         )

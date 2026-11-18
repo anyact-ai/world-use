@@ -10,6 +10,7 @@ from pathlib import Path
 
 import httpx
 import numpy as np
+import pytest
 from budget import BASE_URL, MODEL, AzureBudget
 from inspect_robots import eval as evaluate
 from inspect_robots.approver import ChainApprover, ClampApprover, DeltaLimitApprover
@@ -71,6 +72,12 @@ class Scripted(AzureBudget):
                     u, v = view.project([at["x"], at["y"], 0.51])[0][0]
                     return dict(camera="wrist", point=[float(u), float(v)])
 
+                def push():
+                    # A level line in free air, 10 cm above where the hand is.
+                    x, y, z = map(float, self.driver.observation.state["eef_state"][:3])
+                    start = dict(x=x, y=y, z=z + 0.1)
+                    return "push", dict(start=start, end=dict(start, y=y + 0.1), travel_z=z + 0.1)
+
                 aside = dict(x=tomato["x"] + 0.04, y=tomato["y"] - 0.03)
                 tomato_box = dict(camera="agentview", box=[95, 120, 125, 161])
                 self.script = [
@@ -114,6 +121,8 @@ class Scripted(AzureBudget):
                             expect_grip_mm=[50, 75],
                         ),
                     ),
+                    ("move_to", dict(targets={"gripper": 0.0})),
+                    push,
                     ("give_up", dict(reason="Offline procedure checks complete.", hindsight="none")),
                 ]
             entry = self.script[index - 1]
@@ -292,6 +301,12 @@ def main():
         assert max(placed.values()) < 0.015 and located["looks"] >= 2
         assert centred["status"] == "done" and [s["status"] for s in centred["stages"]] == ["done"] * 5
         assert 50 <= centred["observations"]["after"]["aperture_mm"] <= 75
+        # A push with nothing in its way runs its whole line and backs off 2 cm along it.
+        (pushed,) = (o for o in outcomes if "pushed" in o)
+        assert pushed["status"] == "done"
+        assert pushed["pushed"] == dict(ended="reached_end", travelled_mm=100, short_mm=0)
+        line = [s for s in actual_steps if s["source"] == "push"]
+        assert pushed["eef_state"][1] == pytest.approx(line[-1]["requested"][1] - 0.02, abs=0.012)
         # Selection and repeated observation share the actual simulator capture.
         assert outcomes[0]["frame"] == outcomes[1]["frame"]
         observed = outcomes[2]["targets"]

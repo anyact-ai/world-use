@@ -252,11 +252,10 @@ class Driver:
             if not rise.ok:
                 return rise
         via = command.get("via")
-        if via is not None:
-            # Turn and open the hand on the level leg, away from what it is about to approach.
-            level = {k: via.get(k, v) for k, v in targets.items() if k != "z"} | {k: via[k] for k in "xy" if k in via}
-            down = {"z": via["z"]} if "z" in via else {}
-            for part in (level, down) if "z" in targets or via else ():
+        if via is not None and (via or "z" in targets):
+            # The hand turns and opens on the level leg, away from what it is about to approach.
+            level = {k: v for k, v in targets.items() if k != "z"} | {k: via[k] for k in "xy" if k in via}
+            for part in (level, {k: via[k] for k in "z" if k in via}):
                 if part and not (out := leg(part)).ok:
                     return out
         origin = np.array(self.observation.state["eef_state"][:3], dtype=float)

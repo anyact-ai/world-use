@@ -81,7 +81,10 @@ Simulator truth scores them and never reaches a policy.
 
 - Nothing checks what a selected region is.
 - The hand stays vertical: grasps come from above, and a rim offset takes mugs,
-  bowls and pots.
+  bowls and pots. A mug held that way does not go under an oven's roof. In a
+  scripted trial on a development state the hand met the frame with the mug
+  half in; with the hand leaning 50 degrees, given as raw rotation targets, the
+  mug went 3 cm further and fell back out when released.
 - The World Use arm is told the wrist camera's mount and the hand's dimensions.
   The raw arm is not.
 - A pair is one episode per arm. Repeat pairs or run more states before reading
@@ -178,7 +181,8 @@ with the hand reported fully closed, a reversed move must report the offset of i
 last applied command, and one selected region must be flagged when another object
 is lifted and pass when its own object is. From hovers 5 cm off, `locate` and a
 wrist-selected `grasp` must each place a can within 1.5 cm of its fixture
-position, and that grasp must hold it. The raw arm's prompt must be upstream's
+position, and that grasp must hold it. A push through free air must run its whole
+line and back off. The raw arm's prompt must be upstream's
 plus the one sentence both arms are given. No model requests leave the mock
 transport, and no task success is claimed. Pixel and pose fixtures exist only in
 `validate.py`. `PYTHONPATH` must name the `src` folder of the World Use tree under

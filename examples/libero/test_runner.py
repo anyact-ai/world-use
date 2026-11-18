@@ -647,7 +647,7 @@ def test_a_push_closes_the_fingers_runs_its_line_and_backs_off_along_it(monkeypa
 
 
 @pytest.mark.parametrize(
-    "change", [dict(start={"x": 0.0, "y": 0.0}), dict(end=dict(x=0.0, y=-0.09, z=0.45)), dict(yaw_deg=120)]
+    "change", [dict(start={"x": 0.0, "y": 0.0}), dict(end=dict(x=0.0, y=-0.1, z=0.45)), dict(yaw_deg=120)]
 )
 def test_a_push_without_two_points_a_line_between_them_or_a_possible_turn_is_refused(change):
     tools = tools_fixture()
