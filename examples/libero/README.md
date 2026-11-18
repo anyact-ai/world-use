@@ -31,7 +31,8 @@ prompt is upstream's plus that sentence.
   point the model names, and pause before release; the release needs a one-use
   decision tied to the unchanged observations.
 - `push`: closed fingers along a straight line until its end or until contact
-  stops them, for a drawer, a door or sliding an object.
+  stops them, for a drawer, a door or sliding an object. The hand leans back
+  from the line so that the fingertips lead.
 
 The model chooses the regions, heights, expected finger opening and where to put
 things. The tools measure and report; image overlap and finger opening do not
@@ -80,9 +81,9 @@ Simulator truth scores them and never reaches a policy.
 ## Limits
 
 - Nothing checks what a selected region is.
-- The hand stays vertical: grasps come from above, and a rim offset takes mugs,
-  bowls and pots. A mug held that way does not go under an oven's roof. In a
-  scripted trial on a development state the hand met the frame with the mug
+- Only a push leans the hand. Grasps come from above, and a rim offset takes
+  mugs, bowls and pots. A mug held that way does not go under an oven's roof. In
+  a scripted trial on a development state the hand met the frame with the mug
   half in; with the hand leaning 50 degrees, given as raw rotation targets, the
   mug went 3 cm further and fell back out when released.
 - The World Use arm is told the wrist camera's mount and the hand's dimensions.
@@ -182,7 +183,7 @@ last applied command, and one selected region must be flagged when another objec
 is lifted and pass when its own object is. From hovers 5 cm off, `locate` and a
 wrist-selected `grasp` must each place a can within 1.5 cm of its fixture
 position, and that grasp must hold it. A push through free air must run its whole
-line and back off. The raw arm's prompt must be upstream's
+line with the hand leaning and come back upright. The raw arm's prompt must be upstream's
 plus the one sentence both arms are given. No model requests leave the mock
 transport, and no task success is claimed. Pixel and pose fixtures exist only in
 `validate.py`. `PYTHONPATH` must name the `src` folder of the World Use tree under

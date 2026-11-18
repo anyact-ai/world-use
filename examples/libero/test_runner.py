@@ -1,6 +1,7 @@
 """Distinct execution, settling, release-admission, capture, and spending regressions."""
 
 import json
+import math
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -628,28 +629,61 @@ def test_a_place_through_a_point_approaches_from_it():
     assert json.loads(tools.execute(refused, tools.driver.observation).note)["status"] == "refused"
 
 
-def test_a_push_closes_the_fingers_runs_its_line_and_backs_off_along_it(monkeypatch):
+def approach_axis(targets):
+    """Tool z, the way the fingers point, from a command's rotation targets."""
+    return np.cross([targets[k] for k in ("r00", "r10", "r20")], [targets[k] for k in ("r01", "r11", "r21")])
+
+
+def test_a_push_leans_the_hand_back_from_its_line_and_leaves_it_upright_and_clear(monkeypatch):
     tools = tools_fixture()
     start, end = dict(x=0.0, y=-0.1, z=0.45), dict(x=0.0, y=0.1, z=0.45)
     told = json.loads(tools.execute(call("push", start=start, end=end, travel_z=0.6), tools.driver.observation).note)
     close, line, back = tools.driver.commands
     assert (close["stage"], close["targets"]) == ("push_close", {"gripper": 1})
-    assert (line["targets"], line["via"], line["travel_z"]) == (end, start, 0.6)
+    assert ({k: line["targets"][k] for k in "xyz"}, line["via"], line["travel_z"]) == (end, start, 0.6)
+    # Fingertips lead by 30 degrees, with the finger axis level and across the line.
+    assert approach_axis(line["targets"]) == pytest.approx([0, 0.5, -math.sqrt(0.75)], abs=1e-9)
+    assert [abs(line["targets"][k]) for k in ("r00", "r10", "r20")] == pytest.approx([1, 0, 0], abs=1e-9)
     assert told["status"] == "done" and told["pushed"] == dict(ended="reached_end", travelled_mm=200, short_mm=0)
-    assert back["targets"] == pytest.approx(dict(x=0.0, y=0.08, z=0.45))
+    # It backs off 10 cm along the line and stands up again as it goes.
+    assert [back["targets"][k] for k in "xyz"] == pytest.approx([0.0, 0.0, 0.45])
+    assert approach_axis(back["targets"]) == pytest.approx([0, 0, -1], abs=1e-9)
     # A drawer that reaches its stop holds the hand there: the push says how far it went.
     tools.driver.commands.clear()
     contact(tools, monkeypatch, "push", short_m=0.05)
     tools.driver.pose.update(y=0.05, z=0.45)
-    told = json.loads(tools.execute(call("push", start=start, end=end), tools.driver.observation).note)
+    upright_push = call("push", start=start, end=end, tilt_deg=0)
+    told = json.loads(tools.execute(upright_push, tools.driver.observation).note)
     assert told["pushed"] == dict(ended="stopped_on_contact", travelled_mm=150, short_mm=50)
-    assert tools.driver.commands[-1]["targets"]["y"] == pytest.approx(0.03)
+    line = next(c for c in tools.driver.commands if c.get("stage") == "push")
+    assert approach_axis(line["targets"]) == pytest.approx([0, 0, -1], abs=1e-9)
+    assert tools.driver.commands[-1]["targets"] == pytest.approx(dict(x=0.0, y=-0.05, z=0.45))
+
+
+def test_a_push_straight_down_does_not_turn_the_hand():
+    tools = tools_fixture()
+    press = call("push", start=dict(x=0.0, y=0.0, z=0.5), end=dict(x=0.0, y=0.0, z=0.45))
+    assert json.loads(tools.execute(press, tools.driver.observation).note)["status"] == "done"
+    assert [c["targets"].keys() for c in tools.driver.commands[1:]] == [set("xyz"), set("xyz")]
+
+
+def test_a_push_that_fails_on_its_way_still_leaves_the_hand_upright(monkeypatch):
+    tools = tools_fixture()
+    execute = tools.driver.execute
+    stalled = Outcome("surprise", "move", "fixture: blocked on the way", dict(arm="not_approaching"))
+    monkeypatch.setattr(tools.driver, "execute", lambda c: stalled if c.get("stage") == "push" else execute(c))
+    request = call("push", start=dict(x=0.0, y=-0.1, z=0.45), end=dict(x=0.0, y=0.1, z=0.45))
+    told = json.loads(tools.execute(request, tools.driver.observation).note)
+    assert told["status"] == "surprise" and "blocked" in told["message"]
+    # No retreat along a line it never ran, but the hand is stood up again.
+    (upright,) = (c for c in tools.driver.commands if c.get("stage") == "push_back_off")
+    assert "x" not in upright["targets"] and approach_axis(upright["targets"]) == pytest.approx([0, 0, -1], abs=1e-9)
 
 
 @pytest.mark.parametrize(
-    "change", [dict(start={"x": 0.0, "y": 0.0}), dict(end=dict(x=0.0, y=-0.1, z=0.45)), dict(yaw_deg=120)]
+    "change", [dict(start={"x": 0.0, "y": 0.0}), dict(end=dict(x=0.0, y=-0.1, z=0.45)), dict(tilt_deg=75)]
 )
-def test_a_push_without_two_points_a_line_between_them_or_a_possible_turn_is_refused(change):
+def test_a_push_without_two_points_a_line_between_them_or_a_possible_lean_is_refused(change):
     tools = tools_fixture()
     request = dict(start=dict(x=0.0, y=-0.1, z=0.45), end=dict(x=0.0, y=0.1, z=0.45)) | change
     told = json.loads(tools.execute(call("push", **request), tools.driver.observation).note)

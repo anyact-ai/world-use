@@ -301,12 +301,13 @@ def main():
         assert max(placed.values()) < 0.015 and located["looks"] >= 2
         assert centred["status"] == "done" and [s["status"] for s in centred["stages"]] == ["done"] * 5
         assert 50 <= centred["observations"]["after"]["aperture_mm"] <= 75
-        # A push with nothing in its way runs its whole line and backs off 2 cm along it.
+        # A push with nothing in its way runs its whole line, leaning, and comes back along it upright.
         (pushed,) = (o for o in outcomes if "pushed" in o)
         assert pushed["status"] == "done"
         assert pushed["pushed"] == dict(ended="reached_end", travelled_mm=100, short_mm=0)
         line = [s for s in actual_steps if s["source"] == "push"]
-        assert pushed["eef_state"][1] == pytest.approx(line[-1]["requested"][1] - 0.02, abs=0.012)
+        assert pushed["eef_state"][1] == pytest.approx(line[-1]["requested"][1] - 0.1, abs=0.012)
+        assert abs(line[-1]["requested"][8]) == pytest.approx(0.5, abs=1e-6) and abs(pushed["eef_state"][8]) < 0.12
         # Selection and repeated observation share the actual simulator capture.
         assert outcomes[0]["frame"] == outcomes[1]["frame"]
         observed = outcomes[2]["targets"]

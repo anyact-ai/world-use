@@ -15,6 +15,7 @@ from native import ARM_TOLERANCE, fingerprint
 from world_use import procedures
 from world_use.behaviors import Outcome
 from world_use.cameras import View
+from world_use.geometry import aim
 from world_use.parallax import Look, footprint, locate
 from world_use.tracking import Tracking
 from world_use.vision_worker import TrackerProcess
@@ -86,16 +87,18 @@ voids the checkpoint. Two objects for one container go side
 by side along its longer extent: release the first a fifth of that extent to one side of the
 located centre and the second a fifth to the other side, so neither lands on the other or on
 a wall.
-push closes the fingers and moves them in a straight line from start to end, to shut a drawer or
-a door or to slide something along a surface. It goes to start through free space, rising to
-travel_z first when you give one, so put start a few centimetres clear of what you push, on the
-side you push from, with the fingertips at the height of its middle. The line ends at end or
-where contact stops the hand: pushed says which, with travelled_mm and short_mm. Put end a few
-centimetres past where the thing should stop, since a drawer or door that reaches its stop holds
-the hand there. The hand then backs off 2 cm. A hinged door moves along an arc: push it along two
-or three straight lines. yaw_deg turns the finger axis as in grasp. The hand body above the
-fingers can meet something else first: when a push stops with the thing still short of its
-place, try a lower line or the finger axis turned along the line.
+push closes the fingers and moves the fingertips in a straight line from start to end, to shut a
+drawer or a door or to slide something along a surface. For a level line the hand turns its
+finger axis across the line and leans 30 degrees back from the direction of the push, so the
+fingertips lead and the hand body stays behind them, clear of what is above the thing pushed;
+tilt_deg sets another lean, from 0 for an upright hand to 60. It goes to start through free
+space, rising to travel_z first when you give one, so put start a few centimetres clear of what
+you push, on the side you push from, with the fingertips at the height of its middle. The line
+ends at end or where contact stops the hand: pushed says which, with travelled_mm and short_mm.
+Put end a few centimetres past where the thing should stop, since a drawer or door that reaches
+its stop holds the hand there. The hand then backs off up to 10 cm along the line, standing
+upright again as it goes. A hinged door moves along an arc: push it along two or three straight
+lines.
 Every interpolation and settling step counts toward the 900-step episode limit; one clean pick
 and place takes about 200.
 Results report measurements. arm: arrived; stopped_on_contact (short_m is how far short of the
@@ -131,7 +134,8 @@ OPEN_MM = [70, 85]  # fingers this far apart have let go, or made room, even whi
 FIT_MM = 70  # the widest narrow side the fingers are turned to take: 78 mm of opening less clearance
 LONGER = 1.3  # a region this much longer than it is wide has a narrow side to take it by
 CLOSE_STEPS = 120
-BACK_OFF_M = 0.02  # a finished push leaves what it pushed by this much
+LEAN_DEG = 30  # a pushing hand leans this far back, which puts its body behind its fingertips
+BACK_OFF_M = 0.1  # a push leaves what it pushed by this much, room for the leaning hand to stand up again
 SETTLE_STEPS = 40  # raised high above the table the arm needs about 25 steps to stop swinging
 
 
@@ -140,6 +144,21 @@ def turned(yaw_deg):
     turn = math.radians(yaw_deg)
     columns = [math.sin(turn), math.cos(turn), 0.0, math.cos(turn), -math.sin(turn), 0.0]
     return dict(zip(("r00", "r10", "r20", "r01", "r11", "r21"), columns, strict=True))
+
+
+def leaning(eef_state, along, tilt_deg):
+    """Pose targets for a hand leaning back from a level direction of travel: its approach axis, tool z, turned
+    from straight down toward that direction, and its finger axis level and across it, whichever way round
+    turns the hand least. With no direction the hand is set upright on the finger axis it has."""
+    a, b = np.asarray(eef_state[3:6], dtype=float), np.asarray(eef_state[6:9], dtype=float)
+    now, down = np.column_stack([a, b, np.cross(a, b)]), np.array([0.0, 0.0, -1.0])
+    if along is None:
+        rotation = aim(now, [0, 0, 1], [1, 0, 0], down)
+    else:
+        level, tilt = np.array([along[0], along[1], 0.0]) / math.hypot(along[0], along[1]), math.radians(tilt_deg)
+        across = [level[1], -level[0], 0.0]
+        rotation = aim(now, [0, 0, 1], [1, 0, 0], math.cos(tilt) * down + math.sin(tilt) * level, across)
+    return dict(zip(("r00", "r10", "r20", "r01", "r11", "r21"), map(float, rotation[:, :2].T.ravel()), strict=True))
 
 
 def wrist_view(eef_state):
@@ -270,7 +289,6 @@ RANGE = dict(
 )
 POINT = dict(type="object")
 TRAVEL = dict(type="number", description="Height in metres to rise to before moving level.")
-YAW = dict(type="number", description="Turn of the finger axis about the vertical: 0 along world y, 90 along world x.")
 SELECTION = dict(
     type="object",
     description="A region in one camera's current image: {camera, point: [x, y]} or {camera, box: [x0, y0, x1, y1]}.",
@@ -317,7 +335,10 @@ SCHEMAS = [
                 maxItems=2,
                 description="[dx, dy] in metres from the centre of a wrist-selected region to the grasp point.",
             ),
-            yaw_deg=YAW,
+            yaw_deg=dict(
+                type="number",
+                description="Turn of the finger axis about the vertical: 0 along world y, 90 along world x.",
+            ),
             approach=TARGETS,
             lift=TARGETS,
             expect_grip_mm=RANGE,
@@ -347,12 +368,13 @@ SCHEMAS = [
     ),
     schema(
         "push",
-        "Close the fingers, go to start through free space, then move in a straight line to end or to "
-        "where contact stops the hand, and back off 2 cm. For shutting a drawer or door or sliding an object.",
+        "Close the fingers, go to start through free space, then move the fingertips in a straight line to "
+        "end or to where contact stops the hand, and back off 10 cm. For shutting a drawer or door or sliding "
+        "an object.",
         dict(
             start=dict(POINT, description="{x, y, z} where the line begins, clear of what is pushed."),
             end=dict(POINT, description="{x, y, z} where the line ends, at or beyond where the pushing should stop."),
-            yaw_deg=YAW,
+            tilt_deg=dict(type="number", description="Lean of the hand back from the push, 0 to 60; 30 if omitted."),
             travel_z=TRAVEL,
             note=TEXT,
         ),
@@ -508,13 +530,6 @@ class WorldTools:
             raise ValueError(f"{name} is a point: x, y and z in metres")
         return {k: float(v) for k, v in value.items()}
 
-    @staticmethod
-    def _yaw(args):
-        yaw = args.get("yaw_deg")
-        if yaw is not None and (type(yaw) not in (float, int) or not -90 <= yaw <= 90):
-            raise ValueError("yaw_deg is between -90 and 90")
-        return yaw
-
     def _move(self, targets, stage, *, monitor=None, expected=None, settle=SETTLE_STEPS):
         return dict(
             kind="move", targets=targets, stage=stage, settle_steps=settle, monitor_mm=monitor, expect_mm=expected
@@ -534,7 +549,12 @@ class WorldTools:
         length = float(np.linalg.norm(line))
         if length < 0.01:
             raise ValueError("the start and end of a push are at least 1 cm apart")
-        turn = {} if (yaw := self._yaw(args)) is None else turned(yaw)
+        tilt = args.get("tilt_deg", LEAN_DEG)
+        if type(tilt) not in (float, int) or not 0 <= tilt <= 60:
+            raise ValueError("tilt_deg is between 0 and 60")
+        # A line with no level direction, straight up or down, has nothing to lean back from.
+        level = math.hypot(line[0], line[1]) >= 0.01
+        turn = leaning(self.driver.observation.state["eef_state"], line, tilt) if level else {}
         stages = [
             self._move({"gripper": 1}, "push_close"),
             dict(self._move({**end, **turn}, "push"), travel_z=self._travel(args), via=start),
@@ -542,16 +562,25 @@ class WorldTools:
         for command in stages:
             outcome = self.driver.execute(command)
             if not outcome.ok:
-                return self._result(
-                    outcome.feedback(), dict(status=outcome.status, message=outcome.message, **outcome.data)
-                )
+                break
         short = outcome.data.get("short_m")
-        here = np.array(self.driver.observation.state["eef_state"][:3])
-        # Leave what was pushed: back along the line, but never past where the push began.
-        back = here - line / length * min(BACK_OFF_M, max(length - (short or 0.0), 0.0))
-        retreat = self.driver.execute(self._move(dict(zip("xyz", map(float, back), strict=True)), "push_back_off"))
+        state = self.driver.observation.state["eef_state"]
+        retreat = {}
+        if outcome.ok:
+            # Leave what was pushed, back along the line but never past where the push began.
+            back = state[:3] - line / length * min(BACK_OFF_M, max(length - (short or 0.0), 0.0))
+            retreat.update(zip("xyz", map(float, back), strict=True))
+        if turn and tilt:
+            # The other tools expect an upright hand. Standing up while backing off keeps its body behind
+            # its fingertips all the way.
+            retreat.update(leaning(state, None, 0))
+        left = self.driver.execute(self._move(retreat, "push_back_off")) if retreat else outcome
+        if not outcome.ok:
+            return self._result(
+                outcome.feedback(), dict(status=outcome.status, message=outcome.message, **outcome.data)
+            )
         told = dict(
-            status=retreat.status,
+            status=left.status,
             pushed=dict(
                 ended="reached_end" if short is None else "stopped_on_contact",
                 travelled_mm=round(1000 * (length - (short or 0.0))),
@@ -660,7 +689,9 @@ class WorldTools:
                 if any(offset) and not wrist:
                     raise ValueError("offset is measured from a region selected in the wrist camera")
                 approach = dict(args["approach"], gripper=0)
-                if (yaw := self._yaw(args)) is not None:
+                if (yaw := args.get("yaw_deg")) is not None:
+                    if type(yaw) not in (float, int) or not -90 <= yaw <= 90:
+                        raise ValueError("yaw_deg is between -90 and 90")
                     approach.update(turned(yaw))
                 if "select" in args:
                     self._select(name, args["select"])
