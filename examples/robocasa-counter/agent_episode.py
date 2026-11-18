@@ -20,18 +20,17 @@ from world_use.vision_worker import TrackerProcess
 
 
 class Episode:
-    def __init__(self, output, scene, *, park_left_m=.20, views=None, task=None, setup=None,
+    def __init__(self, output, scene, *, park_left_m=.20, task=None, setup=None,
                  camera_factory=None, sensors=None, sources=None, entrypoint="counter/agent_episode.py"):
         self.out = Path(output)
         self.out.mkdir(parents=True, exist_ok=False)
         self.log = []
         self.body = PandaBody(self.out, scene, park_left_m=park_left_m)
-        camera = SimCamera("counter", self.body.lens(), self.body)
-        side = SimCamera("side", View.look_at([.05, 1.05, .75], [.43, .10, .28],
-                                             fov_deg=52, size=(1024, 768)), self.body)
-        cameras = {"counter": camera, "side": side} if views is None else {
-            name: SimCamera(name, view, self.body) for name, view in views.items()}
-        if camera_factory is not None:
+        if camera_factory is None:
+            side = View.look_at([.05, 1.05, .75], [.43, .10, .28], fov_deg=52, size=(1024, 768))
+            cameras = {"counter": SimCamera("counter", self.body.lens(), self.body),
+                       "side": SimCamera("side", side, self.body)}
+        else:
             cameras = camera_factory(self.body)
         declared = {"counter/"+p.name: p for p in Path(__file__).parent.glob("*.py")}
         declared.update(sources or {})

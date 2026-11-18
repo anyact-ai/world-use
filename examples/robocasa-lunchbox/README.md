@@ -1,39 +1,37 @@
 # Lunchbox packing
 
-An LLM-written Python program packs two snacks into a small open container using
-fresh world-use measurements. The program runs without model calls during execution.
+A Python program packs two snacks into a small open container in a simulated RoboCasa kitchen, measuring with
+RGB-D before each move and after each release. An LLM agent wrote the program during development, with knowledge
+of the scene and feedback from a person; no model is called while it runs.
 
 https://github.com/user-attachments/assets/f714e092-69e5-40ac-b7f6-bdeac1f4f6b9
 
+Both packages ended inside the container with a measured 12.8 mm gap and no unintended contacts in the sampled
+replay. The same program also packed a shifted, rotated layout: the new measurements changed its destinations and
+the cookie box's rotation from about 24° to 40°. These are two development runs, not a success rate.
+
 ## What world-use adds
 
-- **Measurement.** EdgeTAM and depth locate package and container surfaces;
-  `measure_pixels` supplies floor and counter heights for compact placement.
-- **Alignment.** `align_planar` converts measured footprints into a tool position
-  and yaw, accounting for an off-center grasp. The task calculates release height.
-- **Verification.** Gripper feedback and `observe_targets` check retention.
-  Fresh RGB-D checks released placements; `requires` limits evidence age for motion.
+- EdgeTAM and depth locate the packages and the container; `measure_pixels` gives the floor and counter heights
+  for a compact placement.
+- `align_planar` turns a measured footprint and its target into a tool position and yaw, allowing for an
+  off-centre grasp. The program works out the release height itself.
+- Gripper feedback and `observe_targets` check that a package is still held after the lift, and fresh RGB-D
+  checks each released package. `requires` limits how old the measurements behind each motion may be.
 
-The [task program](task.py) owns the image regions, packing order, layout and
-clearances. Inputs are RGB-D and robot feedback; simulator poses are reserved for the audit.
+The [task program](task.py) chooses the image regions, packing order, layout and clearances. Its inputs are RGB-D
+and robot feedback; only the audit reads simulator poses.
 
-## Result and scope
+## Limits
 
-Both packages were released inside the container, with a measured 12.8 mm gap
-and no unintended contacts in the sampled replay. The **same program** also
-passed a shifted, rotated layout: new measurements changed its destinations and
-the cookie-box rotation from about 24° to 40°.
+The scene has rigid packages, an open container scaled to 1.10×, a cookie box scaled to 0.85× and ideal RGB-D.
+Alignment assumes the package does not move in the grasp, and the placement check compares centres, so it can
+miss a rotation. There is no joint torque sensing or full-scene rehearsal (`rehearse=False`). Packages move only
+through contact, and the audit checks support and stability from the recorded physics, separately from the
+camera checks.
 
-These are two development checks with scene knowledge and human feedback. The
-scene uses rigid packages, an open container scaled to 1.10×, a cookie box scaled
-to 0.85× and idealized RGB-D. Alignment assumes a rigid grasp; center checks can
-miss rotation. The adapter has no joint torque sensing or full-scene collision
-rehearsal (`rehearse=False`). Contact physics drives the objects; post-run audits
-check support and stability separately from camera checks.
-
-The 63-second video uses saved side/wrist observations and recorded motion at 2×,
-with pauses cut. The opening uses a presentation camera; overlays show measured
-geometry and the task's calculations.
+The 63-second video uses the saved side and wrist observations and the recorded motion at 2×, with pauses cut.
+The opening uses a presentation camera; overlays show measured geometry and the program's calculations.
 
 ## Run locally
 
@@ -47,13 +45,14 @@ Complete the [kitchen setup](../robocasa-counter/README.md#build-the-upstream-sc
 .venv/bin/python examples/robocasa-lunchbox/render_episode.py runs/lunchbox-new
 ```
 
-Use a new output directory for each run. `--measure-only` checks perception and
-layout without powering the simulated robot.
-The shared [simulation session](../../docs/simulation.md#external-simulation-sessions) saves
-declared source and raw RGB-D in `task/`, full-scene state in `physics/` and
-`replay.npz`, and normal robot records in `flight/`. The task retains its geometry
-calculations and independent physical audit. `wu replay runs/lunchbox-new/flight
---out scene.gif --speed 3` renders the saved scene through the initial side camera.
+Use a new output directory for each run. `--measure-only` checks perception and layout without powering the
+simulated robot. The shared [simulation session](../../docs/simulation.md#external-simulation-sessions) saves the
+declared source and raw RGB-D in `task/`, full-scene state in `physics/` and `replay.npz`, and the robot records
+in `flight/`; the program adds its geometry calculations. `audit_episode.py` checks from the recorded physics that
+both packages rest on the container floor, inside it and clear of the fingers, that they moved less than 1 mm
+after settling, and that the replay has no unintended contacts.
+`wu replay runs/lunchbox-new/flight --out scene.gif --speed 3` renders the saved scene through the initial side
+camera.
 
 <details>
 <summary>Run the shifted-layout check</summary>
@@ -68,7 +67,6 @@ calculations and independent physical audit. `wu replay runs/lunchbox-new/flight
 
 </details>
 
-Selected records: `runs/lunchbox-compact-05/` and
-`runs/lunchbox-compact-shifted-03/`. They retain task source, measurements, calls,
-replays and audits; failed trials remain separate. Raw records and downloaded
-assets are not bundled. See the [asset attribution](../robocasa-counter/README.md#attribution).
+Selected records: `runs/lunchbox-compact-05/` and `runs/lunchbox-compact-shifted-03/`. They keep the task source,
+measurements, calls, replays and audits; failed trials are kept separately. Raw records and downloaded assets are
+not bundled. See the [asset attribution](../robocasa-counter/README.md#attribution).
