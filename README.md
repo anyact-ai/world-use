@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/anyact-ai/world-use/main/docs/assets/anyact-arm.svg" width="90" alt="AnyAct robot arm">
+  <img src="docs/assets/anyact-arm.svg" width="90" alt="AnyAct robot arm">
 </p>
 
 # world-use
@@ -21,8 +21,8 @@ GPT-6.2 Sol, driving a simulated Franka Panda, solves **30 of 50 episodes with w
 run once.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/anyact-ai/world-use/main/docs/assets/libero-results-dark.png">
-  <img src="https://raw.githubusercontent.com/anyact-ai/world-use/main/docs/assets/libero-results-light.png" alt="Episodes solved: 15 of 50 alone, 30 of 50 with world-use. Model calls: 3,095 alone, 815 with world-use. Estimated model cost: $61.44 alone, $8.73 with world-use.">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/libero-results-dark.png">
+  <img src="docs/assets/libero-results-light.png" alt="Episodes solved: 15 of 50 alone, 30 of 50 with world-use. Model calls: 3,095 alone, 815 with world-use. Estimated model cost: $61.44 alone, $8.73 with world-use.">
 </picture>
 
 Alone, the model picks hand poses from camera images. With world-use it also gets EdgeTAM tracking,

@@ -2,7 +2,7 @@
 name = "world-use"
 version = "0.3.0"
 description = "Tools for LLM-operated robot arms: camera observations, measured geometry, checked motion and execution records."
-readme = "README.md"
+dynamic = ["readme"]
 # The code is Apache-2.0; the bundled Seeed reBot URDF and meshes are CERN-OHL-W-2.0 (see their NOTICE.md).
 license = "Apache-2.0 AND CERN-OHL-W-2.0"
 license-files = [
@@ -46,8 +46,17 @@ Repository = "https://github.com/anyact-ai/world-use"
 dev = ["pytest>=9", "ruff>=0.16", "ty>=0.0.84", "world-use[mcp,rerun]"]
 
 [build-system]
-requires = ["hatchling>=1.27"]    # PEP 639 license expression and license-files
+requires = ["hatchling>=1.27", "hatch-fancy-pypi-readme>=24.1"]    # 1.27: PEP 639 license-files
 build-backend = "hatchling.build"
+
+# PyPI shows the README without the repository around it: point its relative links and images at GitHub.
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+fragments = [{ path = "README.md" }]
+substitutions = [
+    { pattern = '(src|srcset)="(?!https?://)([^"]+)"', replacement = '\1="https://raw.githubusercontent.com/anyact-ai/world-use/main/\2"' },
+    { pattern = '\]\((?!https?://|#)([^)]+)\)', replacement = '](https://github.com/anyact-ai/world-use/blob/main/\1)' },
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/world_use"]
