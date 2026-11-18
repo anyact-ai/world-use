@@ -154,11 +154,10 @@ async def procedure(server, evaluate, *, tracking=False) -> dict:
 
             async def observe():
                 nonlocal latest
-                latest = await measure(face=True)
-                if latest is None:
-                    raise RuntimeError("the top face is not measurable; no further placement stage is authorized")
+                measured = await measure(face=True)
+                latest = measured or latest
                 status = await tool("status")
-                return dict(measurement=latest, aperture_mm=status["gripper"]["aperture_mm"])
+                return dict(measurement=measured, aperture_mm=status["gripper"]["aperture_mm"])
 
             async def execute(command):
                 return await run(command, latest)
@@ -168,10 +167,14 @@ async def procedure(server, evaluate, *, tracking=False) -> dict:
                 observation = observations[checkpoint]
                 measured = observation["measurement"]
                 if checkpoint == "after":
-                    passed = placed(measured, observation["aperture_mm"])
+                    passed = measured is not None and placed(measured, observation["aperture_mm"])
                     results["placement"] = "pass" if passed else "fail"
-                    return Outcome("done" if passed else "surprise", "placement",
-                                   "released-object camera check passed" if passed else "released-object check failed")
+                    message = ("the released block passed the camera placement check" if passed else
+                               "the released block did not pass the camera placement check" if measured else
+                               "the released block is not measurable")
+                    return Outcome("done" if passed else "surprise", "placement", message)
+                if measured is None:
+                    return Outcome("stopped", "placement", "the top face is not measurable before release")
                 normal = np.asarray(measured["plane"]["normal"]) @ work[:3, :3]
                 normal *= 1 if normal[2] >= 0 else -1
                 if normal[2] < .8:
@@ -181,7 +184,8 @@ async def procedure(server, evaluate, *, tracking=False) -> dict:
                 error = TARGET - center
                 passed = np.linalg.norm(error) < .003
                 correction = None if passed else error
-                return Outcome("done" if passed else "surprise", "placement", "measured object position before release",
+                return Outcome("done" if passed else "surprise", "placement",
+                               f"the measured block is {1000 * np.linalg.norm(error):.1f} mm from its target",
                                expected=dict(center=TARGET.tolist(), tolerance_m=.003), observed=center.tolist(),
                                hint=("lift above the known clear tray before correcting; do not release yet"
                                      if not passed else ""))
@@ -196,9 +200,13 @@ async def procedure(server, evaluate, *, tracking=False) -> dict:
                 results["procedures"].append(outcome.to_dict())
                 if outcome.ok:
                     return
-                if (outcome.data["checkpoint"] != "before_release" or correction is None or attempt == 2
-                        or np.linalg.norm(correction) > .03):
+                if outcome.data["checkpoint"] == "after":
+                    results["reason"] = outcome.message
+                    return
+                if correction is None or np.linalg.norm(correction) > .03:
                     raise RuntimeError(outcome.message)
+                if attempt == 2:
+                    raise RuntimeError("placement did not converge within three bounded visual corrections")
                 # The failed procedure cancelled release. The task explicitly chooses
                 # a bounded correction using current geometry, then a new approach.
                 here = np.asarray((await tool("status"))["tool"]["work"])

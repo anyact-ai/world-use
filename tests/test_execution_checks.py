@@ -85,6 +85,10 @@ def test_a_stall_that_must_last_ignores_the_turning_points_of_a_swinging_arm():
         if plateau.update(i / 20, [.03]):
             break
     assert plateau.update(i / 20 + .05, [.03]) == "stalled" and .7 <= plateau.elapsed_s < .8
+    # Polled twice per sample, the repeat neither ends the stall nor delays it.
+    polled = Settling([.008], 3, .2, stall_s=.5)
+    seen = [polled.update(i / 20, [.03]) for i in range(40) for _ in range(2)]
+    assert "stalled" in seen and seen.index("stalled") // 2 == i
 
 
 def lagging_hand(wall=None):

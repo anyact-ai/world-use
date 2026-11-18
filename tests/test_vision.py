@@ -412,8 +412,14 @@ def test_provider_failure_reports_each_requested_loss_once_and_keeps_it(daemon, 
         tracker.ready = False
         raise Refused("provider stopped", "provider_error")
 
-    monkeypatch.setattr(tracker, "update", stopped)
+    update = tracker.update
+
+    def plate_stops(target, frame):
+        return (update if target == "cup" else stopped)(target, frame)
+
+    monkeypatch.setattr(tracker, "update", plate_stops)
     results = tracking.observe(["cup", "plate"])
+    # The cup was measured before the provider stopped on the plate, and went with it.
     assert [r["target"] for r in results] == ["cup", "plate"]
     assert all(r["tracking"] == "lost" and not r["valid"] for r in results)
     assert tracking.observe(["cup", "plate"]) == results

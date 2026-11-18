@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from world_use.behaviors import Outcome
-from world_use.cameras import MountedSimCamera, View
+from world_use.cameras import View
 from world_use.examples.pick_place import setup
 from world_use.parallax import Look, footprint, locate, triangulate
 from world_use.vision import dominant_region
@@ -211,18 +211,19 @@ def test_the_simulated_arm_finds_a_block_with_its_wrist_camera_and_picks_it_up_t
     k, truth = setup()
     # Looks straight down from 5 cm ahead of the fingertips and 4 cm above them.
     mount = View([[0, 1, 0, 0.05], [1, 0, 0, 0], [0, 0, -1, 0.04], [0, 0, 0, 1]], 208.5, 208.5, 160, 120, 320, 240)
-    camera = MountedSimCamera("wrist", mount, k.body)
     k.world.boxes.pop("block")                      # the kernel is told nothing about where the block is
 
     def look():
-        frame = camera.capture(k)
-        picture = np.asarray(frame.image).astype(float)
+        # The picture and the tool pose come from one physics state.
+        image, _, tool, _ = k.body.capture(mount, mounted=True)
+        view = mount.on(tool)
+        picture = np.asarray(image).astype(float)
         # The block's lit top face, by colour alone.
         ys, xs = np.nonzero((picture[..., 0] > 200) & (picture[..., 0] > 1.5 * picture[..., 2]))
         if len(xs) < 50:
-            return Look(frame.view, frame.tool[:3, 3])
+            return Look(view, tool[:3, 3])
         box = [xs.min(), ys.min(), xs.max() + 1, ys.max() + 1]
-        return Look(frame.view, frame.tool[:3, 3], [xs.mean(), ys.mean()], box)
+        return Look(view, tool[:3, 3], [xs.mean(), ys.mean()], box)
 
     def move(goal):
         to = k.world.from_base("work", [*goal, k.tool[2, 3]])

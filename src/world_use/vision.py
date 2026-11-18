@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import math
 import time
-from collections import deque
 from copy import copy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,40 +31,54 @@ def dominant_region(mask: np.ndarray) -> dict:
     pixels = np.asarray(mask, dtype=bool)
     if pixels.ndim != 2:
         raise ValueError("mask must be two-dimensional")
-    pending = pixels.copy()
-    h, w = pixels.shape
-    largest = []
-    components = 0
-    for y, x in zip(*np.nonzero(pixels), strict=True):
-        if not pending[y, x]:
-            continue
-        components += 1
-        todo = deque([(int(y), int(x))])
-        pending[y, x] = False
-        region = []
-        while todo:
-            r, c = todo.popleft()
-            region.append((r, c))
-            for nr in range(max(0, r - 1), min(h, r + 2)):
-                for nc in range(max(0, c - 1), min(w, c + 2)):
-                    if pending[nr, nc]:
-                        pending[nr, nc] = False
-                        todo.append((nr, nc))
-        if len(region) > len(largest):
-            largest = region
-    if not largest:
+    # Runs of set pixels along each row, end exclusive, in raster order.
+    edges = np.diff(np.pad(pixels, ((0, 0), (1, 1))).astype(np.int8), axis=1)
+    rows, starts = np.nonzero(edges == 1)
+    ends = np.nonzero(edges == -1)[1]
+    if not len(rows):
         return dict(bbox=None, center=None, area_px=0, other_area_px=0, components=0,
                     axis_deg=None, length_px=0., width_px=0.)
-    points = np.asarray(largest)
-    lo, hi = points.min(axis=0), points.max(axis=0) + 1
-    # Extents of the pixel centres along every whole degree, plus the pixel itself.
+    parent = np.arange(len(rows))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = i = parent[parent[i]]
+        return i
+
+    # A run joins each run in the row above that it touches, diagonally included.
+    first = np.searchsorted(rows, np.arange(pixels.shape[0] + 1))
+    for j in range(len(rows)):
+        y = rows[j]
+        if y == 0:
+            continue
+        above = slice(first[y - 1], first[y])
+        lo = first[y - 1] + np.searchsorted(ends[above], starts[j])
+        hi = first[y - 1] + np.searchsorted(starts[above], ends[j], side="right")
+        for i in range(lo, hi):
+            a, b = root(i), root(j)
+            parent[max(a, b)] = min(a, b)
+    labels = np.array([root(i) for i in range(len(rows))])
+    lengths = ends - starts
+    sizes = np.bincount(labels, weights=lengths)
+    # The largest component; of equal ones, the first in raster order, whose label is its first run.
+    best = int(np.flatnonzero(sizes == sizes.max())[0])
+    keep = labels == best
+    rows, starts, ends, lengths = rows[keep], starts[keep], ends[keep], lengths[keep]
+    area = int(lengths.sum())
+    center = [float(((starts + ends - 1) * lengths).sum() / (2 * area)), float((rows * lengths).sum() / area)]
+    # Extents of the pixel centres along every whole degree, plus the pixel itself. In (-89, 90] degrees
+    # the image x weight is not negative, so each row's leftmost and rightmost pixels bound them all.
+    index = np.unique(rows, return_index=True)[1]
+    line = rows[index]
+    points = np.concatenate([np.column_stack([line, np.minimum.reduceat(starts, index)]),
+                             np.column_stack([line, np.maximum.reduceat(ends - 1, index)])])
     angles = np.radians(np.arange(-89, 91))
     along = points[:, 1:2] * np.cos(angles) + points[:, 0:1] * np.sin(angles)
     extents = along.max(axis=0) - along.min(axis=0) + 1
     narrow = int(np.argmin(extents))                    # the direction across the narrowest side
-    return dict(bbox=[int(lo[1]), int(lo[0]), int(hi[1]), int(hi[0])],
-                center=points[:, ::-1].mean(axis=0).tolist(), area_px=len(largest),
-                other_area_px=int(pixels.sum()) - len(largest), components=components,
+    return dict(bbox=[int(starts.min()), int(rows.min()), int(ends.max()), int(rows.max()) + 1],
+                center=center, area_px=area, other_area_px=int(pixels.sum()) - area,
+                components=int(np.count_nonzero(sizes)),
                 axis_deg=float((narrow + 90) % 180 - 89), length_px=float(extents[(narrow + 90) % 180]),
                 width_px=float(extents[narrow]))
 

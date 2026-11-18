@@ -36,9 +36,12 @@ class Settling:
         self.stall_s, self.stalled_since = stall_s, None
 
     def update(self, stamp: float, errors, *, command_active: bool = True) -> str | None:
+        repeated = self.stamp == stamp
         result = self._judge(stamp, errors, command_active)
         if result != "stalled":
-            self.stalled_since = None
+            # A repeated sample says nothing new: it neither ends a stall nor extends it.
+            if not (repeated and command_active):
+                self.stalled_since = None
             return result
         if self.stalled_since is None:
             self.stalled_since = stamp

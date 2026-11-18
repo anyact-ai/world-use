@@ -201,7 +201,8 @@ the returned image evidence alongside their commands using the existing task rec
 A camera fixed to the hand measures no depth, but its pose follows from the tool pose in every frame.
 Describe it once as a `View` in the tool frame; `mount.on(tool_pose)` is the base-frame view for a measured
 tool pose. A negative focal length describes an image published mirrored (`fx`) or with its rows flipped
-(`fy`), so pixels and points convert both ways without turning the image.
+(`fy`), with the principal point mirrored too (`width - 1 - cx` or `height - 1 - cy`), so pixels and points
+convert both ways without turning the image.
 
 `world_use.parallax` turns looks at one tracked region into a position. One look fixes a ray;
 `triangulate(looks)` returns the point nearest the rays once two camera positions are 3 cm apart and the
@@ -227,9 +228,9 @@ region seen face-on at a known depth, with the base-frame direction across its n
 gripper's fingers close along to take it by that side. A region that covers only part of an object has
 that part's narrow side.
 
-`MountedSimCamera(name, mount, body)` renders such a camera in the simulator from the tool pose of the same
-physics state. Its `view` is the mount, so a calibration replaces the mount the kernel believes.
-[`tests/test_parallax.py`](../tests/test_parallax.py) locates a block with it to within a
+In the simulator, `body.capture(mount, mounted=True)` renders such a camera, given its mount in the tool
+frame, and returns the image, depth and tool pose of one physics state; `mount.on(tool)` is the view to look
+with. [`tests/test_parallax.py`](../tests/test_parallax.py) locates a block this way to within a
 centimetre and picks it up there, with the kernel told nothing about the block. The
 [LIBERO runner](../examples/libero) uses the same functions for a simulated Panda's wrist camera.
 

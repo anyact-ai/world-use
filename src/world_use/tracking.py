@@ -78,7 +78,8 @@ class Tracking:
                 results.append(dict(self.lost[name]))
                 continue
             results.append(self._measure(name, frames[key], observation))
-        return results
+        # A tracker that stopped partway withdrew what this call measured before it, too.
+        return [dict(self.lost[name]) if name in self.lost else r for name, r in zip(targets, results, strict=True)]
 
     def _measure(self, name, frame, observation) -> dict:
         if observation.status != "tracked":

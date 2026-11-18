@@ -168,7 +168,8 @@ class View:
     """A pinhole camera: its pose in the base frame (x right, y down, z along the view) and its intrinsics.
 
     A negative focal length describes an image published mirrored (fx) or with its rows flipped (fy), so
-    that pixels and points still convert both ways without the caller turning the image first.
+    that pixels and points still convert both ways without the caller turning the image first. The
+    principal point is then the mirrored one too: width - 1 - cx, or height - 1 - cy.
     """
     T: np.ndarray
     fx: float
@@ -387,21 +388,6 @@ class SimCamera(Camera):
         image, distance, tool, timestamp = self.body.capture(self.lens)
         return Frame(image, self.name, timestamp=timestamp, view=view, depth=distance, calibration=revision,
                      tool=tool)
-
-
-class MountedSimCamera(SimCamera):
-    """A simulated camera fixed to the tool. Its lens and its `view` are in the tool frame: the true mount
-    and the one the kernel believes. Each frame carries that view placed at the tool pose of the same
-    physics state."""
-
-    def snap(self, k) -> Image.Image:
-        return self.capture(k).image
-
-    def capture(self, k, *, depth=False) -> Frame:
-        mount, revision = self._calibration
-        image, distance, tool, timestamp = self.body.capture(self.lens, mounted=True)
-        return Frame(image, self.name, timestamp=timestamp, view=mount.on(tool),
-                     depth=distance if depth else None, calibration=revision, tool=tool)
 
 
 def equirect_dirs(u, v) -> np.ndarray:
