@@ -1,4 +1,8 @@
-"""No paid calls: compare native execution and exercise real RGB tracking/procedures."""
+"""Validate a LIBERO runtime without paid calls and write the validation.json that run.py requires.
+
+Runs the runner's tests, checks that the raw arm acts as upstream's does, and runs the World Use tools
+on the real simulator and EdgeTAM with a scripted policy.
+"""
 
 from __future__ import annotations
 

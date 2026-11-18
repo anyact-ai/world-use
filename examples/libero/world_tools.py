@@ -1,4 +1,5 @@
-"""RGB-only World Use tool adapter; Sol supplies identity, poses and decisions."""
+"""World Use tools for the LIBERO arm, from RGB images alone. The model decides what each region is,
+where the hand goes and when to release."""
 
 from __future__ import annotations
 
@@ -174,14 +175,13 @@ def wrist_view(eef_state):
 
 
 def region_evidence(target, reference, after, hand_from=None):
-    """Did a selected region stay put while the hand measurably rose or sank?
+    """Whether a selected region stayed put while the hand rose or sank.
 
     Compares the region in two observations from FIXED_CAMERA, with no observation
     of it in between, against the hand's travel since hand_from (default: the reference).
     Returns None when they cannot be compared. An unchanged region did not travel with the
     hand: the hand holds something else or nothing, or the selection sits on another object.
-    A changed one establishes nothing, since occlusion and tracking drift change regions
-    too. Identity and retention stay the policy's judgement.
+    A changed one proves nothing, since occlusion and tracking drift change regions too.
     """
     old = next((t for t in reference.get("targets", []) if t.get("target") == target), None)
     new = next((t for t in after.get("targets", []) if t.get("target") == target), None)
