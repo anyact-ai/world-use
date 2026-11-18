@@ -1,5 +1,7 @@
 """Pinhole views, 360 cameras cut into them, and where the world lands in their pictures."""
+import os
 import subprocess
+import time
 
 import numpy as np
 import pytest
@@ -74,9 +76,6 @@ def test_a_known_point_lands_in_a_calibrated_cut_where_its_view_says():
 
 def test_file_frames_preserve_identity_age_and_rotation(tmp_path):
     """A capture app that died must not hand the policy an old picture as if it were now."""
-    import os
-    import time
-
     path = tmp_path / "camera.png"
     image = Image.new("RGB", (12, 8))
     image.putpixel((0, 0), (255, 0, 0))
@@ -100,8 +99,6 @@ def test_file_frames_preserve_identity_age_and_rotation(tmp_path):
     path.unlink()
     with pytest.raises(RuntimeError, match="no frame at"):
         camera.capture(None)
-    with pytest.raises(ValueError, match="rotate"):
-        from_config({"name": "side", "path": str(path), "rotate": 45}, World())
 
 
 def test_360_cut_preserves_source_frame_identity_and_age(tmp_path):
@@ -115,21 +112,24 @@ def test_360_cut_preserves_source_frame_identity_and_age(tmp_path):
     assert np.array_equal(one.image, cut.picture(None))
 
 
-@pytest.mark.parametrize("age", [float("nan"), float("inf"), True, 0])
-def test_file_camera_cannot_disable_freshness_with_an_invalid_age(tmp_path, age):
-    path = tmp_path / "old.png"
-    with pytest.raises(ValueError):
-        FileCamera("side", path, max_age_s=age)
-    with pytest.raises(ValueError):
-        from_config(dict(name="side", path=str(path), max_age_s=age), World())
+BAD_AGES = [float("nan"), float("inf"), True, 0]
 
 
-def test_camera_settings_cannot_be_silently_ignored():
-    for cfg in (dict(name="side", url="http://localhost/image", max_age_s=3),
-                dict(name="side", path="side.png", yaw_deg=30),
-                dict(name="side", path="side.png", projection="equirect", rotate=90)):
+def test_file_camera_cannot_disable_freshness_with_an_invalid_age():
+    for age in BAD_AGES:
         with pytest.raises(ValueError):
-            from_config(cfg, World())
+            FileCamera("side", "old.png", max_age_s=age)
+
+
+@pytest.mark.parametrize("cfg,field", [
+    *[(dict(path="old.png", max_age_s=age), "max_age_s") for age in BAD_AGES],
+    (dict(url="http://localhost/image", max_age_s=3), "max_age_s"),     # only file frames have an age limit
+    (dict(path="side.png", yaw_deg=30), "yaw_deg"),                      # only a 360 cut is aimed
+    (dict(path="side.png", projection="equirect", rotate=90), "rotate"),
+    (dict(path="side.png", rotate=45), "rotate")])
+def test_camera_settings_cannot_be_invalid_or_silently_ignored(cfg, field):
+    with pytest.raises(ValueError, match=field):
+        from_config(dict(name="side", **cfg), World())
 
 
 def test_command_camera_timeout_is_reported_to_the_client(monkeypatch, daemon):
@@ -143,10 +143,9 @@ def test_command_camera_timeout_is_reported_to_the_client(monkeypatch, daemon):
     monkeypatch.setattr(subprocess, "run", timed_out)
     with pytest.raises(RuntimeError, match=r"camera 'side'.*0\.25"):
         camera.capture(None)
-    with pytest.raises(DaemonError) as error:
+    with pytest.raises(DaemonError, match=r"side.*0\.25") as error:
         c.look("side")
     assert error.value.code == 502
-    assert "side" in error.value.body["error"] and "0.25" in error.value.body["error"]
 
 
 def test_a_mirrored_image_converts_pixels_and_points_both_ways():

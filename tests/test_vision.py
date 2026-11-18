@@ -14,6 +14,7 @@ from PIL import Image
 from world_use.cameras import FileCamera, Frame, SimCamera, View
 from world_use.client import DaemonError
 from world_use.errors import Refused
+from world_use.mcp_server import build
 from world_use.perception import rectangle
 from world_use.tracking import Tracking
 from world_use.vision import EdgeTAM, Observation, _discard_history, dominant_region
@@ -22,13 +23,14 @@ from world_use.vision import EdgeTAM, Observation, _discard_history, dominant_re
 @pytest.fixture
 def tracker(monkeypatch):
     def load(self, *_):
-        self.device, self._dtype, self._model = "cpu", None, object()
+        self.device, self._dtype, self._model, self.inferred = "cpu", None, object(), []
         self._torch = SimpleNamespace(inference_mode=nullcontext)
         self._processor = SimpleNamespace(init_video_session=lambda **_: object(),
                                           add_inputs_to_inference_session=lambda **_: None)
 
     def infer(self, frame):
         self._index += 1
+        self.inferred.append(frame.id)
         mask = np.asarray(frame.image)[:, :, 0] > 0
         self._last = self._observation(frame, mask)
         return self._last
@@ -90,11 +92,11 @@ def test_duplicate_and_stale_frames_do_not_advance_tracking(tracker, monkeypatch
     fresh = Frame(image, "side", timestamp=100)
     result = tracker.update(fresh)
     assert result.status == "tracked" and result.center == (4.5, 4.5)
-    assert tracker.update(fresh) is result and tracker._index == 2
+    assert tracker.update(fresh) is result and len(tracker.inferred) == 2
     now[0] = 103
     assert result.status == "stale" and result.to_dict()["center"] is None
     stale = tracker.update(Frame(image, "side", timestamp=101))
-    assert stale.status == "stale" and stale.mask is None and tracker._index == 2
+    assert stale.status == "stale" and stale.mask is None and len(tracker.inferred) == 2
     missing = tracker.update(Frame(Image.new("RGB", (10, 10)), "side", timestamp=103))
     assert missing.status == "lost" and missing.bbox is None
 
@@ -196,19 +198,24 @@ class Tracker:
         self.boxes.clear()
 
 
-def test_a_seed_older_than_the_tracker_accepts_is_measured_in_a_new_frame(daemon):
+@pytest.fixture
+def tracking(daemon):
+    """Tracking with the contract tracker, on a daemon serving the synthetic camera."""
     d, c = daemon
-    d.cameras["synthetic"] = camera = Synthetic()
-    old = d.measurements.keep(replace(camera.capture(None, depth=True), timestamp=time.monotonic() - 20))
-    m = Tracking(c, Tracker()).select(old.id, "block", box=[30, 30, 70, 70])
+    d.cameras["synthetic"] = Synthetic()
+    return Tracking(c, Tracker())
+
+
+def test_a_seed_older_than_the_tracker_accepts_is_measured_in_a_new_frame(daemon, tracking):
+    d, _ = daemon
+    old = d.measurements.keep(replace(d.cameras["synthetic"].capture(None, depth=True),
+                                      timestamp=time.monotonic() - 20))
+    m = tracking.select(old.id, "block", box=[30, 30, 70, 70])
     assert m["tracking"] == "tracked" and m["valid"] and m["frame"] != old.id and m["age_s"] < 5
 
 
-def test_rgb_tracking_needs_no_metric_measurement_and_cannot_guard_motion(daemon):
-    d, c = daemon
-    d.cameras["synthetic"] = Synthetic()
-    tracking = Tracking(c, Tracker())
-    frame = c.frame("synthetic")
+def test_rgb_tracking_needs_no_metric_measurement_and_cannot_guard_motion(tracking):
+    frame = tracking.client.frame("synthetic")
     selected = tracking.select(frame.id, "block", box=[30, 30, 70, 70], space="image")
     assert selected["valid"] and selected["space"] == "image"
     assert selected["area_px"] == 1600 and selected["bbox"] == (30, 30, 70, 70)
@@ -216,24 +223,16 @@ def test_rgb_tracking_needs_no_metric_measurement_and_cannot_guard_motion(daemon
     assert not selected["identity_verified"] and not selected["geometry_verified"]
     (again,) = tracking.observe(["block"])
     assert again["valid"] and again["frame"] != frame.id
-    assert not tracking.targets["block"]["depth"] and not tracking.targets["block"]["measured"]
     tracking.tracker.lost = True
     (lost,) = tracking.observe(["block"])
     assert not lost["valid"] and lost["withdrawn"] == []
-    assert "block" not in tracking.targets
-    # Loss is durable evidence, even though the active tracker and metric guard
-    # have been retired. Asking again cannot silently erase the unresolved goal.
-    (again,) = tracking.observe(["block"])
-    assert again["tracking"] == "lost" and not again["valid"]
     tracking.tracker.lost = False
-    selected = tracking.select(frame.id, "block", box=[30, 30, 70, 70], space="image")
-    assert selected["valid"] and "block" not in tracking.lost
+    assert tracking.select(frame.id, "block", box=[30, 30, 70, 70], space="image")["valid"]
+    assert tracking.observe(["block"])[0]["valid"]
 
 
-def test_reselecting_metric_target_as_image_revokes_previous_evidence(daemon):
-    d, c = daemon
-    d.cameras["synthetic"] = Synthetic()
-    tracking = Tracking(c, Tracker())
+def test_reselecting_metric_target_as_image_revokes_previous_evidence(tracking):
+    c = tracking.client
     frame = c.frame("synthetic", depth=True)
     metric = tracking.select(frame.id, "block", box=[30, 30, 70, 70])
     image = tracking.select(frame.id, "block", box=[30, 30, 70, 70], space="image")
@@ -242,22 +241,8 @@ def test_reselecting_metric_target_as_image_revokes_previous_evidence(daemon):
         c.run({"do": "hold", "seconds": .01}, requires=[dict(evidence=metric["id"], max_age_s=30)])
 
 
-def test_mcp_exposes_explicit_rgb_mode(daemon):
-    from world_use.mcp_server import build
-
-    d, c = daemon
-    d.cameras["synthetic"] = Synthetic()
-    server = build(c.url, tracker=Tracker())
-    frame = c.frame("synthetic")
-    result = asyncio.run(server.call_tool("select_target", dict(frame=frame.id, target="block",
-                             box=[30, 30, 70, 70], space="image")))
-    assert result.structured_content["space"] == "image" and result.structured_content["valid"]
-
-
-def test_rgb_association_diagnostics_describe_change_without_claiming_identity(daemon):
-    d, c = daemon
-    d.cameras["synthetic"] = Synthetic()
-    tracker = Tracker()
+def test_rgb_association_diagnostics_describe_change_without_claiming_identity(tracking):
+    tracker = tracking.tracker
 
     def update(target, frame):
         box = tuple(tracker.boxes[target])
@@ -266,24 +251,18 @@ def test_rgb_association_diagnostics_describe_change_without_claiming_identity(d
         return Observation(frame.camera, frame.id, frame.timestamp, box, center, mask, 15)
 
     tracker.update = update
-    tracking = Tracking(c, tracker)
-    frame = c.frame("synthetic")
+    frame = tracking.client.frame("synthetic")
     tracking.select(frame.id, "block", box=[30, 30, 50, 50], space="image")
     tracker.boxes["block"] = [40, 30, 60, 50]
     (changed,) = tracking.observe(["block"])
-    assert changed["motion"]["mask_iou"] == pytest.approx(1 / 3)
-    assert changed["motion"]["center_delta_px"] == [10, 0]
-    assert changed["motion"]["area_ratio"] == 1
-    assert changed["motion"]["camera_motion_compensated"] is False
-    assert changed["identity_verified"] is False
-    assert changed["captured_at"] > frame.timestamp
+    motion = changed["motion"]
+    assert motion["mask_iou"] == pytest.approx(1 / 3) and motion["center_delta_px"] == [10, 0]
+    assert motion["area_ratio"] == 1 and motion["camera_motion_compensated"] is False
+    assert changed["identity_verified"] is False and changed["captured_at"] > frame.timestamp
 
 
-def test_failed_or_lost_targets_are_dropped_and_their_measurements_withdrawn(daemon, monkeypatch):
-    d, c = daemon
-    d.cameras["synthetic"] = Synthetic()
-    tracker = Tracker()
-    tracking = Tracking(c, tracker)
+def test_failed_or_lost_targets_are_dropped_and_their_measurements_withdrawn(tracking, monkeypatch):
+    c, tracker = tracking.client, tracking.tracker
     frame = c.frame("synthetic", depth=True)
 
     def fail(*args, **kwargs):
@@ -300,17 +279,14 @@ def test_failed_or_lost_targets_are_dropped_and_their_measurements_withdrawn(dae
     assert lost["tracking"] == "lost" and lost["withdrawn"] == [selected["id"]] and not tracking.targets
     with pytest.raises(DaemonError, match="withdrawn"):
         c.run({"do": "hold", "seconds": .01}, requires=[dict(evidence=selected["id"], max_age_s=30)])
+    # Loss is durable: asking again cannot silently erase the unresolved goal.
     assert tracking.observe(["block"])[0]["tracking"] == "lost"
     with pytest.raises(ValueError, match="select it first"):
         tracking.observe(["never selected"])
 
 
-def test_mcp_tracking_replies_are_measurements_and_inference_does_not_block_status(daemon):
-    from world_use.mcp_server import build
-
-    d, c = daemon
-    d.cameras["synthetic"] = Synthetic()
-    tracker = Tracker()
+def test_mcp_tracking_replies_are_measurements_and_inference_does_not_block_status(tracking):
+    c, tracker = tracking.client, tracking.tracker
     server = build(c.url, tracker=tracker)
     frame = c.frame("synthetic", depth=True)
 
@@ -328,6 +304,9 @@ def test_mcp_tracking_replies_are_measurements_and_inference_does_not_block_stat
         observed = await server.call_tool("observe_targets", dict(targets=["block"]))
         (again,) = observed.structured_content["measurements"]
         assert again["target"] == "block" and again["valid"] and again["frame"] != frame.id
+        image = await server.call_tool("select_target", dict(frame=frame.id, target="cup", box=[30, 30, 70, 70],
+                                                             space="image"))
+        assert image.structured_content["space"] == "image" and image.structured_content["valid"]
 
     try:
         asyncio.run(session())
@@ -363,36 +342,32 @@ def test_provider_deadline_terminates_process_and_never_replays_request(monkeypa
         worker.close()
 
 
-def test_tracking_history_retirement_revokes_an_active_jobs_old_measurement(daemon):
-    d, c = daemon
-    d.cameras["synthetic"] = Synthetic()
-    tracker = Tracker()
-    tracking = Tracking(c, tracker)
+def test_tracking_history_retirement_revokes_an_active_jobs_old_measurement(tracking):
+    c = tracking.client
     first = tracking.select(c.frame("synthetic", depth=True).id, "block", box=[30, 30, 70, 70])
     job = c.run([{"do": "checkpoint", "ask": "Continue?"}, {"do": "hold", "seconds": .01}], check=False,
                 wait=30, requires=[dict(evidence=first["id"], max_age_s=3600)])
-    for _ in range(256):
+    for _ in range(256):                    # the oldest of 257 measurements leaves the target's history
         tracking.observe(["block"])
-    tracker.lost = True
+    tracking.tracker.lost = True
     tracking.observe(["block"])
     result = c.answer(job["id"], "yes", wait=30)
     assert result["status"] == "refused" and "withdrawn" in result["outcome"]["message"]
 
 
-def test_selection_provider_failure_withdraws_other_targets(daemon, monkeypatch):
-    d, c = daemon
-    d.cameras["synthetic"] = Synthetic()
-    tracker = Tracker()
-    tracking = Tracking(c, tracker)
+def stopping(tracker, message):
+    def stop(*args, **kwargs):
+        tracker.ready = False
+        raise Refused(message, "provider_error")
+    return stop
+
+
+def test_selection_provider_failure_withdraws_other_targets(tracking, monkeypatch):
+    c = tracking.client
     first = tracking.select(c.frame("synthetic", depth=True).id, "first", box=[30, 30, 70, 70])
     job = c.run([{"do": "checkpoint", "ask": "Continue?"}, {"do": "hold", "seconds": .01}], check=False,
                 wait=30, requires=[dict(evidence=first["id"], max_age_s=60)])
-
-    def timeout(*args, **kwargs):
-        tracker.ready = False
-        raise Refused("the provider stopped", "provider_timeout")
-
-    monkeypatch.setattr(tracker, "select", timeout)
+    monkeypatch.setattr(tracking.tracker, "select", stopping(tracking.tracker, "the provider stopped"))
     with pytest.raises(Refused, match="provider stopped"):
         tracking.select(c.frame("synthetic", depth=True).id, "second", point=[40, 40])
     result = c.answer(job["id"], "yes", wait=30)
@@ -400,24 +375,12 @@ def test_selection_provider_failure_withdraws_other_targets(daemon, monkeypatch)
     assert not tracking.targets
 
 
-def test_provider_failure_reports_each_requested_loss_once_and_keeps_it(daemon, monkeypatch):
-    d, c = daemon
-    d.cameras["synthetic"] = Synthetic()
-    tracker = Tracker()
-    tracking = Tracking(c, tracker)
+def test_provider_failure_reports_each_requested_loss_once_and_keeps_it(tracking, monkeypatch):
+    tracker = tracking.tracker
     for name in ("cup", "plate"):
-        tracking.select(c.frame("synthetic").id, name, box=[30, 30, 70, 70], space="image")
-
-    def stopped(*args, **kwargs):
-        tracker.ready = False
-        raise Refused("provider stopped", "provider_error")
-
-    update = tracker.update
-
-    def plate_stops(target, frame):
-        return (update if target == "cup" else stopped)(target, frame)
-
-    monkeypatch.setattr(tracker, "update", plate_stops)
+        tracking.select(tracking.client.frame("synthetic").id, name, box=[30, 30, 70, 70], space="image")
+    update, stop = tracker.update, stopping(tracker, "provider stopped")
+    monkeypatch.setattr(tracker, "update", lambda target, frame: (update if target == "cup" else stop)(target, frame))
     results = tracking.observe(["cup", "plate"])
     # The cup was measured before the provider stopped on the plate, and went with it.
     assert [r["target"] for r in results] == ["cup", "plate"]

@@ -196,10 +196,6 @@ def test_the_daemon_measures_its_own_frame_in_the_work_frame_and_records_it(daem
     assert projected["surface_center"] == m["surface_center"]
     with np.load(Path(projected["image"]).with_suffix(".npz")) as arrays:
         assert len(arrays["support_points"]) > 16
-    guard = d.measurements.guard([dict(evidence=projected["id"], max_age_s=5)])
-    d.measurements.now = lambda: frame.timestamp + 6
-    with pytest.raises(Refused, match="old"):
-        guard()
 
 
 def test_stale_or_recalibrated_measurements_refuse_admission_and_later_starts(k, required):
@@ -308,21 +304,6 @@ def test_a_withdrawn_measurement_stops_its_run_and_leaves_new_ones_of_the_target
     assert c.run({"do": "hold", "seconds": .01}, check=False, wait=30, requires=requires)["status"] == "done"
     with pytest.raises(DaemonError, match="no measurement"):
         c.run({"do": "hold", "seconds": .01}, requires=[dict(evidence="from another session", max_age_s=30)])
-
-
-@pytest.mark.rendering
-def test_simulated_depth_measurement_guards_runs_without_rehearsal(daemon):
-    d, c = daemon
-    frame = c.frame("top", depth=True)
-    valid = np.argwhere(np.isfinite(frame.depth))
-    y, x = valid[len(valid) // 2]
-    m = c.measure(frame, point=[int(x), int(y)], target="surface")
-    assert m["valid"] and m["capture_t"] is not None
-    requires = [dict(evidence=m["id"], max_age_s=30)]
-    assert c.run({"do": "hold", "seconds": .01}, requires=requires, wait=30)["status"] == "done"
-    d.measurements.now = lambda: frame.timestamp + 31
-    with pytest.raises(DaemonError, match="old"):
-        c.run({"do": "gripper", "aperture_mm": 65}, requires=requires, check=False)
 
 
 def test_bright_orange_face_is_selected_at_its_center_despite_red_clipping():

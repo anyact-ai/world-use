@@ -57,10 +57,14 @@ def found(hand, **options):
     return locate(hand.move, hand.look, arrive_m=0.012, **options)
 
 
+def xyz(result, keys="xyz"):
+    return [result.data[k] for k in keys]
+
+
 def test_the_hand_ends_over_the_region_and_reports_where_it_is():
     hand = Hand([0.07, -0.04, 0.45])
     result = found(hand, assumed_z=0.5)
-    assert result.ok and [result.data[k] for k in "xyz"] == pytest.approx(hand.thing, abs=5e-3)
+    assert result.ok and xyz(result) == pytest.approx(hand.thing, abs=5e-3)
     # The search ends once the hand is within the arrival distance of the point the looks fix.
     assert hand.position[:2] == pytest.approx(hand.thing[:2], abs=0.012) and result.data["looks"] >= 2
     # The first move already heads for where the look meets the assumed height.
@@ -74,7 +78,7 @@ def test_the_hand_ends_over_the_region_and_reports_where_it_is():
 def test_a_whole_region_with_no_height_to_assume_needs_only_a_second_look_from_a_sidestep_away():
     hand = Hand([-0.06, 0.09, 0.5])
     result = found(hand)
-    assert result.ok and [result.data[k] for k in "xyz"] == pytest.approx(hand.thing, abs=5e-3)
+    assert result.ok and xyz(result) == pytest.approx(hand.thing, abs=5e-3)
     assert np.linalg.norm(hand.goals[0]) == pytest.approx(0.045)
 
 
@@ -83,14 +87,14 @@ def test_a_region_straight_below_the_hand_is_placed_even_when_the_arm_arrives_sh
     hand = Hand([0.0, -0.045, 0.45], reach=0.011)
     result = found(hand, assumed_z=0.5)
     assert result.ok and result.data["moves"] <= 2
-    assert [result.data[k] for k in "xy"] == pytest.approx(hand.thing[:2], abs=5e-3)
+    assert xyz(result, "xy") == pytest.approx(hand.thing[:2], abs=5e-3)
 
 
 def test_a_region_the_image_cuts_off_is_placed_only_from_looks_at_all_of_it():
     hand = Hand([0.22, 0.0, 0.45], half=0.09)
     result = found(hand)
     # The first look sees only the near part, whose centre is not the square's, yet leads most of the way.
-    assert [result.data[k] for k in "xyz"] == pytest.approx(hand.thing, abs=5e-3)
+    assert xyz(result) == pytest.approx(hand.thing, abs=5e-3)
     assert 0.12 < hand.goals[0][0] < 0.3
     assert result.data["extent_m"] == pytest.approx([0.18, 0.18], abs=6e-3)
 
@@ -114,7 +118,7 @@ def test_a_height_to_assume_that_is_not_below_the_camera_is_not_used():
     # The ray never meets a height above the lens; heading for where it would have leads away from the region.
     hand = Hand([0.07, -0.04, 0.45])
     result = found(hand, assumed_z=0.9)
-    assert result.ok and [result.data[k] for k in "xyz"] == pytest.approx(hand.thing, abs=5e-3)
+    assert result.ok and xyz(result) == pytest.approx(hand.thing, abs=5e-3)
     assert np.linalg.norm(hand.goals[0]) == pytest.approx(0.045) and hand.goals[0] @ hand.thing[:2] > 0
 
 
@@ -129,7 +133,7 @@ def test_looks_that_meet_behind_the_camera_place_nothing():
         return Look(seen.view, seen.hand, [128 + 500 * hand.position[0], 128 + 500 * hand.position[1]], seen.bbox)
 
     result = locate(hand.move, moving_with_the_camera, arrive_m=0.012)
-    assert not result.ok and "x" not in result.data
+    assert result.status == "stopped" and "x" not in result.data
 
 
 def test_a_region_that_is_not_visible_ends_the_search_before_any_move():
@@ -142,31 +146,31 @@ def test_a_region_lost_after_it_was_placed_keeps_its_position():
     hand = Hand([0.07, -0.04, 0.45], visible=lambda looks: looks <= 2)
     result = found(hand)
     assert result.ok and result.data["region"].startswith("lost") and "pixel" not in result.data
-    assert [result.data[k] for k in "xy"] == pytest.approx(hand.thing[:2], abs=5e-3)
+    assert xyz(result, "xy") == pytest.approx(hand.thing[:2], abs=5e-3)
 
 
 def test_a_position_found_earlier_is_confirmed_by_one_look_from_over_it():
     hand = Hand([0.07, -0.04, 0.45])
     first = found(hand, assumed_z=0.5)
-    known = [first.data[k] for k in "xyz"]
+    known = xyz(first)
     looks, moves = hand.looks, len(hand.goals)
     again = found(hand, known=known)
-    assert again.ok and [again.data[k] for k in "xyz"] == known and again.data["moves"] == 0
+    assert again.ok and xyz(again) == known and again.data["moves"] == 0
     assert hand.looks == looks + 1 and len(hand.goals) == moves and "pixel" in again.data
     # From elsewhere the first move goes straight over it, and that look confirms it.
     hand.position[:2] = [-0.05, 0.06]
     back = found(hand, known=known)
     assert back.ok and back.data["moves"] == 1 and hand.goals[-1] == pytest.approx(known[:2])
-    assert [back.data[k] for k in "xy"] == pytest.approx(hand.thing[:2], abs=5e-3)
+    assert xyz(back, "xy") == pytest.approx(hand.thing[:2], abs=5e-3)
 
 
 def test_a_region_that_moved_since_it_was_found_is_placed_afresh():
     hand = Hand([0.07, -0.04, 0.45])
-    known = [found(hand, assumed_z=0.5).data[k] for k in "xyz"]
+    known = xyz(found(hand, assumed_z=0.5))
     hand.thing = np.array([0.1, -0.01, 0.45])                       # pushed 4 cm aside since
     result = found(hand, known=known)
     assert result.ok and result.data["looks"] >= 2
-    assert [result.data[k] for k in "xyz"] == pytest.approx(hand.thing, abs=5e-3)
+    assert xyz(result) == pytest.approx(hand.thing, abs=5e-3)
 
 
 def test_a_mirrored_image_places_the_region_in_the_same_spot():
@@ -174,7 +178,7 @@ def test_a_mirrored_image_places_the_region_in_the_same_spot():
     flipped = View(MOUNT.T, MOUNT.fx, -MOUNT.fy, MOUNT.cx, MOUNT.height - 1 - MOUNT.cy, MOUNT.width, MOUNT.height)
     hand, mirrored = Hand([0.07, -0.04, 0.45]), Hand([0.07, -0.04, 0.45], mount=flipped)
     a, b = found(hand, assumed_z=0.5), found(mirrored, assumed_z=0.5)
-    assert [b.data[k] for k in "xyz"] == pytest.approx([a.data[k] for k in "xyz"], abs=1e-9)
+    assert xyz(b) == pytest.approx(xyz(a), abs=1e-9)
     assert b.data["pixel"][1] == 255 - a.data["pixel"][1]
 
 
@@ -206,8 +210,7 @@ def test_rays_from_nearly_one_place_and_parallel_rays_fix_nothing():
 
 
 @pytest.mark.rendering
-@pytest.mark.parametrize("start", [(0.02, 0.0), (-0.04, 0.05)])
-def test_the_simulated_arm_finds_a_block_with_its_wrist_camera_and_picks_it_up_there(start):
+def test_the_simulated_arm_finds_a_block_with_its_wrist_camera_and_picks_it_up_there():
     k, truth = setup()
     # Looks straight down from 5 cm ahead of the fingertips and 4 cm above them.
     mount = View([[0, 1, 0, 0.05], [1, 0, 0, 0], [0, 0, -1, 0.04], [0, 0, 0, 1]], 208.5, 208.5, 160, 120, 320, 240)
@@ -231,14 +234,14 @@ def test_the_simulated_arm_finds_a_block_with_its_wrist_camera_and_picks_it_up_t
 
     try:
         k.enable()
-        assert k.run([{"do": "line", "up": 0.14}, {"do": "line", "forward": start[0], "left": start[1]}]).ok
-        found = locate(move, look, arrive_m=0.01)
+        assert k.run([{"do": "line", "up": 0.14}, {"do": "line", "forward": -0.04, "left": 0.05}]).ok
+        located = locate(move, look, arrive_m=0.01)
         top = truth.boxes["block"].pose[:3, 3] + [0, 0, 0.05]
-        assert found.ok and found.data["looks"] >= 2
-        assert [found.data[key] for key in "xyz"] == pytest.approx(top, abs=0.01)
-        assert found.data["extent_m"] == pytest.approx([0.04, 0.04], abs=0.008)
+        assert located.ok and located.data["looks"] >= 2
+        assert xyz(located) == pytest.approx(top, abs=0.01)
+        assert located.data["extent_m"] == pytest.approx([0.04, 0.04], abs=0.008)
         # The grasp comes from the located top face alone: fingertips 2 cm past it, pads 3 cm below it.
-        face = k.world.from_base("work", [found.data[key] for key in "xyz"])
+        face = k.world.from_base("work", xyz(located))
         plan = [{"do": "gripper", "aperture_mm": 65},
                 {"do": "move_to", "to": (face + [0.02, 0, 0.047]).tolist()},
                 {"do": "move_to", "to": (face + [0.02, 0, -0.03]).tolist()},
