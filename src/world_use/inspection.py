@@ -1,11 +1,10 @@
-"""Shared inspection of saved evidence and an explicitly simulation-only reload owner.
+"""Read saved runs for `wu inspect` and `wu view`, and rebuild a simulated scene in place.
 
 ``SimulationWorkspace(path, factory, scene_revision=revision)`` calls
-``factory(fresh_output) -> SimulationSession``. ``reset(name)`` rebuilds with the
-same factory; ``reload(factory, scene_revision=revision, name=name)`` tries a new
-one. Factories own cleanup if construction raises. Both operations require an
-idle, confirmed unpowered current session and candidate. Ordinary task source
-stays ordinary Python; this is not a plugin loader or a hardware control path.
+``factory(fresh_output)`` for a SimulationSession. ``reset(name)`` builds a new episode
+with the same factory; ``reload(factory, scene_revision=revision, name=name)`` tries a new
+one. A factory must clean up after itself if it raises. Both refuse unless the current
+session and the new one are simulations, idle, with power confirmed off.
 """
 from __future__ import annotations
 
@@ -25,7 +24,7 @@ def _read(path: Path) -> dict:
 
 
 def artifact(root: Path, ref: dict) -> Path:
-    """Resolve a recorded artifact without escaping its evidence directory or losing its hash."""
+    """The path of a recorded artifact; refuse one outside root, or whose bytes no longer match its sha256."""
     path = (root / ref["path"]).resolve()
     if not path.is_relative_to(root.resolve()):
         raise ValueError("inspection artifact escapes its evidence directory")
@@ -44,7 +43,11 @@ class Inspection:
 
 
 def inspect(path: Path, *, case: str | None = None, phase: int | None = None) -> Inspection:
-    """Read the same revision and evidence for a person or agent. Never connect to a robot."""
+    """Find a saved run's parts and build the report `wu inspect` prints and `wu view` shows.
+
+    path can be a flight record, a recorded task, an episode, an evaluation suite or one of its trials,
+    a scene validation or a workspace. Never connects to a robot.
+    """
     root = Path(path).expanduser().resolve()
     if root.is_file():
         root = root.parent
@@ -90,7 +93,7 @@ def inspect(path: Path, *, case: str | None = None, phase: int | None = None) ->
         result.flight = root
         if (root / "external-scene.json").exists():
             external = _read(root / "external-scene.json")
-            # This legacy marker deliberately points one directory up; validate the expected layout.
+            # The marker points from the flight record up to its episode; accept only that.
             if external != {"path": "..", "format": "mujoco-v1"}:
                 raise ValueError("unsupported external-scene marker")
             result.episode = root.parent
@@ -127,7 +130,8 @@ def inspect(path: Path, *, case: str | None = None, phase: int | None = None) ->
 
 
 def task_trace(task: Path, *, phase: int | None = None) -> dict:
-    """Index phases; expand one phase's evidence on demand, retaining unknown call outcomes."""
+    """A recorded task's phases. With phase, also that phase's events, nested phases included, the
+    artifacts they reference, the job IDs they received and the calls that have no recorded reply."""
     manifest = _read(task / "invocation.json")
     events = read_trace(task)
     phases = {}
@@ -183,7 +187,10 @@ def task_trace(task: Path, *, phase: int | None = None) -> dict:
 
 
 def frames(episode: Path, *, seen: set[str] | None = None):
-    """Exact policy frame replies, on their own capture-time clock, not annotated look images."""
+    """The raw frames a task received, each with its capture time in seconds from the task start.
+
+    These are the frames as the policy got them, not the annotated pictures `look` saves.
+    """
     from .cameras import Frame
     task = episode / "task"
     if not (task / "started.json").exists():
@@ -213,11 +220,10 @@ def frames(episode: Path, *, seen: set[str] | None = None):
 
 
 class SimulationWorkspace:
-    """One replaceable, independently recorded simulation; failed builds retain the active scene.
+    """A simulation that can be rebuilt, each build recorded as its own episode.
 
-    ``wu view workspace --follow`` watches the saved pointer. The viewer remains
-    read-only; reset/reload are explicit Python calls made by the scene owner.
-    Do not issue concurrent control calls while resetting or reloading.
+    A failed build keeps the current one. inspection.json points at the current episode, and
+    ``wu view WORKSPACE --follow`` follows it. Do not send control calls while resetting or reloading.
     """
 
     def __init__(self, path: Path, factory: Callable[[Path], SimulationSession], *, scene_revision: str):
@@ -256,7 +262,7 @@ class SimulationWorkspace:
 
     def reload(self, factory: Callable[[Path], SimulationSession], *, scene_revision: str,
                name: str = "reload") -> SimulationSession:
-        """Build first, validate both sides, then retire the old episode. No implicit motion or enable."""
+        """Build the new session, check both are idle and unpowered, then close the old one. Nothing moves."""
         if not re.fullmatch(r"[0-9a-f]{64}", scene_revision):
             raise ValueError("scene_revision must be a SHA-256 scene identity")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name):

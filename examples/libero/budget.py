@@ -1,4 +1,6 @@
-"""Fail-closed, single-process Azure transport with a durable reservation journal."""
+"""The HTTP transport of one run.py process. It reserves an overestimate of each Azure request's cost
+before sending it, refuses a request over the caps or after one whose usage is unknown, and journals
+every request to disk."""
 
 from __future__ import annotations
 
@@ -87,7 +89,7 @@ class AzureBudget(httpx.BaseTransport):
         self.deadline = time.monotonic() + seconds
         self.max_output_tokens, self.sleep = max_output_tokens, sleep
         # An explicit HTTPTransport otherwise ignores HTTPX's client proxy defaults. A new connection per
-        # request: each stopped request of the last evaluation had gone out on an idle pooled connection
+        # request: each stopped request of the ee263a4 evaluation had gone out on an idle pooled connection
         # that failed after sending, which leaves usage unknown, while a connection that cannot be made
         # fails before sending and is tried again.
         self.inner = inner or httpx.HTTPTransport(
@@ -223,7 +225,7 @@ class AzureBudget(httpx.BaseTransport):
             raise BudgetStop(str(exc) if isinstance(exc, BudgetStop) else "request failed; usage unknown") from None
 
     def close(self):
-        pass  # Each policy owns a client; the campaign owns this shared transport.
+        pass  # A policy's client closes its transport; the arms of a pair share this one until dispose().
 
     def dispose(self):
         self.inner.close()

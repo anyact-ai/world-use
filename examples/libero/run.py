@@ -1,4 +1,7 @@
-"""Fresh matched LIBERO pilot; requires offline validation and explicit paid admission."""
+"""Run one matched LIBERO-10 pair with paid model calls: the model alone, then with World Use.
+
+Needs a passing validation.json from validate.py for these runner sources and this runtime.
+"""
 
 from __future__ import annotations
 

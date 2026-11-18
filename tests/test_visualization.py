@@ -13,11 +13,17 @@ from world_use.visualization import RecordReader, view
 from world_use.world import World
 
 
-def samples(times, angles):
+def save_chunk(folder, index, times, angles):
+    """Commit telemetry chunk `index` of a two-joint record: the shoulder at `angles`, the elbow at zero."""
     tape = Tape(2)
     for t, angle in zip(times, angles, strict=True):
         tape.add(t, True, True, 1, [0, 0], [angle, 0], [1, 2], [30, 40], None, None, None)
-    return tape.arrays()
+    (folder / "tape").mkdir(exist_ok=True)
+    save_arrays(folder / f"tape/{index:06d}.npz", tape.arrays())
+
+
+def closed(t=0.):
+    return json.dumps(dict(seq=1, t=t, kind="closed", level="info", message="closed")) + "\n"
 
 
 @pytest.fixture
@@ -38,15 +44,14 @@ def run_folder(tmp_path):
 
 def test_follow_reader_retains_partial_events_and_reads_new_chunks_once(run_folder):
     folder = run_folder
-    (folder / "tape").mkdir()
     event = json.dumps(dict(seq=1, t=0, kind="connected", level="info", message="ready")) + "\n"
     (folder / "events.jsonl").write_text(event[:20])
-    save_arrays(folder / "tape/000000.npz", samples([0], [0]))
+    save_chunk(folder, 0, [0], [0])
     reader = RecordReader(folder)
     a, events = reader.poll()
     assert a["t"].tolist() == [0] and events == []
     (folder / "events.jsonl").write_text(event)
-    save_arrays(folder / "tape/000001.npz", samples([1], [.5]))
+    save_chunk(folder, 1, [1], [.5])
     a, events = reader.poll()
     assert a["t"].tolist() == [1] and events[0]["message"] == "ready"
     assert reader.poll() == ({}, [])
@@ -89,8 +94,7 @@ def test_export_preserves_measurements_world_changes_and_camera_timing_after_mov
     from world_use import bodies
 
     monkeypatch.setattr(bodies, "make", lambda *a, **kw: pytest.fail("viewer opened a robot"))
-    (run_folder / "tape").mkdir()
-    save_arrays(run_folder / "tape/000000.npz", samples([0, .1, .2], [0, np.pi / 2, 0]))
+    save_chunk(run_folder, 0, [0, .1, .2], [0, np.pi / 2, 0])
     (run_folder / "views").mkdir()
     Image.new("RGB", (16, 16), "red").save(run_folder / "views/camera.png")
     events = [dict(seq=1, t=.1, kind="look", level="info", message="captured",
@@ -126,18 +130,16 @@ def test_follow_waits_for_the_final_chunk_after_close(run_folder, monkeypatch):
     pytest.importorskip("rerun")
     from world_use import visualization
 
-    (run_folder / "tape").mkdir()
-    save_arrays(run_folder / "tape/000000.npz", samples([0], [0]))
+    save_chunk(run_folder, 0, [0], [0])
     polls = 0
 
     def advance(_):
         nonlocal polls
         polls += 1
         if polls == 1:
-            (run_folder / "events.jsonl").write_text(json.dumps(
-                dict(seq=1, t=.2, kind="closed", level="info", message="closed")) + "\n")
+            (run_folder / "events.jsonl").write_text(closed(.2))
         elif polls == 5:
-            save_arrays(run_folder / "tape/000001.npz", samples([.1, .2], [.5, 1]))
+            save_chunk(run_folder, 1, [.1, .2], [.5, 1])
         elif polls == 7:
             save_summary(run_folder / "complete.json",
                          dict(parts=2, events_bytes=(run_folder / "events.jsonl").stat().st_size))
@@ -154,13 +156,12 @@ def test_follow_waits_for_the_final_chunk_after_close(run_folder, monkeypatch):
 def test_reader_observes_completion_and_final_chunks_in_one_snapshot(run_folder, monkeypatch):
     from world_use import visualization
 
-    (run_folder / "tape").mkdir()
-    save_arrays(run_folder / "tape/000000.npz", samples([0], [0]))
+    save_chunk(run_folder, 0, [0], [0])
     read = visualization.read_chunks
 
     def close_during_poll(paths):
         a = read(paths)
-        save_arrays(run_folder / "tape/000001.npz", samples([.1], [.5]))
+        save_chunk(run_folder, 1, [.1], [.5])
         save_summary(run_folder / "complete.json", dict(parts=2, events_bytes=0))
         return a
 
@@ -174,9 +175,8 @@ def test_reader_observes_completion_and_final_chunks_in_one_snapshot(run_folder,
 
 @pytest.mark.parametrize("parts_delta, bytes_delta", [(1, 0), (-1, 0), (0, 1), (0, -1)])
 def test_reader_does_not_finish_with_inconsistent_completion_counts(run_folder, parts_delta, bytes_delta):
-    (run_folder / "tape").mkdir()
-    save_arrays(run_folder / "tape/000000.npz", samples([0], [0]))
-    line = json.dumps(dict(seq=1, t=0, kind="closed", level="info", message="closed")) + "\n"
+    save_chunk(run_folder, 0, [0], [0])
+    line = closed()
     (run_folder / "events.jsonl").write_text(line)
     save_summary(run_folder / "complete.json", dict(parts=1 + parts_delta, events_bytes=len(line) + bytes_delta))
     reader = RecordReader(run_folder)
@@ -189,7 +189,7 @@ def test_follow_finishes_an_empty_run_only_after_its_final_events(run_folder, mo
     from world_use import visualization
 
     log = run_folder / "events.jsonl"
-    line = json.dumps(dict(seq=1, t=.1, kind="closed", level="info", message="closed")) + "\n"
+    line = closed(.1)
     log.write_text(line[:20])
     save_summary(run_folder / "complete.json", dict(parts=0, events_bytes=len(line.encode())))
     polls = 0
@@ -217,8 +217,7 @@ def test_a_gripper_the_viewer_cannot_move_is_drawn_static_with_a_warning(run_fol
     <limit lower="0" upper="1" effort="1" velocity="1"/>
   </joint>
 </robot>"""))
-    (run_folder / "tape").mkdir()
-    save_arrays(run_folder / "tape/000000.npz", samples([0, .1], [0, .5]))
+    save_chunk(run_folder, 0, [0, .1], [0, .5])
     output = view(run_folder, output=run_folder / "jaw.rrd")
     assert [t for t, _ in component_rows(output, "/transforms/jaw", "Transform3D:quaternion")] == [0]
     assert any("jaw" in text[0] for _, text in component_rows(output, "/events", "TextLog:text"))
@@ -236,8 +235,7 @@ def test_interactive_view_launches_the_sibling_app_and_streams_the_record(run_fo
     monkeypatch.setattr(sinks, "_spawn_viewer", lambda **options: launched.update(options))
     output = run_folder / "interactive.rrd"
     monkeypatch.setattr(sinks, "connect_grpc", lambda _, *, recording, **kw: recording.save(output))
-    (run_folder / "tape").mkdir()
-    save_arrays(run_folder / "tape/000000.npz", samples([0, .1], [0, .5]))
+    save_chunk(run_folder, 0, [0, .1], [0, .5])
     view(run_folder)
     assert launched["executable_path"] == str(app)
     assert [t for t, _ in component_rows(output, "/signals/joints/shoulder/measured", "Scalars:scalars")] == [
@@ -258,8 +256,7 @@ def test_live_view_follows_world_edits_and_reconnects_to_a_new_session(run_folde
     other = run_folder.with_name("next-run")
     shutil.copytree(run_folder, other)
     for folder, angle in ((run_folder, 0), (other, 1)):
-        (folder / "tape").mkdir()
-        save_arrays(folder / "tape/000000.npz", samples([0], [angle]))
+        save_chunk(folder, 0, [0], [angle])
     world = World()
     world.add_box("moved", "object", [.4, .1, .2], [.04] * 3)
     event = dict(seq=1, t=.1, kind="world_state", level="info", message="operator changed scene",
@@ -277,7 +274,7 @@ def test_live_view_follows_world_edits_and_reconnects_to_a_new_session(run_folde
             polls += 1
             if polls == 1:
                 (run_folder / "events.jsonl").write_text(json.dumps(event) + "\n")
-                save_arrays(run_folder / "tape/000001.npz", samples([.1], [.5]))
+                save_chunk(run_folder, 1, [.1], [.5])
                 if clean_close:
                     save_summary(run_folder / "complete.json",
                                  dict(parts=2, events_bytes=(run_folder / "events.jsonl").stat().st_size))
@@ -287,7 +284,7 @@ def test_live_view_follows_world_edits_and_reconnects_to_a_new_session(run_folde
             if polls == 3:
                 # Final samples can commit between detecting the new session and switching streams.
                 if not clean_close:
-                    save_arrays(run_folder / "tape/000002.npz", samples([.2], [.75]))
+                    save_chunk(run_folder, 2, [.2], [.75])
                 return dict(recording=dict(path=str(other)))
             raise KeyboardInterrupt
 

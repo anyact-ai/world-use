@@ -82,8 +82,9 @@ parameters. A list runs in order and ends at the first step that does not end "d
 - `wu fact door.angle_deg 24 --source "side camera, 14:02"` records what you measured, with its source. A surprise
   or fault marks every fact stale: check again before relying on one.
 - Simulated cameras show the simulator's scene, which may hold things the kernel does not know.
-- Keep-out checks use padded segments from the first joint to the tool; surfaces constrain only the tool point.
-  The base, fingers, payloads and self-collision are not modelled: leave clearance for them.
+- Keep-out checks use padded segments from the first joint to the tool, the tool and finger boxes the card
+  counts (often none) and a held object's estimated box; surfaces constrain only the tool point. The base,
+  self-collision and anything undeclared are not checked: leave clearance for them.
 
 ## Cameras
 
@@ -94,19 +95,24 @@ parameters. A list runs in order and ends at the first step that does not end "d
   `measure_pixels(frame, point=[x, y], target="block")` in native pixels, not a scaled `wu look` picture.
   `surface_center` is the visible surface's position in work metres, not the object's centre. `from_tool` is
   its offset from the tool in work axes; `in_tool` expresses it in the captured tool's axes.
-- `run(plan, requires=[{"evidence": ID, "max_age_s": 30}])` refuses admission or the next step if that
-  measurement is too old, withdrawn or its camera was recalibrated. Choose the age for scene stability,
-  not planning time; freshness alone does not verify a grasp or placement.
-- Check retention with the same features' `in_tool` after a lift or rotation and while holding still.
-  Refresh after extended planning and before transport; drift calls for a different grasp. Occlusion or
-  different features make comparisons inconclusive, and one point cannot establish a complete grasp.
-- For alignment, use a clear close view roughly normal to the surface. An edge pixel may see background:
-  use `plane={"box":[l,t,r,b], "max_error_m":.001}` only if the feature shares the broad visible patch's plane.
-  A small fit residual does not bound placement accuracy; change the view when correspondence is ambiguous.
-- After release, withdraw and check position, depth and stability in a fresh frame. Remeasure from the
-  approach view before regrasping: a piece may have settled correctly. Recover only from a current discrepancy.
-- Batch independent measurements when supported. Repeat checks only for ambiguous or stale evidence or a
-  changed scene. Once the task passes, complete the power handoff below and report.
+- `run(plan, requires=[{"evidence": ID, "max_age_s": 30}])` refuses the run, or stops it before its next
+  step, once that measurement is too old, withdrawn or its camera recalibrated. Choose the age for how fast
+  the scene can change, not for how long you plan; a fresh measurement alone does not verify a grasp or
+  placement.
+- To check that an object moved with the gripper, compare the same features' `in_tool` before and after a
+  lift or turn, and while holding still. Measure again after long planning and before carrying it; drift calls for a
+  different grasp. Occlusion or different features make the comparison inconclusive, and one point cannot
+  confirm the whole grasp.
+- For alignment, use a clear, close view roughly square to the surface. An edge pixel may see the background:
+  use `plane={"box":[l,t,r,b], "max_error_m":.001}` only if the feature lies in the plane of the broad visible
+  patch the box selects. A small fit error does not bound placement accuracy; change the view when it is unclear
+  which features correspond.
+- After release, withdraw and check position, depth and stability in a fresh frame. Measure again from the
+  approach view before regrasping: a piece may have settled correctly. Correct only a discrepancy you have
+  just measured.
+- Batch independent measurements when supported. Repeat a check only when the result is ambiguous or stale or
+  the scene has changed. Once the task passes, go home and switch torque off as described below, then
+  report.
 
 ## Contact
 

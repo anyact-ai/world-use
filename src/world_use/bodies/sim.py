@@ -1,11 +1,12 @@
 """MuJoCo rigid-body simulation, including actuators, gravity and frictional grasps.
 
 The world here is simulation truth. The kernel maintains a separate estimated world.
-Temperature is an explicit approximate motor heating model, not a MuJoCo measurement.
+Temperatures come from a rough motor heating model, not from MuJoCo.
 """
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any
 
 import numpy as np
@@ -193,7 +194,8 @@ class SimBody:
             return self._state(tau, grip_tau, d.qvel[self._v].copy())
 
     def reset(self, q, gripper=None):
-        """Explicitly reset a simulation or pose a recorded scene, without advancing physics."""
+        """Put the arm at q, the gripper at gripper and the world's boxes at their poses, without advancing
+        physics: to start an episode again or to pose a recorded scene."""
         with self.lock:
             self.q = np.asarray(q, float).copy()
             if self.q.shape != (self.manifest.n,) or not np.isfinite(self.q).all():
@@ -228,8 +230,6 @@ class SimBody:
         return rgb, depth, tool, timestamp
 
     def _capture(self, view, *, depth, mounted=False):
-        import time
-
         from .mujoco_render import CameraRenderer
         with self.lock:
             self._ensure_scene()

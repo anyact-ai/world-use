@@ -4,6 +4,10 @@ import pytest
 from conftest import table_below
 
 from world_use import Plan, Refused, check
+from world_use.config import load_workcell
+from world_use.daemon import apply_workcell
+from world_use.plan import reach, same_start, snapshot, twin
+from world_use.views import card
 
 
 def test_plan_builds_a_spec_from_any_registered_behavior():
@@ -55,7 +59,6 @@ def test_an_unreachable_line_says_how_much_of_it_is_reachable(k):
 
 
 def test_reach_from_here_names_what_passes_and_why_the_rest_does_not(k):
-    from world_use.plan import reach
     r = reach(k)
     assert r["up"] is None and r["forward"] is None
     assert r["left"] is not None and r["left"].rule == "turn_clearance"
@@ -63,8 +66,6 @@ def test_reach_from_here_names_what_passes_and_why_the_rest_does_not(k):
 
 
 def test_plan_and_snapshot_do_not_share_mutable_input(k):
-    from world_use.plan import same_start, snapshot
-
     spec = {"do": "joints", "delta_deg": {"1": 0}}
     job = k.submit(spec)
     spec["delta_deg"]["1"] = 100
@@ -78,7 +79,6 @@ def test_plan_and_snapshot_do_not_share_mutable_input(k):
 
 def test_a_twins_home_route_goes_stale_when_the_twin_touches_something(lifted):
     """The twin kept the robot's event number for its route, so in a rehearsal a contact never made it stale."""
-    from world_use.plan import twin
     k = lifted
     for _ in range(40):
         k.emit("note", "the robot's event numbers run far ahead of a fresh twin's")
@@ -91,9 +91,6 @@ def test_a_twins_home_route_goes_stale_when_the_twin_touches_something(lifted):
 
 
 def test_an_operator_can_lower_the_turn_height_and_rehearsals_follow_it(k, tmp_path, rehearser):
-    from world_use.config import load_workcell
-    from world_use.daemon import apply_workcell
-
     plan = [{"do": "line", "up": 0.03}, {"do": "line", "left": 0.05}]
     assert check(plan, k).refused
     path = tmp_path / "workcell.toml"
@@ -107,14 +104,11 @@ def test_an_operator_can_lower_the_turn_height_and_rehearsals_follow_it(k, tmp_p
     low = check([{"do": "line", "up": 0.03}, {"do": "line", "left": 0.05}, {"do": "line", "up": -0.02},
                  {"do": "line", "left": 0.03}], k)
     assert low.refused and "operator override" in str(low), str(low)
-    from world_use.views import card
     assert "operator override: chess pieces are low" in card(k) and "above where it started" not in card(k)
 
 
 @pytest.mark.parametrize("height", [float("nan"), float("inf")])
 def test_turn_height_rejects_nonfinite_limits(k, tmp_path, height):
-    from world_use.config import load_workcell
-
     path = tmp_path / "workcell.toml"
     path.write_text(f"[envelope]\nturn_height_m = {height}\n")
     with pytest.raises(ValueError, match="finite number"):

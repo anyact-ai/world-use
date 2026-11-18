@@ -112,7 +112,7 @@ def blueprint(base_frame: str, follow: bool, eye: tuple, cameras=()):
 
 
 class RecordingView:
-    """One Rerun stream; no adapter, MuJoCo rollout, or command client is created."""
+    """Logs one flight record to a Rerun stream, from its files alone: no adapter, simulation or client."""
 
     def __init__(self, folder: Path, recording, *, follow=False, update_layout=True):
         from rerun.urdf import UrdfTree
@@ -162,12 +162,12 @@ class RecordingView:
         self.rec.log("about", rr.TextDocument(
             f"# {self.meta['body']}\n\n{self.meta['mode']} · world-use {self.meta['package_version']}\n\n"
             f"Recording: `{self.folder}`\n\n"
-            "The 3D view combines measured joints with the **estimated world**. Objects in that view are beliefs, "
-            "not reconstructed physical motion. Camera observations show the captured scene, "
-            "with any saved overlays.\n\n"
-            "Joint plots retain every committed sample. The world and tool trail update at up to 20 Hz. "
-            "Live following reads background recordings, usually about one second behind control.\n\n"
-            "This viewer is read-only. Closing it does not stop a job or change motor power.",
+            "The 3D view shows the measured joints in the kernel's world model, whose boxes are what the kernel "
+            "believes and can differ from where objects really are. Camera panes show the saved pictures with "
+            "their overlays.\n\n"
+            "Joint plots show every recorded sample; the world and tool trail update at up to 20 Hz. "
+            "Following a live run lags control by about a second.\n\n"
+            "The viewer only reads the record. Closing it does not stop a job or change motor power.",
             media_type="text/markdown"), static=True)
         self.rec.set_time(TIMELINE, duration=0.0)
         if not animated and others:
@@ -403,10 +403,10 @@ def view(folder: Path | str, *, output: Path | None = None, follow: bool = False
 
 
 class EvidenceView:
-    """Evidence panels accompanying the estimated-world view; never a policy input."""
+    """Panels for an experiment's saved evidence, shown beside the flight record's 3D view."""
 
-    def __init__(self, selection, recording, *, scene=False):
-        self.selection, self.rec, self.rr = selection, recording, _sdk()
+    def __init__(self, recording, *, scene=False):
+        self.rec, self.rr = recording, _sdk()
         self.scene = scene
         self.seen_frames: set[str] = set()
         self.seen_comparisons: set[tuple[str, str]] = set()
@@ -417,15 +417,13 @@ class EvidenceView:
     def poll(self, selection):
         from .inspection import artifact, frames
         rr, rec = self.rr, self.rec
-        self.selection = selection
         report = json.dumps(selection.report, indent=2)
         if report != self.last_report:
             rec.log("evidence/report", rr.TextDocument(
-                "# Recorded evidence\n\nEstimated geometry and physical scene state have separate roles. "
-                "Policy frames are the exact raw observations on `policy_elapsed` (seconds from task start); "
-                "flight telemetry uses `elapsed`. These clocks have different origins. "
-                "A saved scene snapshot restores physics state without advancing it. "
-                "Validation comparisons label reference kind and fit/held-out split.\n\n"
+                "# Recorded evidence\n\nRaw policy frames are on the `policy_elapsed` timeline, in seconds from "
+                "the task start; flight telemetry is on `elapsed`, from the kernel start. The two clocks start at "
+                "different times. The scene snapshot restores the last saved physics state without stepping it. "
+                "Reference comparisons are labelled with their kind and their split (fit or held out).\n\n"
                 f"```json\n{report}\n```", media_type="text/markdown"), static=True)
             self.last_report = report
         if selection.validation is not None:
@@ -473,7 +471,7 @@ class EvidenceView:
 
 
 def _scene_snapshot(episode: Path, part: Path):
-    """Restore a committed physical state; no adapter or dynamics rollout is involved."""
+    """Render the last physics state in a saved chunk through the first recorded camera, without stepping it."""
     from dataclasses import replace
 
     from .bodies.mujoco_render import CameraRenderer
@@ -542,7 +540,10 @@ def _fingerprint(path: Path) -> list[tuple[str, int, int]]:
 
 def view_evidence(path: Path, *, case: str | None = None, output: Path | None = None,
                   follow=False, scene=False):
-    """Keep one inspection window on a revision; workspace reload failure leaves its old scene visible."""
+    """Show a saved experiment in one Rerun window; with follow, update it as files change.
+
+    If a reloaded workspace cannot be read, the window keeps the previous scene and shows the error.
+    """
     from .inspection import inspect
 
     rr = _sdk()
@@ -572,7 +573,7 @@ def view_evidence(path: Path, *, case: str | None = None, output: Path | None = 
                 viewer = (None if selection.flight is None else
                           RecordingView(selection.flight, rec, follow=follow, update_layout=False))
                 reader = None if selection.flight is None else RecordReader(selection.flight)
-                evidence = EvidenceView(selection, rec, scene=scene)
+                evidence = EvidenceView(rec, scene=scene)
                 active = key
             assert evidence is not None
             if viewer is not None and reader is not None:

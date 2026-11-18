@@ -14,6 +14,7 @@ from .geometry import interpolate_rotation, rotation_log
 from .kinematics import Chain
 
 KNOTS = 300                           # most IK knots per straight stretch (about one per millimetre)
+SHARP_DEG = 120.0                     # polyline corners turning more than this stop instead of being rounded
 
 
 @dataclass(frozen=True)
@@ -157,10 +158,10 @@ def line(chain: Chain, q0, delta, timing: Timing, duration=None, lower=None, upp
 
 
 def polyline(chain: Chain, q0, legs, timing: Timing, blend=0.02, duration=None, lower=None, upper=None,
-             weights=None, sharp_deg=120.0):
+             weights=None):
     """Several straight legs (metres, base frame, each relative to the end of the last) as one motion.
 
-    Corners are rounded by `blend` metres so the joints keep moving; turns sharper than `sharp_deg` cannot be
+    Corners are rounded by `blend` metres so the joints keep moving; turns sharper than SHARP_DEG cannot be
     rounded and stop instead. Each stretch between stops speeds up once, cruises and slows down once.
     """
     q0 = np.asarray(q0, float)
@@ -176,7 +177,7 @@ def polyline(chain: Chain, q0, legs, timing: Timing, blend=0.02, duration=None, 
     for k in range(1, len(pts) - 1):
         a, b = pts[k] - pts[k - 1], pts[k + 1] - pts[k]
         turn = np.degrees(np.arccos(np.clip(a @ b / np.linalg.norm(a) / np.linalg.norm(b), -1, 1)))
-        if turn > sharp_deg:
+        if turn > SHARP_DEG:
             stretches.append(pts[first:k + 1])
             first = k
     stretches.append(pts[first:])

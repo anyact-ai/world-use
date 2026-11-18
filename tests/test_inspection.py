@@ -5,9 +5,10 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from conftest import Q_REST
 from PIL import Image
 
-from world_use import World, bodies
+from world_use import World, bodies, inspection
 from world_use.cameras import Frame
 from world_use.config import load_robot, manifest_data
 from world_use.inspection import SimulationWorkspace, frames, inspect
@@ -148,7 +149,7 @@ def test_unstarted_named_case_remains_visible_and_cannot_escape_suite(tmp_path):
 
 
 def session_at(path):
-    body = bodies.make("sim", World(), q=[.3782, .0015, -.0005, -.0011, .0625, .0051], gripper=1.)
+    body = bodies.make("sim", World(), q=Q_REST, gripper=1.)
     return SimulationSession(body, path, cameras={}, sources={"test.py": Path(__file__)}, entrypoint="test.py")
 
 
@@ -191,27 +192,34 @@ def test_live_reset_requires_power_off_and_failed_reload_keeps_current_revision(
         workspace.close()
 
 
-def test_hardware_mode_candidate_is_never_sent_control_requests(tmp_path, monkeypatch):
-    from world_use import inspection
-    mutations = []
+@pytest.fixture
+def fake_sessions(monkeypatch):
+    """Idle, unpowered SimulationSession stand-ins: (class, sessions made, control calls sent)."""
+    made, calls = [], []
 
     class Session:
-        def __init__(self, path, mode):
-            self.output, self.closed, self.body = path, False, SimpleNamespace(simulated=True)
-            self.client = SimpleNamespace(status=lambda: dict(session={"mode": mode}, enabled=False,
-                                           power_uncertain=False), stop=lambda *a: mutations.append("stop"),
-                                           release=lambda: mutations.append("release"))
+        def __init__(self, output, mode="simulation"):
+            self.output, self.closed, self.body = output, False, SimpleNamespace(simulated=True)
+            self.client = SimpleNamespace(
+                status=lambda: dict(session={"mode": mode}, enabled=False, power_uncertain=False),
+                stop=lambda *a: calls.append("stop"), release=lambda: calls.append("release"))
+            made.append(self)
 
         def close(self, *a, **kw):
-            mutations.append("close")
+            calls.append("close")
             self.closed = True
 
     monkeypatch.setattr(inspection, "SimulationSession", Session)
-    workspace = SimulationWorkspace(tmp_path / "workspace", lambda p: Session(p, "simulation"), scene_revision="a" * 64)
+    return Session, made, calls
+
+
+def test_hardware_mode_candidate_is_never_sent_control_requests(tmp_path, fake_sessions):
+    Session, _, calls = fake_sessions
+    workspace = SimulationWorkspace(tmp_path / "workspace", Session, scene_revision="a" * 64)
     old = workspace.session
     with pytest.raises(ValueError, match="hardware"):
         workspace.reload(lambda p: Session(p, "hardware"), scene_revision="b" * 64)
-    assert workspace.session is old and mutations == []
+    assert workspace.session is old and calls == []
     assert "no control request sent" in json.loads((workspace.path / "inspection.json").read_text())["error"]
 
 
@@ -244,21 +252,9 @@ def test_follow_keeps_last_valid_scene_and_displays_failed_build(tmp_path, monke
 
 
 @pytest.mark.parametrize("initial", [True, False])
-def test_pointer_write_failure_cleans_candidate_and_retains_previous_identity(tmp_path, monkeypatch, initial):
-    from world_use import inspection
-    sessions = []
-
-    class Session:
-        def __init__(self, output):
-            self.output, self.closed, self.body = output, False, SimpleNamespace(simulated=True)
-            self.client = SimpleNamespace(status=lambda: dict(session={"mode": "simulation"}, enabled=False,
-                                           power_uncertain=False), stop=lambda *a: None, release=lambda: None)
-            sessions.append(self)
-
-        def close(self, *a, **kw):
-            self.closed = True
-
-    monkeypatch.setattr(inspection, "SimulationSession", Session)
+def test_pointer_write_failure_cleans_candidate_and_retains_previous_identity(
+        tmp_path, monkeypatch, fake_sessions, initial):
+    Session, sessions, _ = fake_sessions
     workspace = None if initial else SimulationWorkspace(tmp_path / "workspace", Session, scene_revision="a" * 64)
     previous = sessions[-1] if sessions else None
 

@@ -1,10 +1,11 @@
-"""Run matched LIBERO pairs under one campaign cap: one admission authority, a separate run.py output per pair.
+"""Run matched LIBERO pairs under one campaign cap, each pair a run.py process with its own folder.
 
 A pair is admitted only while the conservative charge of finished attempts plus the full caps of running
 ones leaves room for another full pair cap. An attempt that did not finish both arms, stopped by the
 transport, a lost simulator or an interruption, keeps its folder and its charge, an unsettled request's
 whole reservation included, and the pair is tried again in a `_retryN` folder, three attempts in all.
-Each repeat of a case is its own pair, in a `_repeatN` folder after the first.
+A pair stopped by Ctrl-C or another signal is not retried, and no more pairs start. Each repeat of a
+case is its own pair, in a `_repeatN` folder after the first.
 """
 
 from __future__ import annotations

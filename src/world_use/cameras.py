@@ -86,14 +86,14 @@ class CameraConfig(Request):
 
 @dataclass(frozen=True)
 class Frame:
-    """An upright, unannotated image. Coordinates refer to this image's native pixels.
+    """An upright, unannotated image; coordinates are in its native pixels.
 
-    timestamp uses this host's monotonic clock: file modification time converted to
-    that clock, or the start of acquisition when sensor timing is unavailable.
-    HTTP/command sources must themselves serve current images. view and calibration
-    are the camera's calibration and its revision when the frame was taken. A simulated
-    camera can add aligned optical-z depth in metres (NaN where nothing was hit) and
-    the tool pose (base frame) from the same physics state.
+    timestamp is on this host's monotonic clock: a file camera's modification time converted to
+    it, otherwise when capture started. HTTP and command cameras must serve current images
+    themselves. view and calibration are the camera's calibration and its revision when the frame
+    was taken. A simulated camera can add depth along the optical axis in metres, aligned to the
+    pixels (NaN where nothing was hit), and the tool pose in the base frame, both from the same
+    physics state.
     """
 
     image: Image.Image
@@ -150,7 +150,7 @@ def pack(data: bytes) -> str:
 
 
 def unpack(data: str, size: int) -> bytes:
-    """Decode a bounded array; refuse malformed streams and expansion beyond the declared shape."""
+    """Decompress a packed array that must be exactly size bytes, at most 64 MiB."""
     if not 0 < size <= 64 * 1024 * 1024:
         raise ValueError("array exceeds the 64 MiB limit")
     try:
@@ -525,8 +525,6 @@ def equirect_from_config(cfg: dict, world) -> EquirectCut:
     pitch_deg, or the 360's pose (eye, facing = where the middle of its picture looks, up; in `frame`) and
     look_at."""
     name = cfg["name"]
-    if cfg.get("rotate") or any(key in cfg for key in ("crop",)):
-        raise ValueError(f"camera {name!r}: a 360 picture is not rotated or cropped; aim the cut instead")
     source = from_config({key: cfg[key] for key in ("name", "path", "url", "command", "max_age_s") if key in cfg},
                          world)
     frame = cfg.get("frame", "work")

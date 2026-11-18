@@ -83,19 +83,19 @@ def test_failed_cell_keeps_source_inputs_output_and_exception(tmp_path):
 
 
 def test_killed_task_leaves_unanswered_intent_not_a_success(tmp_path):
+    from world_use.inspection import inspect
+
     root = bundle(tmp_path, "import os\ndef run(robot, params, record):\n"
                   "    with record.phase('attempt'):\n        record.call(os._exit, 9)\n")
-    result = execute(root)
-    assert result.returncode == 9
-    assert events(root)[-1]["kind"] == "intent" and events(root)[-1]["inputs"]["args"] == [9]
-    phase = next(e["seq"] for e in events(root) if e["kind"] == "phase_begin")
-    assert events(root)[-1]["phase"] == phase
-    assert not any(e["kind"] == "phase_end" for e in events(root))
+    assert execute(root).returncode == 9
+    trace = events(root)
+    last, phase = trace[-1], next(e["seq"] for e in trace if e["kind"] == "phase_begin")
+    assert last["kind"] == "intent" and last["inputs"]["args"] == [9] and last["phase"] == phase
+    assert not any(e["kind"] == "phase_end" for e in trace)
     assert not (root / "result.json").exists()
-    from world_use.inspection import inspect
-    trace = inspect(root, phase=phase).report["task_trace"]
-    assert trace["phases"][0]["status"] == "unknown"
-    assert trace["unanswered_calls"] == [events(root)[-1]["seq"]]
+    report = inspect(root, phase=phase).report["task_trace"]
+    assert report["phases"][0]["status"] == "unknown"
+    assert report["unanswered_calls"] == [last["seq"]]
 
 
 def test_truncated_trace_exposes_only_the_committed_prefix(tmp_path):
@@ -112,21 +112,16 @@ def test_truncated_trace_exposes_only_the_committed_prefix(tmp_path):
         recording.read_trace(root)
 
 
-@pytest.mark.parametrize("code", ["raise ValueError('broken')", "return {'verdict': 'maybe'}"])
-def test_invalid_or_failed_task_has_a_failure_record(tmp_path, code):
+@pytest.mark.parametrize("code, result", [
+    ("raise ValueError('broken')", None),
+    ("return {'verdict': 'maybe'}", None),
+    ("return {'verdict': 'fail', 'error_m': float('nan')}", {"verdict": "fail", "error_m": "nan"}),
+])
+def test_unsuccessful_task_keeps_its_terminal_record(tmp_path, code, result):
     root = bundle(tmp_path, f"def run(robot, params, record):\n    {code}\n")
-    result = execute(root)
-    assert result.returncode != 0
+    assert execute(root).returncode != 0
     saved = json.loads((root / "result.json").read_text())
-    assert saved["result"] is None and saved["exception"]
-
-
-def test_non_finite_result_keeps_its_terminal_record(tmp_path):
-    code = "def run(robot, params, record):\n    return {'verdict': 'fail', 'error_m': float('nan')}\n"
-    root = bundle(tmp_path, code)
-    execute(root)
-    saved = json.loads((root / "result.json").read_text())
-    assert saved["result"] == {"verdict": "fail", "error_m": "nan"} and saved["exception"] is None
+    assert saved["result"] == result and bool(saved["exception"]) is (result is None)
 
 
 def test_interrupted_launcher_lets_the_task_finish_its_record(tmp_path, monkeypatch):
@@ -146,16 +141,13 @@ def test_interrupted_launcher_lets_the_task_finish_its_record(tmp_path, monkeypa
 
 
 class Transport:
-    def __init__(self):
-        self.path = "/fake/flight-1"
-        self.requests = []
-        self.frames = {}
-        self.counter = 0
-        self.lose_reply = False
-        self.enabled = False
-        self.mode = "simulation"
-        self.extra_status = {}
-        self.after_run = lambda: None
+    """A fake daemon behind Client._call; it records every request."""
+
+    def __init__(self, monkeypatch, mode="simulation"):
+        self.path, self.mode, self.enabled, self.extra_status = "/fake/flight-1", mode, False, {}
+        self.requests, self.frames, self.counter = [], {}, 0
+        self.lose_reply, self.after_run = False, lambda: None
+        monkeypatch.setattr(Client, "_call", lambda *args, **kwargs: self.call(*args, **kwargs))
 
     def call(self, client, method, path, body=None):
         self.requests.append((method, path, body))
@@ -194,8 +186,7 @@ class Transport:
 def connected(tmp_path, monkeypatch):
     root = bundle(tmp_path, url="http://fake.invalid")
     record = recording.Record(root)
-    transport = Transport()
-    monkeypatch.setattr(Client, "_call", lambda *args, **kwargs: transport.call(*args, **kwargs))
+    transport = Transport(monkeypatch)
     client = recording.RecordedClient("http://fake.invalid", record)
     client.begin()
     return client, record, transport
@@ -233,9 +224,7 @@ def test_phase_recording_failure_preserves_original_exception_and_recovery(conne
 
 def test_hardware_is_refused_before_any_mutating_request(tmp_path, monkeypatch):
     root = bundle(tmp_path, url="http://fake.invalid")
-    transport = Transport()
-    transport.mode = "hardware"
-    monkeypatch.setattr(Client, "_call", lambda *args, **kwargs: transport.call(*args, **kwargs))
+    transport = Transport(monkeypatch, mode="hardware")
     client = recording.RecordedClient("http://fake.invalid", recording.Record(root))
     with pytest.raises(ValueError, match=r"session\.mode=simulation"):
         client.begin()
@@ -309,28 +298,21 @@ def test_submission_timeout_is_recorded_and_never_retried(connected):
     assert last["kind"] == "exception" and last["exception"] == "TimeoutError"
 
 
-@pytest.mark.parametrize("state", ["powered", "queued", "restarted", "recording_failed"])
-def test_launcher_reports_exit_state_without_issuing_robot_actions(tmp_path, monkeypatch, state):
-    # Execute with the real recorded client and a fake transport, without spawning a daemon.
+@pytest.mark.parametrize("state, after_run", [
+    ("powered", dict(enabled=True)),
+    ("queued", dict(extra_status={"queued": [3]})),
+    ("restarted", dict(path="/fake/flight-2")),
+    ("recording_failed", dict(extra_status={"recording": dict(path="/fake/flight-1", error="disk full")})),
+])
+def test_launcher_reports_exit_state_without_issuing_robot_actions(tmp_path, monkeypatch, state, after_run):
+    # Execute in this process with the real recorded client and a fake transport.
     monkeypatch.setattr(sys, "path", sys.path.copy())
     monkeypatch.setitem(sys.modules, "task_program", None)
     code = ("import numpy as np\ndef run(robot, params, record):\n"
             "    robot.run([])\n    return {'verdict': 'pass', 'values': np.array([1, 2])}\n")
     root = bundle(tmp_path, code, url="http://fake.invalid")
-    transport = Transport()
-
-    def change_state():
-        if state == "powered":
-            transport.enabled = True
-        elif state == "queued":
-            transport.extra_status["queued"] = [3]
-        elif state == "restarted":
-            transport.path = "/fake/flight-2"
-        else:
-            transport.extra_status["recording"] = dict(path=transport.path, error="disk full")
-
-    transport.after_run = change_state
-    monkeypatch.setattr(Client, "_call", lambda *args, **kwargs: transport.call(*args, **kwargs))
+    transport = Transport(monkeypatch)
+    transport.after_run = lambda: vars(transport).update(after_run)
     assert recording.execute(root) == 1
     saved = json.loads((root / "result.json").read_text())
     assert saved["result"]["verdict"] == "pass"  # Preserve what the task actually returned.

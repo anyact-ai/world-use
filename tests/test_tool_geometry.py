@@ -6,13 +6,15 @@ import numpy as np
 import pytest
 
 from world_use import Refused, World
+from world_use.bodies.rebot import MANIFEST
 from world_use.body import JointSpec, JointState, ToolBox
 from world_use.config import manifest_data, manifest_from_data
 from world_use.envelope import Envelope
 from world_use.geometry import rot_z
+from world_use.plan import same_start, snapshot
 
 
-def rig(manifest, *, boxes=(), payload=False):
+def rig(*, boxes=(), payload=False):
     # An analytic fixture isolates collision checks from IK and contact dynamics.
     def fk(q):
         pose = np.eye(4)
@@ -22,7 +24,7 @@ def rig(manifest, *, boxes=(), payload=False):
     chain = SimpleNamespace(fk=fk, links={},
                             points=lambda q: np.array([[-1, 0, 1], [-1, 0, 1], q[:3]]),
                             motion_bound=lambda a, b: float(np.linalg.norm(np.asarray(b)[:3] - np.asarray(a)[:3])))
-    model = replace(manifest, joints=tuple(JointSpec(n, -10, 10, v_max=1000, a_max=1e6) for n in "xyza"),
+    model = replace(MANIFEST, joints=tuple(JointSpec(n, -10, 10, v_max=1000, a_max=1e6) for n in "xyza"),
                     gripper=None, tool_boxes=tuple(boxes), turn_clearance=None, max_excursion=None, link_radius_m=0)
     world = World()
     q = np.array([0., 0., .1, 0.])
@@ -37,9 +39,9 @@ def feedback(q):
 
 
 @pytest.mark.parametrize("role", ["tool", "finger"])
-def test_declared_geometry_hits_a_zone_that_the_arm_and_tcp_miss(k, role):
+def test_declared_geometry_hits_a_zone_that_the_arm_and_tcp_miss(role):
     bounds = ToolBox("jaw travel", (0, .08, 0), (.04, .02, .04), "caliper measurement", role)
-    env, q = rig(k.manifest, boxes=[bounds])
+    env, q = rig(boxes=[bounds])
     env.world.add_box("divider", "keep_out", [0, .08, .1], [.005] * 3)
     with pytest.raises(Refused, match=f"{role}:jaw travel"):
         env.check_path([q], q)
@@ -50,8 +52,8 @@ def test_declared_geometry_hits_a_zone_that_the_arm_and_tcp_miss(k, role):
     assert bare.watch(feedback(q), q) is None
 
 
-def test_rotating_payload_checks_its_swept_corners_and_attachment(k):
-    env, q = rig(k.manifest, payload=True)
+def test_rotating_payload_checks_its_swept_corners_and_attachment():
+    env, q = rig(payload=True)
     obstacle = env.world.add_box("corner", "keep_out", [.05, .05, .1], [.005] * 3)
     end = q + [0, 0, 0, np.pi / 2]
     original = env.world.boxes["package"].pose.copy()
@@ -67,8 +69,8 @@ def test_rotating_payload_checks_its_swept_corners_and_attachment(k):
     assert env.watch(feedback(middle), middle) is None
 
 
-def test_payload_placement_release_and_withdrawal_keep_support_geometry(k):
-    env, q = rig(k.manifest, payload=True)
+def test_payload_placement_release_and_withdrawal_keep_support_geometry():
+    env, q = rig(payload=True)
     env.world.add_box("table", "surface", [0, 0, -.01], [.4, .4, .02])
     landing = np.array([0., 0., .02, 0.])
     env.check_path(np.linspace(q, landing, 100), q)
@@ -85,9 +87,9 @@ def test_payload_placement_release_and_withdrawal_keep_support_geometry(k):
     assert env.watch(feedback(q), q) is None
 
 
-def test_guarded_support_contact_is_bounded_and_does_not_waive_another_part(k):
+def test_guarded_support_contact_is_bounded_and_does_not_waive_another_part():
     finger = ToolBox("low finger", (0, .07, -.04), (.02, .02, .02), "measured", "finger")
-    env, q = rig(k.manifest, boxes=[finger], payload=True)
+    env, q = rig(boxes=[finger], payload=True)
     env.world.add_box("table", "surface", [0, 0, -.01], [.4, .4, .02])
     delta, contact = env.contact_target(q, np.array([0, 0, -.12]), .02)
     assert contact is not None and contact[:2] == (("finger:low finger",), "table")
@@ -106,8 +108,8 @@ def test_guarded_support_contact_is_bounded_and_does_not_waive_another_part(k):
     assert env.watch(feedback(q), q).kind == "surface"
 
 
-def test_contact_allowance_cannot_follow_a_changed_support_or_payload(k):
-    env, q = rig(k.manifest, payload=True)
+def test_contact_allowance_cannot_follow_a_changed_support_or_payload():
+    env, q = rig(payload=True)
     surface = env.world.add_box("table", "surface", [0, 0, -.01], [.4, .4, .02])
     _, contact = env.contact_target(q, np.array([0, 0, -.1]), .02)
     env.begin_geometry(q, contact)
@@ -127,13 +129,13 @@ def test_contact_allowance_cannot_follow_a_changed_support_or_payload(k):
 
 
 @pytest.mark.parametrize("bottom", ["fingers", "level with tool point"])
-def test_guarded_contact_covers_every_part_reaching_the_support(k, bottom):
+def test_guarded_contact_covers_every_part_reaching_the_support(bottom):
     if bottom == "fingers":
         boxes = [ToolBox(side, (0, y, -.04), (.02, .02, .02), "measured", "finger")
                  for side, y in (("left", .03), ("right", -.03))]
     else:
         boxes = [ToolBox("housing", (0, 0, .01), (.04, .04, .02), "measured")]
-    env, q = rig(k.manifest, boxes=boxes)
+    env, q = rig(boxes=boxes)
     env.world.add_box("table", "surface", [0, 0, -.01], [.4, .4, .02])
     delta, contact = env.contact_target(q, np.array([0, 0, -.12]), .02)
     assert set(contact[0]) == {f"{box.role}:{box.name}" for box in boxes}
@@ -144,8 +146,8 @@ def test_guarded_contact_covers_every_part_reaching_the_support(k, bottom):
 
 
 @pytest.mark.parametrize("guarded", [False, True])
-def test_small_steps_cannot_replenish_surface_allowance(k, guarded):
-    env, q = rig(k.manifest, payload=True)
+def test_small_steps_cannot_replenish_surface_allowance(guarded):
+    env, q = rig(payload=True)
     table = env.world.add_box("table", "surface", [0, 0, -.01], [.4, .4, .02])
     if guarded:
         _, contact = env.contact_target(q, np.array([0, 0, -.1]), .02)
@@ -191,9 +193,9 @@ def test_worker_keeps_consumed_surface_allowance(lifted, rehearser):
     np.testing.assert_array_equal(k.state.q, before)
 
 
-def test_tool_bounds_are_serialized_for_worker_and_record(k):
+def test_tool_bounds_are_serialized_for_worker_and_record():
     box = ToolBox("left finger", (0, .03, -.02), (.02, .06, .04), "measured swept bounds", "finger")
-    manifest = replace(k.manifest, tool_boxes=(box,))
+    manifest = replace(MANIFEST, tool_boxes=(box,))
     restored = manifest_from_data(manifest_data(manifest))
     assert restored.tool_boxes == (box,)
     data = manifest_data(manifest)
@@ -203,8 +205,6 @@ def test_tool_bounds_are_serialized_for_worker_and_record(k):
 
 
 def test_worker_receives_declared_bounds_and_still_leaves_the_robot_untouched(lifted, rehearser):
-    from world_use.plan import same_start, snapshot
-
     k = lifted
     bounds = ToolBox("side tool", (0, .15, 0), (.01, .01, .01), "fixture dimensions")
     k.manifest = k.body.manifest = replace(k.manifest, tool_boxes=(bounds,))

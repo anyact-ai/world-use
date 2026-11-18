@@ -14,7 +14,7 @@ import numpy as np
 from ..robot_assets import bundled, resolve
 from . import manifests
 
-# Respect an explicitly selected backend; EGL also supports Mesa on headless Linux.
+# Headless Linux renders with EGL (Mesa provides it) unless MUJOCO_GL already names a backend.
 if sys.platform == "linux" and not os.environ.get("DISPLAY"):
     os.environ.setdefault("MUJOCO_GL", "egl")
 
@@ -149,10 +149,8 @@ def build(manifest, world, timestep):
         body = spec.worldbody.add_body(name=f"box/{box.name}", pos=box.pose[:3, 3], quat=quat(box.pose[:3, :3]))
         if box.kind == "object":
             body.add_freejoint(name=f"free/{box.name}")
-        mass = float(box.params.get("mass_kg", 0.05))
+        mass = float(box.params.get("mass_kg", 0.05))        # Box has validated both
         friction = float(box.params.get("friction", 0.8))
-        if not np.isfinite(mass) or mass <= 0 or not np.isfinite(friction) or friction < 0:
-            raise ValueError(f"simulation box {box.name!r}: mass_kg must be positive and friction nonnegative")
         body.add_geom(name=f"box/{box.name}", type=mj.mjtGeom.mjGEOM_BOX, size=box.size / 2,
                       mass=mass, friction=[friction, 0.005, 0.0001], condim=4, group=2,
                       rgba=[0.90, 0.40, 0.12, 1] if box.kind == "object" else [0.62, 0.68, 0.72, 1])

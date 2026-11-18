@@ -7,20 +7,20 @@ https://github.com/user-attachments/assets/43a2caa8-aa29-41d6-84be-64477883f4d9
 
 ## What world-use adds
 
-- **Measured alignment.** The agent chooses matching features; world-use fits
-  translation and yaw and applies the correction to the captured tool pose.
-  Projecting edge pixels onto a plane fitted to an agent-selected depth patch
-  avoids using background depth at slot boundaries.
-- **Grasp evidence.** Tool-relative measurements let the agent check whether a
-  piece stayed with the gripper. Freshness guards bound the age of evidence used
-  for subsequent moves.
-- **Motion phases.** The agent submits sequences of bounded moves and gets
-  execution feedback between decisions. In the selected run, all 32 phase jobs
-  completed and three oversized requests were refused.
+- **Alignment from measured landmarks.** The agent chooses matching features;
+  world-use fits translation and yaw and applies the correction to the captured
+  tool pose. Edge pixels are projected onto a plane fitted to a depth patch the
+  agent selects, so slot boundaries do not pick up background depth.
+- **Grasp checks.** Tool-relative measurements let the agent check whether a
+  piece stayed with the gripper, and `requires` limits the age of the
+  measurements later moves rely on.
+- **Motion phases.** The agent submits sequences of moves, each checked against
+  the robot's limits, and gets feedback between decisions. In the selected run,
+  all 32 phase jobs completed and three oversized requests were refused.
 
 The LLM chooses features, grasps, approaches and recovery. World-use supplies
-geometry and execution tools; it contains no shape-sorter policy. See the
-[measurement and alignment contract](perception.md).
+geometry and execution tools; it contains no shape-sorter policy. See
+[measuring from pictures](perception.md).
 
 ## Selected result
 

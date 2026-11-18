@@ -33,7 +33,7 @@ def _signature(raw: bytes) -> str:
 @dataclass
 class Trip:
     """A watchdog finding on measured state. `isolate` = only the gripper is affected; the arm carries on."""
-    kind: str                          # fault, blocked, overload, contact, hot, keep_out, gripper
+    kind: str                          # fault, blocked, overload, contact, hot, keep_out, surface, gripper
     message: str
     joint: int | None = None
     value: float | None = None
@@ -97,12 +97,13 @@ class Envelope:
         return set() if contact is None else {(part, contact[1]) for part in contact[0]}
 
     def hold_geometry(self, q):
-        """End a contact phase. Only withdrawal from measured existing contact remains allowed."""
+        """End a contact phase: from here each part may only withdraw from the overlap it has now."""
         self.surface_limits = self._surface_allowances(q)
         self._contact_pairs: set[tuple[str, str]] = set()
 
     def begin_geometry(self, q, contact=None):
-        """Only an explicit guarded contact may expand a retained surface allowance."""
+        """Start a path. Only a guarded contact (parts, support, depth) may raise those parts' allowance on that
+        support, up to depth."""
         self.hold_geometry(q)
         if contact is None:
             return
@@ -117,11 +118,13 @@ class Envelope:
         return bool(np.all(low[:2] >= -box.size[:2] / 2) and np.all(high[:2] <= box.size[:2] / 2))
 
     def contact_target(self, q, delta, overshoot):
-        """First support approached along its normal, with the contacting part wholly above its footprint.
+        """Clip a guarded move at the first support it approaches against the support's normal, with the meeting
+        part wholly above the support's footprint.
 
-        Returns the clipped delta and (parts, support, overshoot). Every declared part that reaches that support
-        by the clipped end, wholly above its footprint, may use the bounded guarded overshoot. Other supports and
-        overhanging parts keep their ordinary clearance. A side approach gets no support-contact exemption.
+        Returns (delta, None) if no support qualifies, else (clipped delta, (parts, support, overshoot)): the
+        declared parts that reach that support by the clipped end, wholly above its footprint, may go up to
+        overshoot into it. Other supports and overhanging parts keep the ordinary clearance, and a sideways
+        approach gets no allowance.
         """
         tool = self.chain.fk(q)
         parts = [("tool point", np.eye(4), np.zeros(3)), *self._parts()]
@@ -147,7 +150,7 @@ class Envelope:
         if best is None:
             return delta, None
         fraction, box, down = best
-        # Leave a small amount for sample padding; the actual commanded penetration stays bounded.
+        # Plan SURFACE_TOL short of the overshoot, leaving room for sample padding.
         stop = min(1.0, fraction + max(0.0, overshoot - SURFACE_TOL) / down)
         end = tool.copy()
         end[:3, 3] += stop * delta
@@ -413,13 +416,11 @@ class Envelope:
             temp = np.nan_to_num(np.asarray(st.temp, float), nan=0.0)
             if temp.max() > self.m.temp_limit_c:
                 i = int(np.argmax(temp))
-                return Trip("hot", f"{self._name(i)} is at {temp[i]:.0f} C", i, float(temp[i]), self.m.temp_limit_c)
+                return Trip("hot", f"{self.m.joints[i].name} is at {temp[i]:.0f} C", i, float(temp[i]),
+                            self.m.temp_limit_c)
         return None
 
     @staticmethod
     def _intersects(box, points, margin):
         # The fixed base pedestal is excluded; all links from the first joint through the tool are included.
         return any(box.intersects_segment(a, b, margin) for a, b in pairwise(points[1:]))
-
-    def _name(self, i):
-        return self.m.joints[i].name if i < self.m.n else "gripper"

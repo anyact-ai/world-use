@@ -1,6 +1,7 @@
 """Task predicates, not just command completion, decide whether placement worked."""
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -11,8 +12,7 @@ from world_use.examples.pick_place import TARGET, pickup, placement, run, setup,
 from world_use.geometry import axis_angle
 
 
-@pytest.mark.parametrize("scenario,expected", [("nominal", True), ("shifted", True),
-                                                ("missing", False), ("misplaced", False)])
+@pytest.mark.parametrize("scenario,expected", [("shifted", True), ("missing", False), ("misplaced", False)])
 def test_block_task_and_recovery(tmp_path, scenario, expected):
     result = run(tmp_path / scenario, scenario, video=False)
     assert result["success"] is expected
@@ -90,7 +90,7 @@ def test_a_new_obstacle_blocks_the_return():
     k.close()
 
 
-def test_wu_demo_prints_a_summary_into_a_fresh_record_folder(tmp_path, monkeypatch, capsys):
+def test_wu_demo_places_the_block_and_prints_a_summary_into_a_fresh_record_folder(tmp_path, monkeypatch, capsys):
     from world_use import cli
 
     monkeypatch.setenv("WORLD_USE_RUNS", str(tmp_path))
@@ -99,4 +99,5 @@ def test_wu_demo_prints_a_summary_into_a_fresh_record_folder(tmp_path, monkeypat
     assert cli.main(["demo", "--no-video"]) == 0
     out = capsys.readouterr().out
     assert len(out.splitlines()) <= 3 and str(tmp_path / "block-demo-2") in out
-    assert (tmp_path / "block-demo-2" / "result.json").exists()
+    result = json.loads((tmp_path / "block-demo-2" / "result.json").read_text())
+    assert result["success"] and result["torque_off"] and result["return_outcome"]["status"] == "done"

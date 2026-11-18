@@ -52,7 +52,11 @@ class Measurement:
         return np.median(self.points, axis=0) if self.valid else None
 
     def summary(self, work: np.ndarray) -> dict:
-        """Surface coordinates in metres; work is the plan frame's pose in base, in_tool uses captured tool axes."""
+        """The reply for this measurement, in metres. work is the work frame's pose in the base frame.
+
+        surface_center, visible_bounds and from_tool use work-frame axes; in_tool uses the axes of
+        the tool pose captured with the frame.
+        """
         def local(p):
             return (np.asarray(p, float) - work[:3, 3]) @ work[:3, :3]
 

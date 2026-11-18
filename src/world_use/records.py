@@ -1,4 +1,4 @@
-"""Offline inspection and visual replay of recorded measurements. Never opens a robot adapter."""
+"""Read flight records and replay them as GIFs, without opening a robot adapter."""
 from __future__ import annotations
 
 import json
@@ -99,7 +99,8 @@ def overview(chain: Chain) -> tuple[np.ndarray, np.ndarray]:
 
 
 def replay(folder: Path | str, output: Path | str, fps: int = 12, speed: float = 1.0) -> Path:
-    """Replay a saved external scene, or measured joints and the estimated world, at an explicit speed."""
+    """Render a record as a GIF at speed times real time: the saved MuJoCo scene if the record has one,
+    otherwise the recorded joints in the kernel's world model."""
     folder, output = Path(folder), Path(output)
     if not 1 <= fps <= 60 or not 0 < speed <= 100:
         raise ValueError("fps must be 1..60 and speed must be greater than 0 and at most 100")

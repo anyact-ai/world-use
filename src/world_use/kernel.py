@@ -6,8 +6,8 @@ Each control tick: read the body, run the watchdog, advance the active behavior,
 - A surprise holds where the arm really is, cancels anything queued behind it, and waits for the policy.
 - A refusal during execution holds at the measured pose; motion may already have occurred.
 - The policy may be slow, crash or restart: the kernel keeps holding until it is told something new.
-- Once the control loop runs, only its thread talks to the body. Requests from other threads (switching torque
-  on or off) are handed to it and waited for, so a driver is never called from two threads at once.
+- Once the control loop runs, only its thread talks to the body. Other threads hand it their requests (switching
+  torque on or off) and wait, so a driver is never called from two threads at once.
 """
 from __future__ import annotations
 
@@ -158,8 +158,8 @@ class Heat:
 
 
 class Kernel:
-    # Exact behavior types whose internal motion boundaries call start_behavior/check_guard.
-    # An embedded adapter may extend this set after auditing its own steps.
+    # Behavior types (exact types, not subclasses) that call start_behavior or check_guard before each motion, so a
+    # guard sees every step. Embedded code may add a custom type once it does the same.
     guarded_steps = BUILTINS
     state: JointState                                # the latest measurement; set by connect()
     cmd: Command                                     # what the body is told each tick; set by connect()
@@ -314,7 +314,7 @@ class Kernel:
                 return
             if self.active is not None or self.queue:
                 raise Refused("a job is running; stop it first", "busy")
-            # A failed enable may have left an old reading behind. Never release on that evidence.
+            # Read afresh: a failed enable may have left an old reading behind, and releasing on it could drop the arm.
             self.state = self._read_state()
             rest = self.manifest.rest
             if rest is not None and not rest.holds(self.state.q):
@@ -378,8 +378,7 @@ class Kernel:
         except OSError as e:
             summary = (self.journal.summary(until=self.clock.now() - self.t0) if self.journal else
                        self.tape.summary(until=self.clock.now() - self.t0))
-            return dict(body=self.manifest.name, recording_error=str(e),
-                        **summary)
+            return dict(body=self.manifest.name, recording_error=str(e), **summary)
 
     def save_record(self) -> dict:
         """Write the flight record so far (tape, summary, world and events), without
@@ -399,10 +398,11 @@ class Kernel:
 
     # -- requests (any thread) ---------------------------------------------------------------------
     def checked_start(self, *, require_enabled: bool = True):
-        """An idle snapshot and its admission check, also checked when the submitted job starts.
+        """Snapshot an idle robot for a rehearsal that runs outside the lock: returns (snapshot, admission).
 
-        Rehearsal runs outside the lock. Only the kernel accounts for intervening control changes and the
-        checked job's own submission; observation events and ordinary encoder noise do not invalidate it.
+        admission() refuses once the robot, its command or the scene has moved on from the snapshot; submit()
+        calls it, and so does the job's first tick. Every control change since the snapshot counts (changed()),
+        except the checked job's own submission. Events and encoder noise do not.
         """
         from .plan import same_start, snapshot
 
@@ -489,7 +489,8 @@ class Kernel:
         self.emit("reset", "fault cleared by operator", "warn")
 
     def _home_steps(self, specs: list) -> list:
-        """Emergency returns must not depend on answers, holds, contact, or arbitrary plugin behavior."""
+        """A route's steps, refused unless they are built-in motion and gripper steps: a thermal return cannot wait
+        for an answer, hold, seek contact or run plugin code."""
         if not isinstance(specs, list):
             raise Refused("a home route must be a list of steps, or null to clear it", "home_route_step")
         route = build(specs)
@@ -502,8 +503,9 @@ class Kernel:
 
     def set_home_route(self, specs: list | None, note: str = "", *,
                        admission: Callable[[], None] | None = None) -> None:
-        """Store a route, with an optional check that its rehearsal is still current. [] = fold straight home.
-        Embedded callers own the rehearsal; step limits still apply. None clears the route."""
+        """Store the home route ([] folds straight home; None clears it). admission, if given, refuses once the
+        state the route was rehearsed from is no longer current. Embedded callers rehearse the route themselves;
+        its steps still pass the envelope when they run."""
         steps = None if specs is None else self._home_steps(specs)
         with self.lock:
             if steps is not None:
@@ -516,7 +518,9 @@ class Kernel:
         self.emit("home_route", message + (f": {note}" if note else ""), steps=steps, note=note)
 
     def home_plan(self, *, steps: list | None = None) -> list:
-        """Route + supported rest pose. Explicit steps prepare a candidate without installing it."""
+        """The home route's steps, then joint moves back to the session's start angles (the load-bearing joints to
+        the rest pose) and, unless something is held, the gripper back where the session found it. Given steps,
+        plans with those instead of the installed route (a candidate to rehearse)."""
         if steps is None:
             route = self.home_route
             if route is None:
@@ -563,7 +567,8 @@ class Kernel:
 
     # -- services for behaviors (control thread) ---------------------------------------------------
     def changed(self):
-        """Invalidate checked admission at a control mutation, even if it is subsequently reversed."""
+        """Count a control change: a pending admission check (checked_start) then refuses, even if the change is
+        undone."""
         with self.lock:
             self.control_revision += 1
 
@@ -988,8 +993,8 @@ class Kernel:
 
     def _survive(self, e: Exception):
         """The body raised (an adapter unplugged, a value out of range): fault and say so, but keep the loop and
-        the daemon alive, so the flight record survives and an operator sees why. Motor power is unknown;
-        commands must not resume on reconnection. Physical motor power may still be on."""
+        the daemon alive, so the flight record survives and an operator sees why. If torque was on, motor power
+        is now unconfirmed and may still be on: commands stay suspended, even after reconnecting."""
         with self.lock:
             first = not self.faulted
             self.faulted = True

@@ -1,8 +1,9 @@
-"""Small manipulation procedures outside the control loop.
+"""Grasp and place as short sequences of the caller's commands, run outside the control loop.
 
-The caller supplies checked, bounded commands and observations. Every command,
-including a check or withdrawal, goes through the same executor. These functions
-do not select grasps, invent geometry, retry, or certify physical support.
+Every command, including each grip check and the withdrawal, goes through the caller's execute,
+which validates it and returns an Outcome. A sequence stops at the first command or check that
+does not succeed, and never opens, retreats or retries on its own. The caller chooses the grasp,
+the poses and any recovery; a completed sequence does not show that the object is held or placed.
 """
 from __future__ import annotations
 
@@ -46,15 +47,16 @@ async def _drive_async(steps):
     except StopIteration as done:
         return done.value
     finally:
-        # Cancellation cannot leave a background thread issuing later stages.
         steps.close()
 
 
 def feedback(outcome: Outcome) -> dict:
-    """Current procedure evidence for the policy; keep the full outcome in its record.
+    """A short report of a procedure's outcome for the policy; record outcome.to_dict() in full.
 
-    Successful stage telemetry stays in the record. A failure retains its expected
-    and observed values and recovery hint alongside the before/after evidence.
+    It gives each stage's status, the last checkpoint and the next stage, the latest assessment,
+    and two observations: the reference one (before the lift for a grasp, otherwise before the
+    first command) and the latest. A failure adds the last command run and the outcome's
+    expected, observed and hint.
     """
     data = outcome.data
     observations = data["observations"]
@@ -113,7 +115,6 @@ def _run(kind: str, execute: Execute | AsyncExecute, observe: Observe | AsyncObs
     if failure := (yield from checkpoint("before")):
         return failure
     for index, (name, command) in enumerate(stages):
-        data["next_stage"] = name
         outcome = yield execute(command)
         outcomes.append(dict(stage=name, command=deepcopy(command), outcome=deepcopy(outcome.feedback())))
         if not outcome.ok:
@@ -133,21 +134,24 @@ def _run(kind: str, execute: Execute | AsyncExecute, observe: Observe | AsyncObs
 
 def grasp(execute: Execute, observe: Observe, *, approach: dict, close: dict, check: dict, lift: dict,
           object_target: str | None = None, assess: Assess | None = None) -> Outcome:
-    """Arrive at a chosen grasp, close, check, test lift, then check again.
+    """Approach a chosen grasp, close, check the grip, lift a little and check it again.
 
-    approach must require measured arm arrival before closing; lift must be short,
-    bounded and guarded by the expected grip range. check must use fresh measured
-    opening, not command state. The executor owns validation and step accounting.
-    Observations before and after the lift let the policy judge co-motion and
-    choose a new attempt explicitly if needed. No subsequent carry is implied.
-    object_target optionally binds the attempt to a selected region in observe's
-    targets list. A label is the caller's identity claim, not tracker recognition.
-    Bindings are rechecked before close, before lift and after lift. assess receives
-    that checkpoint name and the observation history; only a done Outcome permits
-    continuation. It runs outside the control loop. Unknown evidence must return
-    stopped; exceptions propagate without subsequent motion. There is no implicit retry.
-    After the lift no stage follows, so there assess may return None to abstain,
-    which leaves the assessment unknown as if no assessor had been given.
+    Each command is a dict passed unchanged to execute, which validates it, counts its steps and
+    returns an Outcome. approach must wait for the arm to arrive before closing; lift must be short
+    and monitor the expected grip range; check must measure the opening afresh, not read the
+    command. Nothing is carried after the lift.
+
+    observe() is called at the checkpoints before (ahead of the first command), before_close,
+    before_lift and after (following the second check). A command that fails ends the grasp with
+    one more observation, also recorded as after. Compare before_lift with after to judge whether
+    the object rose with the hand.
+
+    object_target names a region in the observations' targets list: the caller's claim of which
+    object this is, not the tracker's. Each checkpoint's observation must show it valid, or the
+    grasp stops there. assess(checkpoint, observations) is called at every checkpoint except before
+    and returns an Outcome: only done lets the grasp continue, and unknown evidence should return
+    stopped. At after, where no stage follows, it may return None to leave the assessment unknown.
+    Exceptions propagate with no further motion. Nothing is retried.
     """
     return _drive(_run("grasp", execute, observe,
         [("approach", approach), ("close", close), ("check_before_lift", check),
@@ -159,34 +163,39 @@ def grasp(execute: Execute, observe: Observe, *, approach: dict, close: dict, ch
 def place(execute: Execute, observe: Observe, *, move: dict, release: dict,
           withdraw: dict, check: dict, object_target: str | None = None,
           destination_target: str | None = None, assess: Assess | None = None) -> Outcome:
-    """Arrive at a chosen release pose, release, check opening, then withdraw.
+    """Move to a chosen release pose, open, check the opening, then withdraw.
 
-    move must require measured arrival and monitor retention; release must check
-    measured opening. Targets and a clear withdrawal are the caller's decisions.
-    Inspect the final fresh observation for support and stability; image overlap,
-    an open gripper and completed commands do not establish placement success.
-    Optional target names bind the observation evidence to the intended object
-    and destination. The caller owns identity and semantic outcome assessment.
-    Recheck bindings and call assess at before_release and after withdrawal, with
-    fresh observations. The assessor can prevent opening when measured placement
-    is wrong or unknown. Recovery and any remaining stages require a new explicit
-    call through the executor; this function never replays completed stages.
+    Commands go through execute as in grasp. move must wait for the arm to arrive and monitor the
+    grip on the way; the release pose and a clear withdrawal are the caller's choice.
+    object_target and destination_target name regions each checkpoint's observation must show
+    valid, as in grasp.
+
+    The checkpoints are before, before_release and after (following the withdrawal); a failed
+    command adds an after observation, as in grasp. assess is called at before_release and after;
+    one that does not return done at before_release keeps the gripper closed. Judge support and
+    stability from the last observation: an open gripper, overlapping image regions and completed
+    commands do not show that the object was placed. Completed stages are never replayed; recover
+    with new commands through the executor.
     """
-    return _drive(_run("place", execute, observe, [("arrive", move), ("release", release),
-                                           ("check_release", check), ("withdraw", withdraw)],
-                {role: name for role, name in (("object", object_target), ("destination", destination_target))
-                 if name is not None}, {"arrive": "before_release", "withdraw": "after"}, assess))
+    return _drive(_place(execute, observe, move, release, check, withdraw, object_target, destination_target,
+                         assess))
 
 
 async def async_place(execute: AsyncExecute, observe: AsyncObserve, *, move: dict, release: dict,
                       withdraw: dict, check: dict, object_target: str | None = None,
                       destination_target: str | None = None, assess: Assess | AsyncAssess | None = None) -> Outcome:
-    """The same place contract for async tool clients, without a background procedure thread.
+    """place for async clients: execute and observe are awaitable, assess may be either.
 
-    Cancellation prevents later stages; it does not cancel a command already accepted
-    by a remote executor. The caller must reconcile that job and resolve motor power.
+    It runs in the caller's event loop, not a background thread. Cancelling it stops later stages,
+    but not a command a remote executor has already accepted: the caller must find out how that
+    job ended and resolve motor power.
     """
-    return await _drive_async(_run("place", execute, observe,
-        [("arrive", move), ("release", release), ("check_release", check), ("withdraw", withdraw)],
-        {role: name for role, name in (("object", object_target), ("destination", destination_target))
-         if name is not None}, {"arrive": "before_release", "withdraw": "after"}, assess))
+    return await _drive_async(_place(execute, observe, move, release, check, withdraw, object_target,
+                                     destination_target, assess))
+
+
+def _place(execute, observe, move, release, check, withdraw, object_target, destination_target, assess):
+    return _run("place", execute, observe,
+                [("arrive", move), ("release", release), ("check_release", check), ("withdraw", withdraw)],
+                {role: name for role, name in (("object", object_target), ("destination", destination_target))
+                 if name is not None}, {"arrive": "before_release", "withdraw": "after"}, assess)

@@ -13,9 +13,9 @@ import json
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from io import BytesIO
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 
 from . import views
 from .behaviors import Outcome
@@ -46,8 +46,6 @@ HINTS = dict(answer="answer(job={id}, answer=...)", wait="job(job={id})")
 def crop_image(image, box=None, max_side=1024):
     """A box [left, top, right, bottom] of native pixels scaled so its longer side is max_side, and the matrix that
     maps the result's pixel edges back to native ones: native = native_from_image @ [x, y, 1]."""
-    if isinstance(max_side, bool) or not isinstance(max_side, int) or not 64 <= max_side <= 2048:
-        raise ValueError("max_side must be in 64..2048")
     bounds = [0, 0, image.width, image.height] if box is None else list(box)
     rectangle(bounds, image.size)
     crop = image.crop(bounds)
@@ -139,7 +137,7 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
                 text += f"\nframe: {json.dumps(data['frame'])}"
                 images.append(frame.image)
             except Exception as e:
-                # Motion has already been submitted. A camera failure must preserve its job/outcome.
+                # The job has already been submitted: a camera failure must not hide its outcome.
                 data["camera_error"] = str(e)
                 text += f"\ncamera unavailable: {e}; the job above is unchanged"
         return result(data, text, images)
@@ -274,7 +272,8 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         return call(measure)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True))
-    def inspect_image(frame: str, crop: Rectangle | None = None, max_side: int = 1024):
+    def inspect_image(frame: str, crop: Rectangle | None = None,
+                      max_side: Annotated[int, Field(ge=64, le=2048)] = 1024):
         """A camera_frame again, optionally cropped to [left, top, right, bottom] native pixels and scaled to
         max_side; native_from_image maps its pixels back to the frame's native pixels for measure_pixels."""
         def inspect():
@@ -291,9 +290,10 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
             """Select an object by a point or box in a camera_frame, name it target, and measure it as
             measure_pixels does. observe_targets measures it again later without selecting. A frame older than the
             tracker accepts is followed into a new one first. tracking says tracked or lost.
-            space=image returns native-pixel bounds, center and area from RGB without requiring depth or
-            calibration. These are predicted image regions, not verified identity, metric geometry, grip,
-            support, or a measurement id usable by run(requires). The default world mode needs RGB-D."""
+            The default space=world needs RGB-D. space=image needs neither depth nor calibration and returns the
+            predicted region in native pixels (bounds, center, area), with no metric geometry and no measurement
+            id for run(requires). A tracked region does not confirm which object it is, or that it is held or
+            supported."""
             def select():
                 data = tracking.select(frame, target, point=point, box=box, space=space)
                 return measured([data], data)
@@ -302,8 +302,7 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         @server.tool(annotations=ToolAnnotations(read_only_hint=False))
         def observe_targets(targets: list[str]):
             """Measure selected targets again in one new frame per camera. A lost target is retired and its
-            measurements are withdrawn, so runs that require them stop. Repeated observations retain the
-            loss; select it again to continue."""
+            measurements are withdrawn, so runs that require them stop. It stays lost until selected again."""
             def observe():
                 data = tracking.observe(targets)
                 return measured(data, dict(measurements=data))
@@ -359,8 +358,8 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
     def home_route(steps: list[dict] | None, note: str = "") -> str:
         """Set the way home from here, checked against what you can see: [] folds straight home; otherwise the
         moves that get clear first. Only motion and gripper steps; no checkpoints or holds. null clears a route
-        when the scene changes. Set it while idle; torque may be off. Only a passing rehearsal installs it;
-        failure preserves the previous route, including any staleness. Contact makes it stale."""
+        when the scene changes. Set it while idle; torque may be off. It is installed only if its rehearsal
+        passes; otherwise the previous route stays as it was, stale or not. Contact makes a route stale."""
         return call(lambda: views.home_text(c.home_route(steps, note)))
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False))
@@ -379,11 +378,10 @@ def build(url: str = DEFAULT_URL, *, vision=False, device="cpu", model_path=None
         return call(lambda: c.release()["line"])
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True))
-    def events(since: int = 0, limit: int = 40):
-        """A bounded page after event number since; continue from last while more is true. Gaps stay visible."""
+    def events(since: int = 0, limit: Annotated[int, Field(ge=1, le=100)] = 40):
+        """Up to limit (1..100) events after event number since; while more is true, continue with since=last.
+        missed counts events already dropped from the log."""
         def recent():
-            if not 1 <= limit <= 100:
-                raise ValueError("limit must be in 1..100")
             r = c.events(since, limit=limit)
             text = "\n".join(map(views.event_line, r["events"])) or "(none)"
             return result(r, text + (f"\nmore after [{r['last']}]: events(since={r['last']})" if r["more"] else ""))

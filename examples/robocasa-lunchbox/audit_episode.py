@@ -97,7 +97,7 @@ def audit(root):
     rotation = container.xmat.reshape(3, 3)
     local_floor = (vertices(model, data, floor)-container.xpos) @ rotation
     bounds = np.array([local_floor[:, :2].min(0), local_floor[:, :2].max(0)])
-    report = dict(post_run_only=True, torque_off=json.loads((root/'final.json').read_text())['torque_off'], objects={})
+    report = dict(post_run_only=True, torque_off=final['torque_off'], objects={})
     for name in ('long_snack', 'cracker_box'):
         body_id = model.body(name).id
         geom_ids = [i for i in range(model.ngeom) if model.geom_bodyid[i] == body_id and model.geom_contype[i]]

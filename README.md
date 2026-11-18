@@ -4,18 +4,34 @@
 
 # world-use
 
-**Let AI agents operate robot arms.**
+**Tools that let AI agents operate robot arms.**
 
-Camera observations, EdgeTAM tracking, measured geometry and bounded motion through **MCP, Python or the `wu` CLI**.
-The agent chooses the targets and strategy; world-use executes each phase and returns feedback.
+The agent looks at camera images, picks out objects and decides what to do. world-use follows the objects
+with EdgeTAM, measures where they are, checks each motion against the robot's limits, runs it in a 100 Hz
+control loop and reports what happened. Use it over **MCP, from Python or with the `wu` CLI**.
 
-Start in MuJoCo. Early software, tested in simulation and on one Seeed reBot arm under supervision.
+Start in MuJoCo, no robot needed. Tested in simulation and on a Seeed reBot arm.
 
-[Demos](#demos) · [Quickstart](#quickstart) · [Give it to an agent](#give-it-to-an-agent) · [Documentation](#documentation)
+[LIBERO-10](#libero-10) · [Demos](#demos) · [Quickstart](#quickstart) · [Give it to an agent](#give-it-to-an-agent) · [Documentation](#documentation)
+
+## LIBERO-10
+
+GPT-6.2 Sol, driving a simulated Franka Panda, solves **30 of 50 episodes with world-use vs 15 alone**, with
+74% fewer model calls. Both arms of a pair start from the same state; 30 of the 50 pairs are held-out states,
+run once.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/libero-results-dark.png">
+  <img src="docs/assets/libero-results-light.png" alt="Episodes solved: 15 of 50 alone, 30 of 50 with world-use. Model calls: 3,095 alone, 815 with world-use. Estimated model cost: $61.44 alone, $8.73 with world-use.">
+</picture>
+
+Alone, the model picks hand poses from camera images. With world-use it also gets EdgeTAM tracking,
+wrist-camera positions without depth, and grasp, place and push tools that report position error, contact
+and grip. [Setup, per-task results and limits](examples/libero/README.md)
 
 ## Demos
 
-Selected simulation runs. The kitchen examples were developed with scene knowledge and human feedback.
+Selected simulation runs. The kitchen demos were developed with scene knowledge and human feedback.
 
 ### Shape sorting
 
@@ -43,30 +59,30 @@ https://github.com/user-attachments/assets/7dfb024d-f794-41f6-bd02-47260d103639
 
 ## How it works
 
-Call tools interactively or write a Python task that uses fresh observations on each run.
+An agent calls tools one at a time, or writes a Python task that takes fresh observations on each run.
 
 | Step | What world-use provides |
 | --- | --- |
-| **Observe** | Camera frames and optional EdgeTAM masks for an agent-selected object. |
-| **Measure** | Depth-based surface coordinates, plane projection and alignment from corresponding landmarks. |
-| **Move** | Bounded plans, rehearsal against the estimated scene, a 100 Hz control loop and execution feedback. |
-| **Verify** | Fresh observations to check the outcome, with plans, measurements and telemetry saved in a flight record. |
+| **Observe** | Camera frames, and EdgeTAM masks of objects the agent marks with a point or a box. |
+| **Measure** | Positions in metres from depth, or from two looks with a camera on the hand; plane fits and alignment from matching landmarks. |
+| **Move** | Plans checked against the robot's limits, optionally rehearsed in a MuJoCo copy of the scene, run by a 100 Hz control loop that reports arrival, contact and grip. |
+| **Verify** | New pictures to check the result, and a flight record of plans, measurements and telemetry. |
 
-The agent owns grasps, scene estimates and success checks. Rehearsal depends on that scene estimate;
-sensing depends on the adapter. The kitchen demos disable full-scene rehearsal and provide no joint torque sensing.
-See [design](DESIGN.md) and [perception](docs/perception.md) for the contracts.
+The agent decides what to grasp, where things are and whether the task succeeded. Rehearsal only knows the
+objects the agent has described, and what is sensed depends on the robot's driver: the kitchen demos run
+without rehearsal and without joint torque sensing. [Design](DESIGN.md) and [perception](docs/perception.md)
+have the details.
 
 ## Quickstart
 
-Install from the current source with [uv](https://docs.astral.sh/uv/):
+Install with [uv](https://docs.astral.sh/uv/):
 
 ```sh
-uv tool install --python 3.13 --with-executables-from rerun-sdk \
-  "world-use[mcp,rerun] @ git+https://github.com/anyact-ai/world-use"
+uv tool install --python 3.13 --with-executables-from rerun-sdk "world-use[mcp,rerun]"
 ```
 
-This installs Python 3.13, `wu` and the Rerun viewer as needed. Add `vision` for EdgeTAM or
-`rebot` for the hardware driver.
+This installs `wu`, the Rerun viewer and Python 3.13 if needed. Add `vision` to the extras for EdgeTAM or
+`rebot` for the reBot driver.
 
 Run a complete scripted task in simulation, without an LLM or robot:
 
@@ -76,10 +92,11 @@ wu inspect runs/block-demo
 wu view runs/block-demo
 ```
 
-The demo verifies placement, releases torque and saves a record and animation. Later runs use numbered folders;
-use the path printed by your run. Cameras need [OpenGL](docs/simulation.md#cameras-and-replay).
-Try `wu demo --scenario missing` for a missed grasp and recovery. See the [block example](examples/pick-place)
-to adapt the task.
+A script moves a block 10 cm along a tray, checks in the simulator that it stands where it should,
+switches torque off and saves a record and an animation.
+Later runs go to numbered folders; use the path your run prints. Cameras need
+[OpenGL](docs/simulation.md#cameras-and-replay). `wu demo --scenario missing` shows a missed grasp and the
+recovery. The [block example](examples/pick-place) shows how to adapt the task.
 
 ## Give it to an agent
 
@@ -118,20 +135,22 @@ result = robot.run(phase.spec(), wait=60)
 print(result["status"])
 ```
 
-Save as `task.py`. The tool install is isolated, so run it with:
+Save it as `task.py`. The tool install is isolated from your projects, so run it with:
 
 ```sh
-uv run --with "world-use @ git+https://github.com/anyact-ai/world-use" python task.py
+uv run --with world-use python task.py
 ```
 
-Return home and release torque afterward. See the [perception example](examples/perception) for a complete task,
-or [task programs](examples/task-programs) to record code and inputs for repeated runs.
+Go home and switch torque off afterwards. The [perception example](examples/perception) is a complete task;
+[task programs](examples/task-programs) record code and inputs for repeated runs.
 
 ## Documentation
 
 | Guide | Use it to |
 | --- | --- |
-| [Perception](docs/perception.md) | Measure camera pixels, align landmarks and require fresh evidence. |
+| [LIBERO-10](examples/libero) | Reproduce the benchmark comparison or run another model on it. |
+| [Perception](docs/perception.md) | Measure from camera pixels, locate objects with a wrist camera and align landmarks. |
+| [Tracking](examples/tracking) | Download EdgeTAM and choose the device it runs on. |
 | [Records and replay](docs/records.md) | Inspect runs, references and named evaluations together in Rerun. |
 | [Simulation](docs/simulation.md) | Configure scenes, validate references and run comparable evaluations. |
 | [RoboCasa setup](examples/robocasa-counter) | Build the shared Panda kitchen used by the packing and dial demos. |
@@ -143,8 +162,8 @@ or [task programs](examples/task-programs) to record code and inputs for repeate
 
 ## Contributing
 
-Bug reports, examples and tested adapters are welcome. Include reproduction steps and relevant records,
-with credentials and private images removed.
+Bug reports, examples and tested adapters are welcome. Include steps to reproduce and the relevant flight
+records, with credentials and private images removed.
 
 ```sh
 git clone https://github.com/anyact-ai/world-use.git

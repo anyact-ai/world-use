@@ -5,7 +5,7 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
-from conftest import Q_REST, make_kernel
+from conftest import Q_REST
 
 from world_use import Kernel, RealClock, VirtualClock, World, bodies, check, cli, fit, twin
 from world_use.bodies.rebot import MANIFEST
@@ -20,7 +20,8 @@ def truth() -> fit.Model:
     links = {name: (m, list(c)) for name, (m, c) in chain.links.items()}
     m, c = links["link3"]
     links["link3"] = (1.2 * m, [c[0] + 0.02, c[1], c[2]])
-    return fit.Model(MANIFEST.name, links, [(0.3, 0.5), (0.2, 1.0), (0.5, 1.5), (0.2, 0.5), (0.1, 0.2), (0.05, 0.1)])
+    return fit.Model(MANIFEST.name, links, [(0.3, 0.5), (0.2, 1.0), (0.5, 1.5), (0.2, 0.5), (0.1, 0.2), (0.05, 0.1)],
+                     chain.joint_names)
 
 
 TOURS = {
@@ -42,7 +43,7 @@ def record(folder, name, real: fit.Model | None = None) -> str:
     for target in TOURS[name]:
         out = k.run({"do": "joints", "target_deg": target, "speed": 0.25})
         assert out.ok, out.message
-    k.save_record()
+    k.close()                                             # writes the record and frees the simulator
     return folder / name
 
 
@@ -92,7 +93,7 @@ def test_a_model_round_trips_and_changes_what_the_chain_weighs(tmp_path):
     before = chain.gravity(q)[2]
     model.apply(chain)
     assert chain.gravity(q)[2] > before + 0.3
-    assert np.allclose(model.friction_torque([0, 0, 0.2, 0, 0, 0])[2], 0.5 * np.tanh(20) + 1.5 * 0.2)
+    assert model.friction_torque([0, 0, 0.2, 0, 0, 0])[2] == pytest.approx(0.5 + 1.5 * 0.2)   # Coulomb + viscous
 
 
 @pytest.mark.parametrize("change", [
@@ -128,8 +129,7 @@ def test_incompatible_fit_leaves_the_installed_model_unchanged(k, change):
     np.testing.assert_array_equal(k.body.model.body("link3").mass, mass)
 
 
-def test_the_kernel_judges_torque_by_the_fit_and_so_do_its_body_and_twin():
-    k = make_kernel()
+def test_the_kernel_judges_torque_by_the_fit_and_so_do_its_body_and_twin(k):
     with pytest.raises(ValueError, match="another arm"):
         k.use_fit(replace(truth(), body="another arm"))
     k.use_fit(truth())
@@ -145,10 +145,9 @@ def test_the_kernel_judges_torque_by_the_fit_and_so_do_its_body_and_twin():
     assert check([{"do": "joints", "target_deg": {"2": 55, "3": 54, "4": -19}, "speed": 0.3}], k).ok
 
 
-def test_a_workcell_names_its_fit_beside_itself(tmp_path):
+def test_a_workcell_names_its_fit_beside_itself(tmp_path, k):
     truth().save(tmp_path / "rebot-fit.json")
     (tmp_path / "bench.toml").write_text('fit = "rebot-fit.json"\n')
-    k = make_kernel()
     apply_workcell(load_workcell(tmp_path / "bench.toml"), k)
     assert k.fit is not None and k.fit.body == MANIFEST.name
 
@@ -169,6 +168,7 @@ def test_a_fit_taken_while_the_loop_runs_lands_between_ticks():
     finally:
         stop.set()
         loop.join(2.0)
+        k.close()
 
 
 def test_wu_fit_finds_the_robot_from_the_records_and_writes_the_model(records, tmp_path):

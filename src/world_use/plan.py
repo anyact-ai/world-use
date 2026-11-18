@@ -27,7 +27,7 @@ from .world import DIRECTIONS, World, along, heading
 
 
 def rehearsal_coverage(manifest: Manifest | None = None) -> dict:
-    """What the built-in twin can establish, independently of the execution backend."""
+    """What a rehearsal on the built-in twin checks and leaves out, whatever body then runs the plan."""
     return dict(world="estimated", geometry="boxes", dynamics="approximate MuJoCo model", simulation_truth=False,
                 collision=dict(arm="padded joint segments against keep-out boxes",
                                tool_boxes=[] if manifest is None else [dict(name=b.name, role=b.role, source=b.source)

@@ -1,14 +1,14 @@
 """What a policy reads: the card, the world, the state line."""
 import numpy as np
-from conftest import make_kernel
+import pytest
 
 from world_use import card, state_line
 from world_use.daemon import apply_workcell
 from world_use.views import status, world_text
 
 
-def test_the_card_gives_positions_in_the_work_frame_moves_use():
-    k = make_kernel()                                    # the real rest pose: the work frame is turned 22 deg
+def test_the_card_gives_positions_in_the_work_frame_moves_use(k):
+    # At the real rest pose the work frame is turned 22 deg.
     assert abs(np.degrees(np.arctan2(*k.world.frame("work").T[1::-1, 0]))) > 20
     k.world.add_box("block", "object", center=[0.34, 0.03, 0.20], size=[0.04, 0.04, 0.10], frame="work")
     text = card(k)
@@ -16,21 +16,15 @@ def test_the_card_gives_positions_in_the_work_frame_moves_use():
     assert "block" in world_text(k)
 
 
-def test_the_card_describes_the_resolved_workcell_frame():
-    k = make_kernel()
+def test_the_card_describes_the_resolved_workcell_frame_and_a_simulated_robot(k):
     apply_workcell({"frame": [dict(name="work", origin=[.01, .02, .03], rpy_deg=[0, 0, 90])]}, k)
     text = card(k, reach=lambda _: "")
     assert "work in base: origin F+0.010 L+0.020 U+0.030 m" in text and "from workcell" in text
     assert "yaw +90 deg" in text
-
-
-def test_the_card_says_when_the_robot_is_simulated_and_marks_hardware_notes():
-    text = card(make_kernel())
     assert "(simulated)" in text and "hardware: " in text
 
 
-def test_no_heat_forecast_with_torque_off():
-    k = make_kernel()
+def test_no_heat_forecast_with_torque_off(k):
     k.heat.minutes_left = lambda limit: (2, 40.0, 5.0)   # as if the elbow were heating fast
     assert "min to 80C" in state_line(k)
     k.release()
@@ -39,8 +33,6 @@ def test_no_heat_forecast_with_torque_off():
 
 
 def test_lost_feedback_is_cached_not_a_claim_of_holding(k, monkeypatch):
-    import pytest
-
     def lost():
         raise ConnectionError("USB unplugged")
 

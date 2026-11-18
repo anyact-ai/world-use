@@ -114,8 +114,8 @@ class Tracking:
         measurement = self.client.measure(frame, mask=observation.mask, target=name)
         history = self.targets[name]["measured"]
         if len(history) == history.maxlen:
-            # An accepted job can outlive the daemon's measurement cache. Retire the
-            # oldest source before forgetting it so later loss cannot leave a usable guard.
+            # Losing the target withdraws only the measurements in this history. Withdraw the
+            # oldest before it drops out, so no running job can keep relying on it.
             self.client.withdraw([history[0]], "tracking history expired; use a newer measurement")
         history.append(measurement["id"])
         return dict(measurement, tracking="tracked")

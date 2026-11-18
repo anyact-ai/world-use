@@ -1,8 +1,7 @@
-"""Render recorded physics and real world-use returns in one annotated kitchen view.
+"""Cut a lunchbox episode into an annotated video from its replay and recorded world-use replies.
 
-Overlays are editorial projections of saved measurements, never simulated policy inputs.
-Placement outlines are proposed targets. The carry arc follows recorded tool kinematics,
-assuming the retained grasp; it is not a new object observation.
+Overlays project saved measurements, and placement outlines are the planned targets. The carry arc follows the
+recorded tool pose and assumes the package did not move in the grasp; it is not an observation of the package.
 """
 from __future__ import annotations
 

@@ -19,7 +19,7 @@ def test_urdf_limits_and_mass():
     assert CHAIN.joint_names == [f"joint{i}" for i in range(1, 7)]
     assert np.allclose(CHAIN.lower, [-2.8, 0, 0, -1.57, -1.57, -3.14])
     assert np.allclose(CHAIN.upper, [2.8, 3.14, 3.14, 1.57, 1.57, 3.14])
-    assert abs(CHAIN.mass - 6.01) < 0.02
+    assert abs(sum(m for m, _ in CHAIN.links.values()) - 6.01) < 0.02
 
 
 def test_jacobian_equals_finite_differences():
@@ -84,8 +84,7 @@ def _work(q, forward, up):
 
 def test_gravity_is_linear_in_each_links_mass_and_first_moment():
     """So recorded torques can fit them (fit.py)."""
-    chain = Chain(MANIFEST.urdf, MANIFEST.tool_link)
-    links = list(chain.links)
-    phi = np.concatenate([[m, *(m * c)] for m, c in (chain.links[name] for name in links)])
-    for q in np.random.default_rng(3).uniform(-1.5, 1.5, (5, chain.n)):
-        assert np.allclose(chain.gravity_regressor(q, links) @ phi, chain.gravity(q), atol=1e-9)
+    links = list(CHAIN.links)
+    phi = np.concatenate([[m, *(m * c)] for m, c in (CHAIN.links[name] for name in links)])
+    for q in np.random.default_rng(3).uniform(-1.5, 1.5, (5, CHAIN.n)):
+        assert np.allclose(CHAIN.gravity_regressor(q, links) @ phi, CHAIN.gravity(q), atol=1e-9)

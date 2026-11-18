@@ -12,6 +12,7 @@ LIMITS = dict(landmark_px=2.0, geometry_m=0.001, motion_m=0.002, penetration_m=0
               support_m=0.001, drift_m=0.0005)
 VIEW = View.look_at([0.4, -0.5, 0.6], [0, 0, 0.1], size=(320, 240))
 POINTS = np.array([[x, y, z] for x in (-0.1, 0.1) for y in (-0.1, 0.1) for z in (0.1, 0.3)])
+STABLE = dict(state=[[0], [1]], penetration_m=[0], support_error_m=[0], rest_xyz_m=[[0, 0, 0], [0, 0, 0]])
 
 
 def setup(tmp_path, *, kind="synthetic", observations=None):
@@ -29,13 +30,13 @@ def setup(tmp_path, *, kind="synthetic", observations=None):
     return Validation(tmp_path / "validation", scene=scene, observations=items, tolerances=LIMITS)
 
 
-def check_all(validation, name):
+def check_all(validation, name, **stability):
+    """Passing checks of every kind; returns the stability result."""
     validation.landmarks(name, VIEW, POINTS, VIEW.project(POINTS)[0])
     validation.dimensions(name, [0.09, 0.06, 0.03], [0.09, 0.06, 0.03], labels=["x", "y", "z"])
     validation.motion(name, [0, 1], [[0, 0, 0], [0.1, 0, 0]], [0, 0.5, 1],
                       [[0, 0, 0], [0.05, 0, 0], [0.1, 0, 0]])
-    validation.stability(name, state=[[0], [1]], penetration_m=[0], support_error_m=[0],
-                         rest_xyz_m=[[0, 0, 0], [0, 0, 0]])
+    return validation.stability(name, **(STABLE | stability))
 
 
 def test_identity_changes_for_geometry_camera_dynamics_and_source(tmp_path):
@@ -110,12 +111,15 @@ def test_motion_uses_declared_alignment_and_refuses_extrapolation(tmp_path):
     assert result["status"] == "failed" and "cover" in result["reason"]
 
 
-@pytest.mark.parametrize("change", [dict(state=[[0], [np.nan]]), dict(penetration_m=[0.01]),
-                                    dict(support_error_m=[0.02]), dict(rest_xyz_m=[[0, 0, 0], [0.01, 0, 0]])])
-def test_unstable_contacts_and_nonfinite_state_fail_and_keep_samples(tmp_path, change):
-    validation = setup(tmp_path)
-    args = dict(state=[[0], [1]], penetration_m=[0], support_error_m=[0], rest_xyz_m=[[0, 0, 0], [0, 0, 0]])
-    result = validation.stability("reserved", **dict(args, **change))
+FAILURES = [dict(state=[[0], [np.nan]]), dict(penetration_m=[0.01]), dict(support_error_m=[0.02])]
+
+
+# A missing rest interval cannot hide the failures that remain measurable.
+@pytest.mark.parametrize("change", [*FAILURES, dict(rest_xyz_m=[[0, 0, 0], [0.01, 0, 0]]),
+                                    *(dict(failure, rest_xyz_m=None) for failure in FAILURES)])
+def test_unstable_contacts_drift_and_nonfinite_state_fail_and_keep_samples(tmp_path, change):
+    validation = setup(tmp_path, kind="measured")
+    result = validation.stability("reserved", **(STABLE | change))
     assert result["status"] == "failed"
     details = json.loads((validation.output / result["details"]["path"]).read_text())
     with np.load(validation.output / details["samples"]["path"]) as data:
@@ -174,14 +178,9 @@ def test_rigid_landmark_motion_detects_rotation_with_a_stationary_centre(tmp_pat
 def test_missing_measured_rest_keeps_available_physics_without_claiming_drift(tmp_path):
     validation = setup(tmp_path, kind="measured")
     check_all(validation, "development")
-    validation.landmarks("reserved", VIEW, POINTS, VIEW.project(POINTS)[0])
-    validation.dimensions("reserved", [0.09], [0.09], labels=["width"])
-    validation.motion("reserved", [0, 1], [[0, 0, 0], [0.1, 0, 0]], [0, 1], [[0, 0, 0], [0.1, 0, 0]])
-    result = validation.stability("reserved", state=[[0], [1]], penetration_m=[0], support_error_m=[0])
-    assert result["status"] == "unvalidated"
-    assert "rest interval" in result["reason"]
+    result = check_all(validation, "reserved", rest_xyz_m=None)
+    assert result["status"] == "unvalidated" and "rest interval" in result["reason"]
     assert set(result["metrics"]) == {"penetration_m", "support_m"}
-    assert "drift_m" not in result["tolerances"]
     details = json.loads((validation.output / result["details"]["path"]).read_text())
     assert details["finite_state"] and details["rest_samples"] == 0
     assert details["missing"] == ["measured rest interval"]
@@ -191,14 +190,3 @@ def test_missing_measured_rest_keeps_available_physics_without_claiming_drift(tm
     report = validation.finish()
     assert report["status"] == "unvalidated"
     assert report["groups"]["physical_response"]["held_out"]["status"] == "unvalidated"
-
-
-@pytest.mark.parametrize("change", [dict(state=[[0], [np.nan]]), dict(penetration_m=[0.01]),
-                                    dict(support_error_m=[0.02])])
-def test_missing_rest_cannot_hide_available_physical_failures(tmp_path, change):
-    validation = setup(tmp_path, kind="measured")
-    args = dict(state=[[0], [1]], penetration_m=[0], support_error_m=[0], rest_xyz_m=None)
-    result = validation.stability("reserved", **dict(args, **change))
-    assert result["status"] == "failed"
-    assert "drift_m" not in result["metrics"]
-    assert validation.finish()["status"] == "failed"

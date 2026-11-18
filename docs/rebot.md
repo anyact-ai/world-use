@@ -17,13 +17,13 @@ wu policy
 
 This keeps `wu` and the driver in one environment. Drop the extras you do not use.
 
-On **Linux**, configure the CAN adapter as SocketCAN `can0` at the arm's 1 Mbit/s bitrate before starting
+On Linux, configure the CAN adapter as SocketCAN `can0` at the arm's 1 Mbit/s bitrate before starting
 world-use. Use your adapter's setup instructions and confirm the interface with `ip -details link show can0`.
 
-On **macOS**, install the MacCAN PCBUSB runtime using
+On macOS, install the MacCAN PCBUSB runtime using
 [motorbridge's setup guide](https://github.com/motorbridge/motorbridge#macos-pcan-runtime-pcbusb). The driver maps
 `can0` to `PCAN_USBBUS1` and `can1` to `PCAN_USBBUS2`. Quit MotorBridge Studio or any other program that owns the
-adapter before connecting. USB powers the interface; the arm's **48 V supply** powers its motors.
+adapter before connecting. USB powers the interface; the arm's 48 V supply powers its motors.
 
 ## Configure a camera and workcell
 
@@ -50,9 +50,9 @@ authorized, supervised session, before relying on what is drawn on them. A 360 c
 equirectangular picture can serve pinhole cuts of it instead: `projection = "equirect"`, aimed with `yaw_deg` and
 `pitch_deg`.
 
-Camera settings are validated at load time: `max_age_s` must be finite and positive and applies only to
-file sources, image dimensions must be positive integers, and `fov_deg` must be between 0 and 180 degrees.
-Partial calibrations, unknown projection names and conflicting source or aiming settings are rejected.
+Camera settings are checked when the workcell loads: `max_age_s` (file sources only) must be finite and positive,
+image dimensions positive integers and `fov_deg` between 0 and 180 degrees. Partial calibrations, unknown
+projections and a camera with two sources or two ways of aiming are rejected.
 
 ## Connect and operate
 
@@ -73,10 +73,9 @@ unconfirmed. It applies to people driving the arm as much as to agents.
 `wu up` reuses a running daemon only when its adapter and startup workcell match. To change sessions, finish the
 run, go home, and `wu down` first.
 
-Feedback counts as fresh only while the reported motor values change, so identical samples can be mistaken for a
-stale cache; telling them apart needs a receive counter from motorbridge. A read-only connection also rejects
-repeated exact-zero positions, because the driver cannot reliably tell them from failed or misidentified parameter
-replies.
+The driver judges feedback fresh only while the reported motor values change: motorbridge has no receive
+counter, so a run of identical samples looks like a stale cache. While connected read-only, it also rejects
+repeated exact-zero positions, which it cannot tell from failed or misread parameter replies.
 
 The [hardware records](hardware.md) describe three sessions on one arm: first runs, a fitted model, and a prolonged
 hold that ended with the motor supply switched off by hand.

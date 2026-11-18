@@ -13,6 +13,8 @@ from world_use.recorder import Tape
 from world_use.scene_validation import Observation, Validation, scene_identity
 from world_use.tasks import environment, json_bytes
 
+PASS = "def run(robot, params, record):\n    return {'verdict': 'pass'}\n"
+
 
 def save(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -27,9 +29,7 @@ def evidence(folder):
     tape.add(0, False, False, 0, [0], [0], None, None, None, None, None)
     (folder / "flight/tape").mkdir()
     np.savez_compressed(folder / "flight/tape/000000.npz", **tape.arrays())
-    event = json_bytes(dict(kind="closed", level="info", t=0, message="closed"))
-    # Journal events are single-line JSON.
-    event = json_bytes(json.loads(event), indent=None)
+    event = json_bytes(dict(kind="closed", level="info", t=0, message="closed"), indent=None)
     (folder / "flight/events.jsonl").write_bytes(event)
     save(folder / "flight/complete.json", dict(parts=1, events_bytes=len(event)))
     save(folder / "physics/complete.json", dict(parts=1, error=None))
@@ -42,8 +42,8 @@ def evidence(folder):
 @pytest.fixture
 def programs(tmp_path):
     task, evaluator, model = (tmp_path / name for name in ("policy.py", "audit.py", "model.dat"))
-    task.write_text("def run(robot, params, record):\n    return {'verdict': 'pass'}\n")
-    evaluator.write_text("def run(robot, params, record):\n    return {'verdict': 'pass'}\n")
+    task.write_text(PASS)
+    evaluator.write_text(PASS)
     model.write_bytes(b"frozen model")
     return task, evaluator, model
 
@@ -116,32 +116,23 @@ def validation(tmp_path):
     return record.output, scene["revision"], details["samples"]["path"]
 
 
-def test_case_identity_survives_policy_change_and_inputs_are_frozen(tmp_path, programs, fake_process):
-    first = run(programs, tmp_path / "one")
-    programs[0].write_text("def run(robot, params, record):\n    return {'verdict': 'fail'}\n")
-    second = run(programs, tmp_path / "two")
-    assert first["policy_revision"] != second["policy_revision"]
-    assert first["trials"][0]["case"]["id"] == second["trials"][0]["case"]["id"]
-    assert len(evaluation.compare(tmp_path / "one", tmp_path / "two")) == 1
-    programs[2].write_bytes(b"changed original")
-    assert (tmp_path / "one/inputs/model.dat").read_bytes() == b"frozen model"
-    assert fake_process[0][1]["seed"] == 37
-    assert first["scene_validation"]["status"] == "unvalidated"
-    assert first["trials"][0]["simulation_s"] == pytest.approx(.2)
-
-
-def test_policy_knowledge_is_frozen_and_comparable_on_identical_cases(tmp_path, programs, fake_process):
+def test_policy_edits_keep_case_identity_and_inputs_and_context_are_frozen(tmp_path, programs, fake_process):
     skill = tmp_path / "shared-skill.md"
     skill.write_text("Verify the held object after lifting.")
     first = run(programs, tmp_path / "one", policy_context={"skills/grasp.md": skill})
-    frozen = Path(fake_process[0][1]["context"]["skills/grasp.md"])
-    assert frozen.read_text() == skill.read_text()
-    assert "context" not in fake_process[1][1]  # Evaluator inputs stay independent.
+    policy, auditor = fake_process[0][1], fake_process[1][1]
+    frozen = Path(policy["context"]["skills/grasp.md"])
+    assert frozen.read_text() == skill.read_text() and policy["seed"] == 37
+    assert "context" not in auditor  # Evaluator inputs stay independent.
+    assert first["scene_validation"]["status"] == "unvalidated"
+    assert first["trials"][0]["simulation_s"] == pytest.approx(.2)
     skill.write_text("Verify again after transport.")
     second = run(programs, tmp_path / "two", policy_context={"skills/grasp.md": skill})
     assert first["policy_revision"] != second["policy_revision"]
     assert first["policy_context"] != second["policy_context"]
     assert len(evaluation.compare(tmp_path / "one", tmp_path / "two")) == 1
+    programs[2].write_bytes(b"changed original")
+    assert (tmp_path / "one/inputs/model.dat").read_bytes() == b"frozen model"
     repeated = evaluation.rerun(tmp_path / "one", "nominal", tmp_path / "repeat")
     assert repeated["policy_revision"] == first["policy_revision"]
     assert repeated["policy_context"] == first["policy_context"]
@@ -150,40 +141,30 @@ def test_policy_knowledge_is_frozen_and_comparable_on_identical_cases(tmp_path, 
         evaluation.rerun(tmp_path / "one", "nominal", tmp_path / "changed")
 
 
-@pytest.mark.parametrize("stage", ["policy", "evaluator"])
-def test_mutated_suite_inputs_invalidate_attempt_and_prevent_later_execution(
-    tmp_path, programs, fake_process, monkeypatch, stage
+@pytest.mark.parametrize("stage, changed, reason", [
+    ("policy", "inputs/model.dat", "recorded input changed"),
+    ("evaluator", "inputs/model.dat", "recorded input changed"),
+    ("policy", "policy/source/__context__/skill.md", "source snapshot changed"),
+])
+def test_files_changed_during_execution_invalidate_the_attempt_and_prevent_later_execution(
+    tmp_path, programs, fake_process, monkeypatch, stage, changed, reason
 ):
-    launch = evaluation.launch
-
-    def mutate(task, output, *, parameters, **kwargs):
-        code = launch(task, output, parameters=parameters, **kwargs)
-        if ("episode" in parameters) == (stage == "evaluator"):
-            (tmp_path / "suite/inputs/model.dat").write_bytes(b"accidental overwrite")
-        return code
-
-    monkeypatch.setattr(evaluation, "launch", mutate)
-    report = run(programs, tmp_path / "suite", cases=[case("first"), case("second")])
-    assert report["counts"] == dict(completed=0, invalid=2, interrupted=0)
-    assert all(any("recorded input changed" in r for r in trial["reasons"]) for trial in report["trials"])
-    assert len(fake_process) == (1 if stage == "policy" else 2)
-
-
-def test_mutated_policy_context_cannot_produce_a_valid_trial(tmp_path, programs, fake_process, monkeypatch):
     skill = tmp_path / "skill.md"
     skill.write_text("Initial guidance")
     launch = evaluation.launch
 
     def mutate(task, output, *, parameters, **kwargs):
         code = launch(task, output, parameters=parameters, **kwargs)
-        Path(parameters["context"]["skill.md"]).write_text("changed during execution")
+        if ("episode" in parameters) == (stage == "evaluator"):
+            (tmp_path / "suite" / changed).write_text("changed during execution")
         return code
 
     monkeypatch.setattr(evaluation, "launch", mutate)
-    report = run(programs, tmp_path / "suite", policy_context={"skill.md": skill})
-    assert report["counts"]["invalid"] == 1
-    assert "source snapshot changed" in report["trials"][0]["reasons"][0]
-    assert len(fake_process) == 1
+    report = run(programs, tmp_path / "suite", cases=[case("first"), case("second")],
+                 policy_context={"skill.md": skill})
+    assert report["counts"] == dict(completed=0, invalid=2, interrupted=0)
+    assert all(any(reason in r for r in trial["reasons"]) for trial in report["trials"])
+    assert len(fake_process) == (1 if stage == "policy" else 2)
 
 
 def test_invalid_interrupted_and_unsuccessful_cases_are_retained(tmp_path, programs, fake_process):
@@ -212,7 +193,7 @@ def test_interrupt_after_a_passing_evaluation_is_not_completed(tmp_path, program
 
 def test_setup_owns_the_starting_state_and_case_identity(tmp_path, programs, fake_process):
     setup = tmp_path / "setup.py"
-    setup.write_text("def run(robot, params, record):\n    return {'verdict': 'pass'}\n")
+    setup.write_text(PASS)
     cases = [case(), case("overlap", valid_start=False), case("edited", mode="edit-scene"),
              case("unrecorded", mode="setup-unrecorded")]
     first = run(programs, tmp_path / "one", setup=setup, cases=cases)
@@ -224,7 +205,7 @@ def test_setup_owns_the_starting_state_and_case_identity(tmp_path, programs, fak
     assert [name for name, _ in stages] == ["setup.py", "policy.py", "audit.py", "setup.py",
                                             "setup.py", "policy.py", "setup.py"]
     assert stages[1][1] == stages[2][1] == str(tmp_path / "one/trials/nominal/scene")
-    programs[0].write_text("def run(robot, params, record):\n    return {'verdict': 'fail'}\n")
+    programs[0].write_text(PASS.replace("pass", "fail"))
     run(programs, tmp_path / "two", setup=setup, cases=cases)
     assert len(evaluation.compare(tmp_path / "one", tmp_path / "two")) == 4  # A policy edit keeps every case.
     repeated = evaluation.rerun(tmp_path / "one", "nominal", tmp_path / "repeat")

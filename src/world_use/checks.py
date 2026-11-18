@@ -1,4 +1,7 @@
-"""Measured convergence and contact for native controllers; this module never commands a robot."""
+"""Checks on feedback: has a wait for a target ended, and is something holding the hand back?
+
+Nothing here commands a robot.
+"""
 from __future__ import annotations
 
 from collections import deque
@@ -7,13 +10,16 @@ import numpy as np
 
 
 class Settling:
-    """Bound a final-target wait using fresh, nonnegative residuals in the caller's units.
+    """Decide when a wait for a final target ends, from the remaining errors in each new sample.
 
-    Tolerances may mix units (e.g. metres and radians). The caller must set command_active=False while
-    an approver/controller is still changing the applied target. Missing feedback is not convergence.
-    A stall is little progress over a full window, not a collision or unreachability diagnosis. An arm
-    that swings past its target also makes no progress while it turns round: stall_s is how long a stall
-    must last before it is reported.
+    update() takes the sample's time and its nonnegative errors, one per tolerance in the caller's
+    units (they may mix metres and radians), and returns "arrived", "stalled", "timeout" or None to
+    keep waiting. It arrives once every error has been within its tolerance for stable_s. Pass
+    command_active=False while an approver or controller is still changing the applied target. A
+    sample with a time already seen is cached and never completes a wait. "stalled" means too
+    little progress over window_s to arrive before timeout_s; it does not say why. An arm that
+    swings past its target also makes no progress while it turns round, so stall_s is how long a
+    stall must last before it is reported.
     """
 
     def __init__(self, tolerances, timeout_s: float, window_s: float, progress_fraction: float = .05,
@@ -96,10 +102,10 @@ class Following:
 
     A free hand follows a moving command at a lag and gains on it every step. Call update after each
     control step with the measured position and the command that step applied: it returns True once the
-    hand has gained less than progress_m toward a command more than lead_m ahead of it, twice
-    running. Nearer than lead_m nothing is concluded, because a hand still carrying momentum can drift
-    from its command for a few steps, which settling waits out. This needs no torque sensing; it does
-    not say what holds the hand. travel_m is the distance the hand moved over the last step.
+    hand has gained less than progress_m toward a command more than lead_m ahead of it, twice running.
+    Nearer than lead_m nothing is concluded, because a hand still carrying momentum can drift from its
+    command for a few steps, which settling waits out. This needs no torque sensing, and does not say
+    what holds the hand. travel_m is the distance the hand moved over the last step.
     """
 
     def __init__(self, position, *, lead_m: float, progress_m: float):

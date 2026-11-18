@@ -1,4 +1,5 @@
-"""Strict public request data; domain methods still enforce the limits they own."""
+"""Request models for HTTP and MCP: unknown fields, wrong types and nonfinite numbers are refused before dispatch.
+The kernel and the world model still check their own limits."""
 from __future__ import annotations
 
 import inspect
@@ -215,7 +216,8 @@ POST = {"run": Run, "check": Check, "look": Look, "answer": Answer, "stop": Stop
 
 
 def http_request(method: str, route: list[str], query: dict, body: dict) -> tuple[dict, dict]:
-    """Decode URL text explicitly; JSON request bodies receive no type coercion."""
+    """Validate one request. Query strings are parsed into their types (wait=1.5); JSON bodies must already have
+    the right types."""
     name = route[0]
     query_model = (Events if method == "GET" and route == ["events"] else
                    FrameQuery if method == "GET" and route == ["frame"] else

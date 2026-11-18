@@ -95,6 +95,21 @@ def fake(monkeypatch):
     return make
 
 
+def connected(fake, start=(*Q_REST, 1.0), enable=False):
+    """A reBot body on a fake bus whose motors report `start` (six joints and the gripper)."""
+    bus = fake(start)
+    body = rebot.ReBotBody()
+    body.connect()
+    if enable:
+        body.enable()
+    return bus, body
+
+
+def elbow_goes_quiet_once_switched_on(monkeypatch):
+    alive = FakeMotor.get_state
+    monkeypatch.setattr(FakeMotor, "get_state", lambda self: None if (self.i == 2 and self.on) else alive(self))
+
+
 def test_connect_is_read_only_and_unwraps_a_gripper_parked_open(fake):
     bus = fake(np.append(Q_REST, -3.11))                  # parked open at 3.17 rad, came back one turn low
     body = rebot.ReBotBody()
@@ -108,39 +123,29 @@ def test_connect_is_read_only_and_unwraps_a_gripper_parked_open(fake):
 def test_enable_away_from_rest_is_refused_and_sends_nothing(fake):
     raised = Q_REST.copy()
     raised[1:4] = [0.8, 0.3, 0.4]
-    bus = fake(np.append(raised, 1.0))
-    body = rebot.ReBotBody()
-    body.connect()
+    bus, body = connected(fake, np.append(raised, 1.0))
     with pytest.raises(Refused):
         body.enable()
     assert bus.enables == bus.frames == 0
 
 
-def test_enable_ramps_gains_in_from_nothing(fake):
-    bus = fake(np.append(Q_REST, 1.0))
-    body = rebot.ReBotBody()
-    body.connect()
+def test_enable_ramps_gains_in_from_nothing(fake, monkeypatch):
+    bus, body = connected(fake)
     kps = []
-    orig = FakeMotor.send_mit
+    send = FakeMotor.send_mit
 
     def spy(self, pos, vel, kp, kd, tau):
         if self.i == 1:
             kps.append(kp)
-        return orig(self, pos, vel, kp, kd, tau)
-    FakeMotor.send_mit = spy
-    try:
-        body.enable()
-    finally:
-        FakeMotor.send_mit = orig
+        return send(self, pos, vel, kp, kd, tau)
+    monkeypatch.setattr(FakeMotor, "send_mit", spy)
+    body.enable()
     assert kps[0] < 0.05 * 150 and abs(kps[-1] - 150) < 1e-9
     assert bus.enables == 7
 
 
 def test_a_bad_value_sends_nothing_to_any_motor(fake):
-    bus = fake(np.append(Q_REST, 1.0))
-    body = rebot.ReBotBody()
-    body.connect()
-    body.enable()
+    bus, body = connected(fake, enable=True)
     frames = bus.frames
     q = Q_REST.copy()
     q[2] = np.nan
@@ -150,10 +155,7 @@ def test_a_bad_value_sends_nothing_to_any_motor(fake):
 
 
 def test_frozen_motor_feedback_raises_instead_of_returning_a_new_measurement(fake, monkeypatch):
-    fake(np.append(Q_REST, 1.0))
-    body = rebot.ReBotBody()
-    body.connect()
-    body.enable()
+    _, body = connected(fake, enable=True)
     frozen = {m.i: m.get_state() for m in body.motors}
     monkeypatch.setattr(FakeMotor, "get_state", lambda self: frozen[self.i])
     with pytest.raises(ConnectionError, match="no fresh feedback"):
@@ -178,25 +180,17 @@ def test_kernel_session_on_the_adapter_moves_folds_and_releases(fake):
 
 
 def test_a_failed_engage_switches_every_motor_off_again(fake, monkeypatch):
-    bus = fake(np.append(Q_REST, 1.0))
-    body = rebot.ReBotBody()
-    body.connect()
-    alive = FakeMotor.get_state
-
-    def get_state(self):                                  # the elbow goes quiet once switched on
-        return None if (self.i == 2 and self.on) else alive(self)
-    monkeypatch.setattr(FakeMotor, "get_state", get_state)
+    bus, body = connected(fake)
+    elbow_goes_quiet_once_switched_on(monkeypatch)
     with pytest.raises(ConnectionError, match="disagrees with the start pose"):
         body.enable()
     assert bus.enables == 7 and bus.disables == 7 and not body.enabled
 
 
 def test_an_unconfirmed_switch_off_says_so(fake, monkeypatch):
-    fake(np.append(Q_REST, 1.0))
-    body = rebot.ReBotBody()
-    body.connect()
-    alive, off = FakeMotor.get_state, FakeMotor.disable
-    monkeypatch.setattr(FakeMotor, "get_state", lambda self: None if (self.i == 2 and self.on) else alive(self))
+    _, body = connected(fake)
+    elbow_goes_quiet_once_switched_on(monkeypatch)
+    off = FakeMotor.disable
     monkeypatch.setattr(FakeMotor, "disable", lambda self: None if self.i == 4 else off(self))   # j5 stays on
     with pytest.raises(ConnectionError) as e:
         body.enable()
@@ -208,17 +202,14 @@ def test_a_fitted_model_sets_the_gravity_feedforward(fake):
     """The URDF under-weighs the reBot's forearm; the position loop then carries the rest as sag. A fit from the
     arm's records (world_use.fit) goes into the feedforward instead."""
     from world_use.fit import Model
-    fake(np.append(Q_REST, 1.0))
-    body = rebot.ReBotBody()
-    body.connect()
-    body.enable()
+    _, body = connected(fake, enable=True)
     q = np.radians([20, 55, 54, -19, 0, 0])
     body.command(q, np.zeros(6), 1.0)
     urdf = np.array([m.last[4] for m in body.motors[:6]])
     links = {name: (m, list(c)) for name, (m, c) in CHAIN.links.items()}
     m, c = links["link3"]
     links["link3"] = (1.2 * m, list(c))
-    body.use_fit(Model(rebot.MANIFEST.name, links, [(0.0, 0.0)] * 6))
+    body.use_fit(Model(rebot.MANIFEST.name, links, [(0.0, 0.0)] * 6, CHAIN.joint_names))
     body.command(q, np.zeros(6), 1.0)
     fitted = np.array([m.last[4] for m in body.motors[:6]])
     heavier = Chain(rebot.MANIFEST.urdf, rebot.MANIFEST.tool_link)

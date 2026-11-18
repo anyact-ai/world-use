@@ -19,8 +19,8 @@ import numpy as np
 
 
 class Tape:
-    """Preallocated telemetry blocks. A journal bounds the pending buffer and retires committed blocks;
-    embedded rehearsals without a journal retain their complete tape."""
+    """Telemetry in preallocated blocks of CHUNK rows. With a journal, written blocks are dropped and at
+    most Journal.MAX_BLOCKS wait to be written; without one (an embedded rehearsal) all of it stays in memory."""
     CHUNK = 6000                      # rows per block: a minute at 100 Hz
 
     def __init__(self, n: int):
@@ -34,7 +34,8 @@ class Tape:
         self.max_blocks: int | None = None
 
     def mark_power(self, t: float, on: bool):
-        """Power budget: from an enable attempt through confirmed disable, including incomplete transitions."""
+        """Record a power transition. Powered time runs from an enable attempt to a confirmed disable, so a
+        failed or unconfirmed transition counts as powered."""
         with self._lock:
             if not self._power or self._power[-1][1] != on:
                 self._power.append((t, on))
@@ -71,7 +72,7 @@ class Tape:
         return self._start + (len(self._blocks) - 1) * self.CHUNK + self._used if self._blocks else 0
 
     def arrays(self) -> dict:
-        """Copy retained samples. Persisted runs' complete history is available through load_tape."""
+        """A copy of the samples in memory; load_tape reads a saved run's whole history."""
         _, _, a = self.snapshot(0, 0)
         if not len(a["power_t"]):
             a.pop("power_t")
@@ -258,10 +259,10 @@ def save_arrays(path: Path, arrays: dict):
 
 
 class Journal:
-    """Persist once a second, off the control thread. Retire committed telemetry and cap pending history.
+    """Write the tape and events to the run folder once a second, off the control thread.
 
-    Overruns during prolonged storage failures are reported in status and recording.json. They never
-    block control or motor release. Embedded tapes without a journal remain complete in memory.
+    When storage fails for long enough that unwritten samples are dropped, the losses are reported in
+    status and recording.json. Writing never blocks control or motor release.
     """
     MAX_BLOCKS = 5
     MAX_POWER = 5000
@@ -375,7 +376,7 @@ class Journal:
 
 
 def load_tape(folder: Path | str) -> dict:
-    """A record's committed telemetry, also after process loss. Never replay commands to a robot."""
+    """A record's written telemetry, also after its process died. For analysis: never send it to a robot."""
     folder = Path(folder)
     chunks = sorted((folder / "tape").glob("[0-9]*.npz"))
     if not chunks and (folder / "tape.npz").exists():

@@ -1,4 +1,4 @@
-"""Edit the selected counter-to-sink recording using physics and actual tool returns."""
+"""Cut archived counter-to-sink episode 06 into a video from its replay and recorded tool replies."""
 from __future__ import annotations
 
 import argparse
@@ -56,7 +56,7 @@ def measurement(call):
     return result['measurements'][0] if 'measurements' in result else result
 
 
-def panel(root, calls, beat):
+def panel(calls, beat):
     canvas = Image.new('RGB', (WIDTH, HEIGHT), BG)
     d = ImageDraw.Draw(canvas)
     d.text((28, 23), 'world-use', font=font(38), fill=INK)
@@ -182,7 +182,7 @@ def main():
             str(root / (args.output_name + '.mp4'))], stdin=subprocess.PIPE)
     try:
         for i, beat in enumerate(beats):
-            template = panel(root, calls, beat)
+            template = panel(calls, beat)
             count = round(beat['duration'] * FPS)
             for f in ([count // 2] if args.stills else range(count)):
                 t = beat['start'] + (beat['end'] - beat['start']) * f / max(1, count - 1)

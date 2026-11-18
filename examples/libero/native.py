@@ -1,4 +1,4 @@
-"""One counted execution boundary over the published LIBERO embodiment and tools."""
+"""Driver for the published LIBERO embodiment: every simulator step of either arm goes through it."""
 
 from __future__ import annotations
 
@@ -60,7 +60,8 @@ def fingerprint(observation) -> str:
 
 
 class Frames:
-    """Reuse capture identity when the simulator is paused, without refreshing its age."""
+    """The current camera frames, and the last eight by id. While the simulator is paused its
+    observation keeps the same frames, with their capture time."""
 
     def __init__(self):
         self.images = None
@@ -83,7 +84,8 @@ class Frames:
 
 
 class Driver:
-    """All native, settling, and procedure steps pass through this same gate."""
+    """Every native, settling and procedure step passes the native approvers here, counts toward the
+    step limit and is recorded."""
 
     def __init__(self, embodiment, observation, output: Path, *, max_steps=900, deadline=None):
         self.embodiment = embodiment
@@ -187,15 +189,15 @@ class Driver:
         )
 
     def execute(self, command):
-        """Native interpolation, optionally followed by a bounded measured settling check.
+        """Run one command: a move, optionally settled afterwards, or a grip or state check.
 
-        Settling repeats the same commanded pose through the approvers; every repeat
-        counts toward the same 900-step horizon. It returns as soon as the measurements
-        settle the question: the arm arrived or stopped short, the fingers reached their
-        end or stopped apart. Motion still under way at the bound is reported as such,
-        not as a stable result. A settled stage also ends once its command leads a hand
-        that no longer follows, and a hand that stopped short is commanded to where it
-        is, so that it stops pushing and the next move starts from rest.
+        A move interpolates to its targets with the native move_to. With settle_steps it
+        then repeats the final command through the approvers, each repeat counted toward
+        the episode's step limit, until the arm has arrived or stalled and the fingers have
+        reached their end or stopped apart. Motion still under way after settle_steps is
+        reported as such. A settled move also ends once its command leads a hand that no
+        longer follows, and a hand that stalled is commanded to where it is, so that it
+        stops pushing and the next move starts from rest.
 
         A stage may ask for four things a raw move does not do. travel_z first rises
         straight up to that height when the hand is below it. via is a point the hand

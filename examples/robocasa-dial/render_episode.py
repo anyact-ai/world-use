@@ -1,10 +1,8 @@
-"""Edit saved camera evidence and recorded MuJoCo motion into a short dial demo.
+"""Cut the archived dial episode (trial 03) into a short video.
 
-Identification, planning and verification use saved side/wrist observations.
-Fixed crops preserve those cameras' perspectives; a presentation camera is
-used only for motion. Overlays illustrate recorded
-decisions and public measurements; they are not inputs to the policy. Motion
-plays at 1x; deliberation and tool latency are shortened.
+Identification, planning and verification show the saved side and wrist images, cropped without changing their
+perspective. A presentation camera shows the motion, at 1x; deliberation and tool latency are shortened. Overlays
+draw the recorded decisions and measurements.
 """
 from __future__ import annotations
 
