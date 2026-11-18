@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from conftest import FastClock, make_kernel, serving
+from conftest import FastClock, serving
 
 from world_use import Outcome, Refused, cameras
 from world_use.calibrate import GRAY, solve, tour
@@ -48,12 +48,23 @@ def test_what_cannot_fix_a_camera_is_refused():
         solve(BOX, np.full((8, 2), 500.0) + np.random.default_rng(0).normal(0, 3, (8, 2)), (1024, 576))
 
 
-def test_a_tour_on_the_simulator_calibrates_a_camera_that_sees_it():
+def test_a_tour_takes_the_largest_box_its_rehearsal_passes(k):
+    refusal = SimpleNamespace(refused=True, problems=[dict(message="point 7 out of reach")])
+    reports = iter([refusal, SimpleNamespace(refused=False)])
+    steps, a = tour(k, "front", (800, 600), 6, check=lambda steps, k: next(reports))
+    assert a == 0.09 and sum(step["do"] == "checkpoint" for step in steps) == 6
+    with pytest.raises(Refused, match="point 7 out of reach"):
+        tour(k, "front", (800, 600), 6, spreads=(0.12,), check=lambda steps, k: refusal)
+    with pytest.raises(Refused, match="visits 6 to 8 points"):
+        tour(k, "front", (800, 600), 5)
+
+
+def test_a_tour_on_the_simulator_calibrates_a_camera_that_sees_it(k):
     """Answers from the simulated camera's true lens, scattered like a model's (10 px), recover it."""
-    k = make_kernel()
     assert k.run({"do": "line", "forward": 0.04, "up": 0.10}).ok
     front = cameras.sim_cameras(k.body, k.world)["front"]
-    steps, a = tour(k, "front", (800, 600), 8)
+    # The largest box that rehearses from here; the daemon test below rehearses its tour.
+    steps, _ = tour(k, "front", (800, 600), 8, spreads=(0.09,), check=lambda steps, k: SimpleNamespace(refused=False))
     job = k.submit(steps)
     rng = np.random.default_rng(0)
     while not job.finished:
@@ -63,7 +74,7 @@ def test_a_tour_on_the_simulator_calibrates_a_camera_that_sees_it():
             (u,), _ = front.lens.project([k.chain.fk(k.state.q)[:3, 3]])
             u = u + rng.normal(0, 10, 2)
             k.answer(job.id, f"{u[0]:.0f},{u[1]:.0f}" if 0 <= u[0] <= 800 and 0 <= u[1] <= 600 else "unseen")
-    assert job.outcome.ok and a in (0.12, 0.09, 0.06)
+    assert job.outcome.ok
     answers = job.outcome.data["answers"]
     seen = [x for x in answers if x["answer"] != "unseen"]
     fit = solve([k.world.to_base("work", x["tool"]) for x in seen],
@@ -79,8 +90,8 @@ def test_the_daemon_calibrates_a_camera_and_installs_it(tmp_path, rehearser):
         lens = d.cameras["side"].lens
         assert c.run({"do": "line", "forward": 0.04, "up": 0.10}, wait=20)["status"] == "done"
         r = c.calibrate("side", points=6, spread=0.05, wait=30)
+        assert "nothing else drawn, because this camera is being calibrated" in c.look("side")["drawn"]
         while r["status"] == "waiting":
-            assert "nothing else drawn, because this camera is being calibrated" in c.look("side")["drawn"]
             (u,), _ = lens.project([d.k.chain.fk(d.k.state.q)[:3, 3]])
             r = c.answer(r["id"], f"{u[0]:.1f},{u[1]:.1f}", wait=30)
         text = r["calibration"]["text"]

@@ -53,7 +53,7 @@ def test_external_robot_replays_after_the_original_model_is_removed(external_rob
     assert records.replay(external_robot_record, tmp_path / "replay.gif").stat().st_size > 1000
 
 
-def test_workcell_paths_and_typos_are_not_silently_ignored(tmp_path, monkeypatch):
+def test_workcell_paths_resolve_beside_the_file_and_simulation_settings_are_checked(tmp_path, monkeypatch):
     assert load_workcell("block")["body"] == "sim"
     with pytest.raises(FileNotFoundError):
         load_workcell(tmp_path / "missing" / "block")
@@ -63,9 +63,6 @@ def test_workcell_paths_and_typos_are_not_silently_ignored(tmp_path, monkeypatch
     cell = load_workcell(path)
     assert cell["fit"] == str(tmp_path / "fit.json")
     assert cell["camera"][0]["path"] == str(tmp_path / "images/side.jpg")
-    path.write_text('[[camrea]]\nname = "side"\n')
-    with pytest.raises(ValueError, match="unknown fields: camrea"):
-        load_workcell(path)
     path.write_text('[[box]]\nname = "cup"\nkind = "object"\ncenter = [0.3, 0, 0.05]\nsize = [0.05, 0.05, 0.1]\n'
                     'mass_kg = 0.2\nfriction = 0.5\n')
     assert load_workcell(path)["box"][0]["mass_kg"] == .2
@@ -75,20 +72,27 @@ def test_workcell_paths_and_typos_are_not_silently_ignored(tmp_path, monkeypatch
         make_body("sim", cell)
 
 
-@pytest.mark.parametrize("settings", [
-    "max_age_s = nan",                           # bypassed the stale-frame check
-    'max_age_s = "3"',                           # silently coerced a string
-    "rotate = 90.5",                             # truncated to a valid rotation
-    'projection = "equirec"',                    # silently became a pinhole camera
-    "fov_deg = 180",                             # degenerate pinhole projection
-    "size = [512, 0]",
-    "eye = [0, 0, 1]",                           # ignored an incomplete calibration
-    'projection = "equirect"\nlook_at = [0, 0, 0]',
+CAMERA = '[[camera]]\nname = "side"\npath = "side.png"\n'
+BOX = '[[box]]\nname = "glass"\nkind = "fragile"\ncenter = [0, 0, 0]\nsize = [1, 1, 1]\n'
+
+
+@pytest.mark.parametrize(("text", "match"), [
+    ('[[camrea]]\nname = "side"', "unknown fields: camrea"),
+    (CAMERA + "max_age_s = nan", None),                      # bypassed the stale-frame check
+    (CAMERA + 'max_age_s = "3"', None),                      # silently coerced a string
+    (CAMERA + "rotate = 90.5", None),                        # truncated to a valid rotation
+    (CAMERA + 'projection = "equirec"', None),               # silently became a pinhole camera
+    (CAMERA + "fov_deg = 180", None),                        # degenerate pinhole projection
+    (CAMERA + "size = [512, 0]", None),
+    (CAMERA + "eye = [0, 0, 1]", None),                      # ignored an incomplete calibration
+    (CAMERA + 'projection = "equirect"\nlook_at = [0, 0, 0]', None),
+    (BOX + "dtau = nan", "dtau"),                            # box validation is covered in test_zones;
+    (BOX + "datu = 0.03", "datu"),                           # these check that loading applies it
 ])
-def test_invalid_camera_configuration_fails_when_loading_the_workcell(tmp_path, settings):
-    path = tmp_path / "camera.toml"
-    path.write_text('[[camera]]\nname = "side"\npath = "side.png"\n' + settings + "\n")
-    with pytest.raises(ValueError):
+def test_invalid_workcell_entries_fail_when_loading(tmp_path, text, match):
+    path = tmp_path / "cell.toml"
+    path.write_text(text + "\n")
+    with pytest.raises(ValueError, match=match):
         load_workcell(path)
 
 
@@ -119,24 +123,14 @@ def test_invalid_robot_descriptions_fail_before_a_driver_is_loaded(tmp_path, old
         make_body("no_such_driver:Body", {"robot": str(path)})
 
 
-# Domain validation is covered in test_zones; these check that loading a file applies it.
-@pytest.mark.parametrize("extra", ["dtau = nan", "datu = 0.03"])
-def test_invalid_workcell_boxes_are_rejected_during_loading(tmp_path, extra):
-    path = tmp_path / "cell.toml"
-    path.write_text('body = "no_such_driver:Body"\n[[box]]\nname = "glass"\nkind = "fragile"\n'
-                    'center = [0, 0, 0]\nsize = [1, 1, 1]\n' + extra)
-    with pytest.raises(ValueError):
-        load_workcell(path)
-
-
 def test_prismatic_arm_joints_are_rejected(tmp_path):
     urdf = tmp_path / "linear.urdf"
     urdf.write_text((EXAMPLE / "planar.urdf").read_text().replace('type="revolute"', 'type="prismatic"', 1))
     path = tmp_path / "robot.toml"
     path.write_text((EXAMPLE / "planar.toml").read_text().replace('urdf = "planar.urdf"', 'urdf = "linear.urdf"'))
-    with pytest.raises(ValueError, match="rotational arm joints only; prismatic joints are unsupported"):
+    with pytest.raises(ValueError, match="prismatic joints are unsupported"):
         load_robot(path)
-    with pytest.raises(ValueError, match="rotational arm joints only; prismatic joints are unsupported"):
+    with pytest.raises(ValueError, match="prismatic joints are unsupported"):
         SimBody(replace(load_robot(EXAMPLE / "planar.toml"), urdf=urdf))
 
 

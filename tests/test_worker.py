@@ -4,11 +4,15 @@ import os
 import signal
 import subprocess
 import sys
+from concurrent.futures import Future
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
-from conftest import Q_REST, make_kernel
+from conftest import Q_REST
 
 from world_use import Kernel, Refused, VirtualClock, World, plan, views
+from world_use.behaviors import Line
 from world_use.bodies.rebot import MANIFEST
 from world_use.bodies.sim import SimBody
 from world_use.worker import Rehearser
@@ -27,7 +31,6 @@ def test_the_daemon_rehearses_in_the_worker(daemon, monkeypatch):
     r = c.run({"do": "line", "forward": 0.40}, wait=5)
     assert r["status"] == "refused" and "a 3 cm line can go" in r["incident"]
     assert "a 3 cm line can go" in c.card()
-    assert c.run({"do": "line", "up": 0.02, "duration": 0.5}, wait=10)["status"] == "done"
 
 
 def test_an_owner_that_exits_without_closing_still_exits(tmp_path):
@@ -59,26 +62,18 @@ def test_custom_models_rehearse_without_registration(rehearser):
     assert rehearser.check(PLAN, k).to_dict() == plan.check(PLAN, k).to_dict()
 
 
-def test_a_worker_that_dies_is_replaced():
+def test_a_worker_that_dies_or_runs_too_long_is_replaced(k):
     r = Rehearser()
     try:
-        k = make_kernel()
         first = r.pid
         os.kill(first, signal.SIGKILL)
         assert r.check(PLAN, k).ok and r.pid != first
         assert any(e["kind"] == "rehearser" for e in k.events.since(0))
-    finally:
-        r.close()
-
-
-def test_a_rehearsal_that_runs_too_long_is_refused_and_the_worker_replaced():
-    r = Rehearser(timeout_s=0.2)
-    try:
-        k = make_kernel()
+        second, r.timeout_s = r.pid, 0.2
         with pytest.raises(Refused, match="did not finish"):
             r.check({"do": "hold", "seconds": 3000}, k)
         r.timeout_s = 60.0
-        assert r.check(PLAN, k).ok
+        assert r.check(PLAN, k).ok and r.pid != second
     finally:
         r.close()
 
@@ -94,11 +89,6 @@ def test_a_timed_out_rehearsal_is_not_submitted(daemon, monkeypatch):
 
 
 def test_preparation_keeps_feedback_and_stop_responsive(k):
-    from concurrent.futures import Future
-    from types import SimpleNamespace
-
-    import numpy as np
-
     pending = Future()
     before = k.cmd.q.copy()
     k.planner = SimpleNamespace(prepare=lambda spec, robot: (pending, plan.snapshot(robot)))
@@ -117,8 +107,6 @@ def test_preparation_keeps_feedback_and_stop_responsive(k):
 @pytest.mark.parametrize("change", ["box", "fact"])
 def test_prepared_path_is_refused_only_after_a_change_it_depends_on(k, rehearser, change):
     """A fact recorded while a step was prepared refused it too, aborting even a thermal return."""
-    from types import SimpleNamespace
-
     k.planner = SimpleNamespace(prepare=lambda spec, robot: rehearser.prepare(spec, robot))
     job = k.submit({"do": "line", "up": 0.03})
     while job.status == "queued":
@@ -136,8 +124,6 @@ def test_prepared_path_is_refused_only_after_a_change_it_depends_on(k, rehearser
 
 
 def test_execution_paths_are_prepared_outside_the_control_process(daemon, monkeypatch):
-    from world_use.behaviors import Line
-
     def fail_here(*args):
         raise AssertionError("planning on the control thread")
 

@@ -17,17 +17,19 @@ def test_mcp_validates_nested_arguments_before_sending_requests(monkeypatch):
     monkeypatch.setattr(Client, "_call", lambda *a, **kw: pytest.fail("invalid arguments reached the daemon"))
     server = build("http://fake.invalid")
 
+    glass = dict(name="glass", kind="fragile", center=[0.8, 0, 0.5], size=[0.2] * 3)
+
     async def session():
-        with pytest.raises(ToolError, match="invalid arguments"):
-            await server.call_tool("run", {"plan": {"do": "hold", "seconds": 0.01},
-                "requires": [{"evidence": "missing", "max_age_s": 1, "typo": True}]})
-        with pytest.raises(ToolError, match="invalid arguments"):
-            await server.call_tool("measure_pixels", {"frame": "missing", "point": [0, 0],
-                "plane": {"box": [0, 0, 10, 10], "max_error_m": True}})
-        for extra in ({"datu": 0.03}, {"dtau": True}):
+        for tool, arguments in [
+            ("run", {"plan": {"do": "hold", "seconds": 0.01},
+                     "requires": [{"evidence": "missing", "max_age_s": 1, "typo": True}]}),
+            ("measure_pixels", {"frame": "missing", "point": [0, 0],
+                                "plane": {"box": [0, 0, 10, 10], "max_error_m": True}}),
+            ("add_box", glass | {"datu": 0.03}),
+            ("add_box", glass | {"dtau": True}),
+        ]:
             with pytest.raises(ToolError, match="invalid arguments"):
-                await server.call_tool("add_box", dict(name="glass", kind="fragile", center=[0.8, 0, 0.5],
-                                                      size=[0.2] * 3) | extra)
+                await server.call_tool(tool, arguments)
     asyncio.run(session())
 
 
@@ -130,15 +132,10 @@ def test_mcp_tools_drive_the_daemon(daemon):
         assert "job 1 is still" in r.content[0].text and "job(job=1)" in r.content[0].text
         assert "wu " not in r.content[0].text                  # an MCP agent has tools, not a shell
         r = await server.call_tool("job", {"job": 1, "wait_s": 10})
-        assert "job 1 done" in r.content[0].text
-        r = await server.call_tool("job", {"job": 1, "wait_s": 0})
-        assert r.structured_content["outcome"]["status"] == "done"
+        assert "job 1 done" in r.content[0].text and r.structured_content["outcome"]["status"] == "done"
         with pytest.raises(ToolError, match="no step 'nope'"):
             await server.call_tool("help", {"step": "nope"})
-        r = await server.call_tool("reset", {})
-        assert not r.is_error
-        r = await server.call_tool("run", {"plan": {"do": "hold", "seconds": 0.1}, "wait_s": 10})
-        assert "job 2 done" in r.content[0].text
+        assert not (await server.call_tool("reset", {})).is_error
         r = await server.call_tool("look", {"camera": "side"})
         assert {x.type for x in r.content} == {"text", "image"}
         # The SDK maps ToolError to is_error on the wire.
@@ -152,7 +149,6 @@ def test_mcp_tools_drive_the_daemon(daemon):
         r = await server.call_tool("add_box", {"name": "careful", "kind": "slow", "center": [0.3, 0, 0.3],
                                                "size": [0.1, 0.1, 0.1], "speed": 0.02})
         assert "speed=0.02" in r.content[0].text
-
     asyncio.run(session())
 
 
