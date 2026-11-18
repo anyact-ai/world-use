@@ -19,14 +19,13 @@ TRANSFORMERS_VERSION = "5.15.1"
 
 
 def dominant_region(mask: np.ndarray) -> dict:
-    """Largest 8-connected predicted region, with discarded area made explicit.
+    """The mask's largest 8-connected region, and how much of the mask lies outside it.
 
-    Tiny disconnected predictions can make the full mask's bounding box span the
-    image. Preserve the raw mask; these statistics describe only its largest
-    component, not a corrected segmentation or a verified object identity.
-    width_px is its narrowest extent over all directions, length_px its extent
-    across that, and axis_deg the direction of its length, from image x toward
-    image y in (-90, 90]: the narrowest box around it, not its bounding box.
+    Small stray predictions can stretch the whole mask's bounding box across the image, so these
+    numbers describe only the largest region; other_area_px and components say what was left out.
+    width_px is the region's narrowest extent over all directions, length_px its extent across that,
+    and axis_deg the direction of its length, from image x toward image y in (-90, 90]: the
+    narrowest box around it, not its bounding box.
     """
     pixels = np.asarray(mask, dtype=bool)
     if pixels.ndim != 2:
@@ -85,7 +84,8 @@ def dominant_region(mask: np.ndarray) -> dict:
 
 @dataclass(frozen=True)
 class Observation:
-    """Image-space evidence. Check status before using geometry; tracked does not mean correct."""
+    """A tracker's result for one frame, in pixels. Check status before using bbox or center;
+    "tracked" does not mean the mask is right."""
 
     camera: str
     frame_id: str
@@ -135,7 +135,7 @@ class EdgeTAM:
         self._index = 0
         self._size = None
         self._camera = None
-        # Shared only by forks of these weights/processor; one capture, no temporal state.
+        # The last capture's image encoding, shared with forks so that several targets encode a frame once.
         self._features: dict = {}
         self._load(device, model_path)
 
@@ -263,8 +263,8 @@ class EdgeTAM:
         try:
             with self._torch.inference_mode():
                 inputs = processor(images=frame.image, return_tensors="pt").to(self.device)
-                # Capture identity avoids conflating successive identical images. The digest
-                # also prevents an incorrectly reused id from serving another image's features.
+                # Keyed by capture, so identical images from two captures are encoded separately,
+                # and by a pixel digest, so a reused frame id cannot serve another image's encoding.
                 key = (frame.camera, frame.id, frame.image.mode, frame.image.size,
                        hashlib.sha256(frame.image.tobytes()).digest(), self.device, self._dtype)
                 if self._features.get("key") == key:
@@ -290,11 +290,12 @@ class EdgeTAM:
 
 
 def _discard_history(session, index: int, recent: int):
-    """Forward-only retention for the pinned Transformers version; prompt history has one entry.
+    """Drop session history the model no longer reads, for the pinned Transformers version.
 
-    Six recent outputs feed mask memory and fifteen feed object pointers in this
-    checkpoint. Keep the larger window. Explicit frame indices are essential:
-    the upstream default derives the next index from the number of stored images.
+    This checkpoint reads the last six outputs for mask memory and the last fifteen for object
+    pointers, so the larger window is kept; the prompt frame's output is never dropped. Stored images
+    are cleared too, which is why frames are passed with explicit indices: by default, upstream
+    derives the next index from the number of stored images.
     """
     session.processed_frames.clear()
     histories = [out["non_cond_frame_outputs"] for out in session.output_dict_per_obj.values()]

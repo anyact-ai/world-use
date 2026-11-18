@@ -1,9 +1,10 @@
-"""Explicit reference checks for a declared scene; independent of task success and robot control.
+"""Check a simulated scene against reference observations, and save the checks and their inputs.
 
-This is an evidence recorder, not a reconstruction algorithm. Callers supply correspondences,
-metric measurements and aligned motion. Synthetic evidence exercises the checks but cannot
-establish real-to-sim accuracy. Declare every geometry, camera, dynamics and solver input in
-``scene_identity``; the helper cannot discover inputs a caller leaves out.
+The caller supplies the measurements: landmark correspondences, dimensions, motion and resting
+state. Nothing here reconstructs a scene. A report passes only if every reference is measured;
+synthetic references exercise the checks but cannot show the simulation matches reality.
+``scene_identity`` hashes only what it is given, so declare every geometry, camera, dynamics and
+solver input.
 """
 from __future__ import annotations
 
@@ -42,11 +43,11 @@ def scene_identity(sources: Mapping[str, Path], parameters: dict) -> dict:
 
 @dataclass(frozen=True)
 class Observation:
-    """A reserved observation and its source. Alignment is declared before comparison.
+    """One reference observation: its file, where it came from (origin), its kind and its split.
 
-    ``alignment`` must identify the metric coordinate frame, image crop/resize (or none),
-    and simulation-time = reference-time + time_offset_s. Splits are observation IDs,
-    not random samples taken from an otherwise shared fitting trajectory.
+    ``alignment`` declares, before any comparison, the metric frame, the image crop or resize (or
+    none) and time_offset_s, where simulation time = reference time + time_offset_s. A split holds
+    whole observations; one file can be in both splits only with disjoint intervals.
     """
     name: str
     path: Path
@@ -76,7 +77,7 @@ class Observation:
 
 
 def fit_camera(observation: Observation, points_m, pixels, size, *, fov_deg=60.0, focal=None) -> View:
-    """Reuse the camera fitter on development observations only; no reserved-point selection or tuning."""
+    """Fit a camera view to landmark correspondences from a fit observation; held-out ones are refused."""
     if observation.split != "fit":
         raise ValueError("camera fitting requires a fit observation; held-out observations are checks only")
     return solve(points_m, pixels, size, fov_deg=fov_deg, focal=focal).view
@@ -96,10 +97,11 @@ def _status(checks):
 
 
 class Validation:
-    """One immutable scene revision, fixed tolerances and observation split, saved to a fresh directory.
+    """Checks of one scene revision against fixed tolerances, saved to a new directory.
 
-    Each group retains its own fit and held-out result. Passing means only the declared
-    numerical checks passed; materials, lighting, forces and transfer remain omitted.
+    The tolerances and observations are fixed when it is made, and each check is recorded once. The
+    report gives each group (appearance_camera, geometry, physical_response) a fit and a held-out
+    result. A pass covers only these numerical checks, and the report lists what it leaves out.
     """
 
     def __init__(self, output: Path, *, scene: dict, observations: list[Observation], tolerances: dict,
@@ -194,10 +196,11 @@ class Validation:
                            dict(labels=labels, reference_m=expected.tolist(), predicted_m=actual.tolist()))
 
     def motion(self, observation: str, reference_time_s, reference_xyz_m, simulation_time_s, simulation_xyz_m):
-        """Compare centre positions or corresponding rigid-body landmarks (time, landmark, xyz).
+        """Compare trajectories of centre positions (time, xyz) or of matching landmarks (time, landmark, xyz).
 
-        Landmark trajectories measure rotation as physical displacement at the object's extent.
-        Reference times use the declared interval and offset; interpolation never extrapolates.
+        Landmarks also show rotation, as displacement at the object's extent. Reference times must lie
+        in the observation's interval, if it has one, and are shifted by its time_offset_s; the check
+        fails unless the simulation covers them.
         """
         ref_t, sim_t = _array(reference_time_s), _array(simulation_time_s)
         expected, actual = _array(reference_xyz_m), _array(simulation_xyz_m)
@@ -222,10 +225,9 @@ class Validation:
             reason=None if covered else "simulation does not cover the declared reference time interval")
 
     def stability(self, observation: str, *, state, penetration_m, support_error_m, rest_xyz_m=None):
-        """Check physical validity; omit rest positions when no measured resting interval exists.
+        """Check penetration and support error, and drift over a measured resting interval if one exists.
 
-        Missing rest evidence leaves drift unvalidated, without masking failures in
-        the available state, penetration or support measurements.
+        Without rest_xyz_m the check can still fail, but a pass is reported as unvalidated.
         """
         states = _array(state)
         penetration, support = _array(penetration_m), _array(support_error_m)
@@ -251,7 +253,7 @@ class Validation:
             valid=finite, complete=rest is not None, reason="; ".join(reasons) or None)
 
     def images(self, observation: str, reference: Image.Image, render: Image.Image) -> dict:
-        """Save originals and a labelled, same-pixel-grid comparison; no automatic image fitting."""
+        """Save both images and a labelled side-by-side panel; they must already be the same size."""
         if self.finished or "images" in self.evidence[observation]:
             raise ValueError("image comparison is already recorded or validation is finished")
         if reference.size != render.size:

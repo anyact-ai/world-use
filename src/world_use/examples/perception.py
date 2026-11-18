@@ -207,8 +207,7 @@ async def procedure(server, evaluate, *, tracking=False) -> dict:
                     raise RuntimeError(outcome.message)
                 if attempt == 2:
                     raise RuntimeError("placement did not converge within three bounded visual corrections")
-                # The failed procedure cancelled release. The task explicitly chooses
-                # a bounded correction using current geometry, then a new approach.
+                # The procedure stopped before releasing: lift, move by the measured error and approach again.
                 here = np.asarray((await tool("status"))["tool"]["work"])
                 target = here + correction
                 await execute(dict(do="line", up=.06))

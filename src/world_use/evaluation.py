@@ -1,9 +1,9 @@
-"""Named simulation cases, frozen task programs and independent outcome checks.
+"""Run a task program over named simulation cases, and judge each outcome with a separate evaluator.
 
-Setup, policy and evaluator are trusted Python programs using ``run(robot, params, record)``.
-They execute in separate processes. An optional setup program prepares each case's scene
-before the policy starts; the policy receives case inputs; only the evaluator receives the
-completed episode for privileged inspection. This is not a Python sandbox.
+Setup, policy and evaluator are trusted Python programs with ``run(robot, params, record)``, each
+run from a snapshot of its source in its own process. An optional setup program prepares each case's
+scene before the policy starts. The policy gets the case's inputs; only the evaluator gets the
+finished episode, recorded physics included. The programs are not sandboxed.
 """
 from __future__ import annotations
 
@@ -30,10 +30,10 @@ def _read(path: Path) -> dict:
 
 
 def held_for(simulation_time, condition, *, seconds: float, max_gap_s: float) -> bool:
-    """Whether a sampled condition remained true through the final simulated interval.
+    """Whether condition held for the last `seconds` of simulation time, sampled at most max_gap_s apart.
 
-    Requires increasing finite simulation times and a bounded observation gap. A true
-    final sample, wall-clock delay, or a long gap between two true samples is insufficient.
+    False unless the times are finite and increasing and true samples cover the whole interval: a
+    true last sample alone, or two true samples far apart, is not enough.
     """
     times = np.asarray(simulation_time, dtype=float)
     values = np.asarray(condition)
@@ -121,21 +121,23 @@ def run_suite(task: Path, evaluator: Path, output: Path, *, cases: Sequence[dict
               observation_mode: str = "camera", parent: str | None = None,
               policy_context: Mapping[str, Path] | None = None, setup: Path | None = None,
               setup_sources: Sequence[Path] = ()) -> dict:
-    """Execute a fresh suite, preserving every declared case and attempt.
+    """Run every case in a new suite directory, and record each attempt whatever its result.
 
-    Each case has ``name``, ``seed``, ``role`` (development/held_out), and ``parameters``.
-    The policy receives those fields plus ``inputs`` (snapshotted files) and ``output``
-    (its fresh SimulationSession episode directory). The independent evaluator receives
-    ``episode`` and ``case`` and must return verdict, valid_start, reasons, interventions.
-    Scene validity, recording integrity, task success and power cleanup remain separate.
-    ``policy_context`` snapshots declared prompts/skills as part of the policy revision,
-    independently of scene inputs and case identity. Their paths reach the policy as
-    ``params["context"]``. Capturing them does not prove the authoring agent used them.
+    Each case has ``name``, ``seed``, ``role`` (development or held_out) and ``parameters``. The
+    policy gets those fields, ``inputs`` (paths of the suite's copies of the input files),
+    ``observation_mode`` and ``output``, the episode directory for its SimulationSession. The
+    evaluator gets ``episode`` and ``case`` and returns verdict, valid_start, reasons and
+    interventions. Scene validation, recording integrity, the task verdict and power cleanup are
+    reported separately.
 
-    An optional ``setup`` program receives the case fields, ``inputs`` and ``output`` (the
-    case's fresh scene directory) and returns valid_start and reasons. Its revision joins
-    each case identity. An invalid start skips the policy; otherwise the policy and evaluator
-    receive the unchanged directory as ``scene`` and the evaluator need not return valid_start.
+    ``policy_context`` files (prompts, skills) are copied with the policy's source, so they are part
+    of its revision but not of a case's identity; the policy gets their paths as
+    ``params["context"]``. Recording them does not show that whoever wrote the policy used them.
+
+    An optional ``setup`` program gets the case fields, ``inputs`` and ``output`` (the case's fresh
+    scene directory) and returns valid_start and reasons. Its revision is part of each case's
+    identity. An invalid start skips the policy; otherwise the policy and evaluator also get that
+    directory, which must stay unchanged, as ``scene``, and the evaluator need not return valid_start.
     """
     if observation_mode not in ("camera", "privileged_diagnostic"):
         raise ValueError("observation_mode must be camera or privileged_diagnostic")
@@ -329,7 +331,11 @@ def _run_case(root: Path, suite: dict, case: dict):
 
 
 def episode_integrity(episode: Path) -> dict:
-    """Inspect session evidence separately from a task's physical success function."""
+    """Check an episode's records, apart from the task's own verdict.
+
+    The task result must report no recording error and confirmed power-off, the flight and physics
+    records must be complete, and the replay must match the committed physics chunks.
+    """
     episode = Path(episode)
     reasons, simulation_s, power_off = [], None, False
     try:
@@ -378,7 +384,10 @@ def episode_integrity(episode: Path) -> dict:
 
 
 def summarize(root: Path) -> dict:
-    """Read all declared cases, including those lost before a terminal write. No rates are inferred."""
+    """The suite's trials, one per declared case; a case without trial.json counts as interrupted.
+
+    Counts only: no success rates.
+    """
     root = Path(root)
     suite = _read(root / "suite.json")
     rows = []
@@ -435,7 +444,10 @@ def rerun(root: Path, case_name: str, output: Path) -> dict:
 
 
 def compare(left: Path, right: Path) -> list[dict]:
-    """Pair identical camera cases; keep invalid and interrupted rows visible."""
+    """Pair two camera-mode suites' trials case by case, invalid and interrupted ones included.
+
+    Refuses suites with a different runtime, evaluator, observation mode or set of cases.
+    """
     a, b = summarize(left), summarize(right)
     for key in ("runtime_id", "evaluator_revision", "observation_mode"):
         if a[key] != b[key]:

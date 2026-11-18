@@ -1,4 +1,8 @@
-"""Recorded Python tasks: explicit source snapshots, inputs and client calls."""
+"""Run a Python task program from a snapshot of its source, recording its inputs, calls and result.
+
+launch copies this file into each invocation and runs that copy (`__runner__/tasks.py`) as a script,
+which is why it imports world_use by absolute name.
+"""
 from __future__ import annotations
 
 import argparse
@@ -105,7 +109,7 @@ def prepare(output: Path, sources: Mapping[str, Path], *, entrypoint: str, param
 
 
 class Record:
-    """A single invocation. Reopening it for execution is deliberately refused."""
+    """One invocation's record. It opens for execution once: started.json cannot be written twice."""
 
     def __init__(self, root: Path):
         self.root = Path(root).resolve()
@@ -191,10 +195,11 @@ class Record:
 
     @contextmanager
     def phase(self, name: str, *, context: dict | None = None):
-        """Group observations, calculations and calls; completion does not imply physical success.
+        """Group the trace events made inside it under a named phase, and yield the phase's ID.
 
-        Yields the trace sequence identifying this phase. Nested phases retain their parent.
-        A missing end after process loss leaves the outcome unknown; no action is retried.
+        The ID is the phase_begin event's sequence number; a nested phase records its parent's. The
+        phase ends completed or failed, which says whether the code raised, not whether the task
+        succeeded. A process that dies leaves the phase without an end.
         """
         if not isinstance(name, str) or not name.strip():
             raise ValueError("phase name must be non-empty")
@@ -212,7 +217,10 @@ class Record:
             self.phase_id = previous
 
     def invoke(self, kind, inputs, function, *, recovery=False):
-        """Record intent before calling, then reply or exception; never retry the function."""
+        """Record the intent, call function once, then record its reply or exception.
+
+        With recovery, a recording failure does not stop the call: stopping and releasing must still work.
+        """
         try:
             call = self.append("intent", operation=kind, inputs=inputs)
         except RecordingError:
@@ -235,12 +243,15 @@ class Record:
         return result
 
     def call(self, function, /, *args, **kwargs):
-        """Record explicit pure-computation inputs/results; no automatic source/dependency discovery."""
+        """Call function(*args, **kwargs) and record its arguments and result, not the code it runs."""
         name = f"{function.__module__}.{function.__qualname__}"
         return self.invoke(name, dict(args=args, kwargs=kwargs), lambda: function(*args, **kwargs))
 
     def cell(self, path: str | Path, namespace: dict, *, inputs: dict | None = None, outputs=()):
-        """Execute saved source in the caller's namespace; capture only declared inputs/outputs."""
+        """Save a Python file's source, run it in namespace and return the named outputs.
+
+        Only the declared inputs and outputs are recorded; the cell's stdout and stderr go to files under cells/.
+        """
         source = Path(path).read_bytes()
         ref = self.artifact(source, "py")
         previous = self.cell_source
@@ -271,14 +282,14 @@ class Record:
         payload = dict(result=result, exception=exception, final_status=status,
                        recording_error=self.error, trace_events=self.sequence,
                        flight_recording_error=None if status is None else status.get("recording", {}).get("error"))
-        # A final result is distinct from a completed flight record or a successful task.
         write_new(self.root / "result.json", json_bytes(self.encode(payload)))
         self.finished = True
         return payload
 
 
 class RecordedClient(Client):
-    """Client transport recording, including frames acquired inside Tracking(client, tracker)."""
+    """A Client that records each request and reply in the task's trace, also those Tracking(client, tracker)
+    makes through it. It refuses frames and measurements from other invocations."""
 
     def __init__(self, url: str, record: Record):
         super().__init__(url)
@@ -352,7 +363,7 @@ def launch(task: Path, output: Path, *, parameters: dict, sources=(), url=None, 
     bundle["__runner__/tasks.py"] = Path(__file__).resolve()
     output = prepare(output, bundle, entrypoint=task.name, parameters=parameters, url=url, parent=parent)
     print(f"invocation: {output}", flush=True)
-    # Never import the mutable original task. A killed launcher must not cause an automatic retry.
+    # Run the snapshot, never the original file, which may have changed. Nothing retries if this launcher dies.
     process = subprocess.Popen([sys.executable, "-I", str(output / "source/__runner__/tasks.py"),
                                 "--execute", str(output)], cwd=output / "source")
     try:
@@ -429,7 +440,7 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--params", type=Path, help="JSON parameters; use absolute paths for external inputs")
     parser.add_argument("--source", action="append", type=Path, default=[], help="additional local source/config file")
-    parser.add_argument("--url", help="explicit URL of an already-running simulation; no daemon is started")
+    parser.add_argument("--url", help="URL of a running simulation daemon; none is started")
     parser.add_argument("--parent", help="failed/previous invocation ID or record reference")
     parser.add_argument("--execute", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()

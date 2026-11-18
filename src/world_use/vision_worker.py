@@ -1,4 +1,4 @@
-"""Optional, bounded model process owned by a procedure or MCP client, never by the kernel."""
+"""EdgeTAM in a child process, started by a procedure or MCP client, never by the kernel."""
 from __future__ import annotations
 
 import math
@@ -71,7 +71,8 @@ def _serve(conn, options):
 
 
 class TrackerProcess:
-    """Load once before powered work; one inference at a time and up to four independent target histories."""
+    """Start it before powering the arm: loading takes time. It serves one request at a time, for up to
+    MAX_TARGETS targets with separate histories, and kills the process when a request takes over timeout_s."""
 
     def __init__(self, *, device="cpu", model_path=None, max_age_s=15, timeout_s=30, startup_timeout_s=120):
         if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < math.inf

@@ -96,10 +96,11 @@ def locate(move: Callable[[np.ndarray], Outcome], look: Callable[[], Look], *, a
     x, y through the caller's own executor, which counts and checks it, and returns its Outcome; a move
     that fails ends the search with that Outcome. The search ends once the hand is within arrive_m of
     the point the looks fix, so the last look is taken from over the region, or after MAX_MOVES moves
-    with the position the looks fix from wherever the arm got to. A done Outcome carries
-    x, y, z in the base frame, the number of looks and moves, and pixel, where that point is in the
-    image now, or region, saying why it is not. extent_m, the region's box at that depth along the
-    image's x and y, is given when the last look shows the whole region.
+    with the position the looks fix from wherever the arm got to. A done Outcome carries x, y, z in
+    the base frame, the number of looks and moves, pixel (where that point is in the latest image,
+    while the region is visible), extent_m (the region's box at that depth along the image's x and
+    y, when the last look shows the whole region) and region, a note when the region was lost or
+    never seen whole.
 
     One look gives only a direction. The first move heads for where it meets assumed_z when the
     caller knows a height below the camera to assume, or CUT_OFF_DROP_M below the camera for a region
