@@ -1,11 +1,14 @@
-"""Case roles, campaign admission and result collection, without a simulator or network."""
+"""What protects money and the protocol: the spending guard, case roles, campaign admission and result
+collection, without a simulator or network."""
 
 import json
 import sys
 
 import campaign
+import httpx
 import pytest
 import report
+from budget import BASE_URL, MODEL, AzureBudget, BudgetStop
 from campaign import Campaign
 from run import check_case, episode
 
@@ -205,3 +208,150 @@ def test_report_collects_repeats_and_infrastructure_stops_and_tables_the_latest_
     table = report.tables([json.loads(line) for line in out.read_text().splitlines()])
     assert "| 0 | 0 † | development | `b` | 1 of 2 | `c` | 1 of 1 | 40 / 9 |" in table
     assert "did not start from the same initial observation" in table
+
+
+# -- the spending guard ------------------------------------------------------------------------------------------------
+
+def response(status=200, usage=True, completed=True):
+    return httpx.Response(
+        status,
+        json=dict(
+            status="completed" if completed else "incomplete",
+            usage={"input_tokens": 100, "output_tokens": 10} if usage else {},
+            output=[],
+        ),
+    )
+
+
+def request():
+    return httpx.Request("POST", BASE_URL + "/responses", json=dict(model=MODEL, input=[], tools=[]))
+
+
+def guard(folder, handle, *, key="test", total=15.0, waits=None):
+    def sleep(s):
+        waits.append(s)
+
+    transport = httpx.MockTransport(handle)
+    return AzureBudget(folder / "api", key=key, total=total, per_arm=7.4, seconds=7200, inner=transport, sleep=sleep)
+
+
+@pytest.mark.parametrize("case", ["network", "status", "usage"])
+def test_unknown_usage_blocks_any_following_dispatch(tmp_path, case):
+    sent = []
+
+    def handle(req):
+        sent.append(req)
+        if case == "network":
+            raise httpx.ReadTimeout("interrupted")
+        if case == "status":
+            return response(503)
+        return response(usage=False)
+
+    budget = guard(tmp_path, handle)
+    budget.begin("baseline")
+    for _ in range(2):
+        with pytest.raises(BudgetStop):
+            budget.handle_request(request())
+    assert len(sent) == 1
+    assert budget.uncertain and budget.used > 0
+    with pytest.raises(BudgetStop):
+        budget.begin("world_use")
+
+
+def test_a_request_that_used_more_than_its_reservation_is_charged_for_it_and_stops_the_pair(tmp_path):
+    sent = []
+
+    def handle(req):
+        sent.append(req)
+        return httpx.Response(200, json={"status": "completed", "usage": {"input_tokens": 999999, "output_tokens": 1}})
+
+    budget = guard(tmp_path, handle)
+    budget.begin("baseline")
+    with pytest.raises(BudgetStop, match="exceeded"):
+        budget.handle_request(request())
+    # 999,999 tokens at the conservative rate, not the far smaller reservation.
+    assert budget.used == pytest.approx((999999 * 2.5 + 10) / 1e6)
+    rows = [json.loads(line) for line in (tmp_path / "api" / "ledger.jsonl").read_text().splitlines()]
+    over = next(r for r in rows if r["event"] == "over_reservation")
+    assert over["total_charge"] == pytest.approx(budget.used)
+    with pytest.raises(BudgetStop):
+        budget.handle_request(request())
+    assert len(sent) == 1
+
+
+def test_sealed_reasoning_is_sized_as_the_little_it_counts_for_and_plain_text_is_not(tmp_path):
+    sent = []
+
+    def handle(req):
+        sent.append(req)
+        return response()
+
+    def sized(item):
+        return httpx.Request("POST", BASE_URL + "/responses", json=dict(model=MODEL, input=[item], tools=[]))
+
+    budget = guard(tmp_path, handle)
+    budget.begin("baseline")
+    # Eighty calls' worth of sealed reasoning fits; the same bytes of text are a long context.
+    budget.handle_request(sized(dict(type="reasoning", encrypted_content="x" * 600_000, summary=[])))
+    assert len(sent) == 1 and not budget.uncertain
+    with pytest.raises(BudgetStop, match="ceiling"):
+        budget.handle_request(sized(dict(role="user", content="x" * 600_000)))
+    assert len(sent) == 1
+
+
+def test_caps_deadline_and_destination_prevent_dispatch(tmp_path):
+    sent = []
+    budget = guard(tmp_path, sent.append, total=0.001)
+    budget.begin("baseline")
+    with pytest.raises(BudgetStop):
+        budget.handle_request(request())
+    budget.total = 15
+    with pytest.raises(BudgetStop):
+        budget.handle_request(httpx.Request("POST", "https://example.org/responses", json={"model": MODEL}))
+    budget.deadline = 0
+    with pytest.raises(BudgetStop):
+        budget.handle_request(request())
+    assert not sent
+
+
+def test_settlement_and_no_credentials_in_journal(tmp_path):
+    sent = []
+
+    def handle(req):
+        sent.append(req)
+        return response()
+
+    budget = guard(tmp_path, handle, key="test-private-key")
+    budget.begin("baseline")
+    budget.handle_request(request())
+    assert sent[0].headers["api-key"] == "test-private-key"
+    assert "authorization" not in sent[0].headers
+    assert budget.used == pytest.approx(0.00035)
+    assert budget.estimated == pytest.approx(0.0003)
+    assert not budget.uncertain
+    for p in (tmp_path / "api").iterdir():
+        assert "test-private-key" not in p.read_text()
+
+
+@pytest.mark.parametrize(("failures", "sent"), [(2, 3), (4, 4)])
+def test_a_request_whose_connection_was_never_made_is_sent_again_a_few_times(tmp_path, failures, sent):
+    attempts, waits = [], []
+
+    def handle(req):
+        attempts.append(req)
+        if len(attempts) <= failures:
+            raise httpx.ConnectError("no tunnel")
+        return response()
+
+    budget = guard(tmp_path, handle, waits=waits)
+    budget.begin("baseline")
+    if failures < sent:
+        budget.handle_request(request())
+        assert not budget.uncertain and budget.calls == 1 and budget.estimated == pytest.approx(0.0003)
+    else:
+        with pytest.raises(BudgetStop):
+            budget.handle_request(request())
+        assert budget.uncertain
+    assert len(attempts) == sent and len(waits) == min(failures, 3)
+    journal = [json.loads(line)["event"] for line in (tmp_path / "api" / "ledger.jsonl").read_text().splitlines()]
+    assert journal.count("connect_retry") == len(waits) and journal.count("reserved") == 1

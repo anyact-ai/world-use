@@ -225,7 +225,7 @@ installed in the agent environment. Validation makes no model requests: a script
 a mock transport, and no task success is claimed. It writes `validation.json`, and a paid run refuses one
 that failed or was made for other runner sources, another world-use tree or another runtime. It requires:
 
-- the runner's tests, `test_runner.py` and `test_campaign.py`, to pass;
+- `test_campaign.py`, the tests of the spending guard, case roles and campaign, to pass;
 - the raw arm's approved actions and states to match upstream `evaluate` on the same scripted responses,
   and its prompt to be upstream's plus the one sentence both arms get;
 - both arms to reset to identical initial observations, and a selection and a later observation of the

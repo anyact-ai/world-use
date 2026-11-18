@@ -231,7 +231,6 @@ def main():
                     "-m",
                     "pytest",
                     "-q",
-                    str(SOURCE / "test_runner.py"),
                     str(SOURCE / "test_campaign.py"),
                     "--basetemp",
                     str(args.output / "pytest"),
