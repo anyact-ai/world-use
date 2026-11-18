@@ -20,7 +20,8 @@ def truth() -> fit.Model:
     links = {name: (m, list(c)) for name, (m, c) in chain.links.items()}
     m, c = links["link3"]
     links["link3"] = (1.2 * m, [c[0] + 0.02, c[1], c[2]])
-    return fit.Model(MANIFEST.name, links, [(0.3, 0.5), (0.2, 1.0), (0.5, 1.5), (0.2, 0.5), (0.1, 0.2), (0.05, 0.1)])
+    return fit.Model(MANIFEST.name, links, [(0.3, 0.5), (0.2, 1.0), (0.5, 1.5), (0.2, 0.5), (0.1, 0.2), (0.05, 0.1)],
+                     chain.joint_names)
 
 
 TOURS = {

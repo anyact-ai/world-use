@@ -216,16 +216,9 @@ class World:
                     top=float(centre[2] + R[2, 2] * box.size[2] / 2))
 
     # -- estimated object attachment (not simulation physics) --------------------------------------
-    def object_at(self, p, margin: float = 0.005) -> Box | None:
-        """The object whose box holds point p (the tool point between the jaws), if any."""
-        for box in self.of_kind("object"):
-            if box.contains(p, margin):
-                return box
-        return None
-
     def grab(self, tool_T) -> Box | None:
-        """Estimate that the object at the tool point is attached to the tool."""
-        box = self.object_at(tool_T[:3, 3])
+        """Attach to the tool the object whose box holds the tool point (between the jaws), if any."""
+        box = next((b for b in self.of_kind("object") if b.contains(tool_T[:3, 3], 0.005)), None)
         if box is not None:
             self.held = (box.name, np.linalg.inv(tool_T) @ box.pose)
         return box
@@ -255,11 +248,11 @@ class World:
         self.facts[key] = Fact(key, value, source, note=note)
         return self.facts[key]
 
-    def invalidate(self, reason: str, keys=None) -> list[str]:
-        """Mark facts stale (all of them unless keys are given). Returns the keys that changed."""
+    def invalidate(self, reason: str) -> list[str]:
+        """Mark every fact stale, for reason. Returns the keys of those that were not stale already."""
         changed = []
         for k, f in self.facts.items():
-            if (keys is None or k in keys) and f.stale is None:
+            if f.stale is None:
                 f.stale = reason
                 changed.append(k)
         return changed

@@ -25,12 +25,13 @@ def rot_z(angle: float) -> np.ndarray:
 
 
 def align_planar(source, target, tool, *, max_error_m: float) -> dict:
-    """Fit corresponding 3D landmarks with XY translation and yaw, without scale or reflection.
+    """Fit corresponding 3D landmarks with an XY translation and a yaw (no scale or reflection), and move the
+    tool pose by the same correction.
 
-    All inputs use the same coordinate frame. Correspondence and a rigid grasp are the caller's claims.
-    The proposed tool pose preserves its height and accounts for an off-centre grasp. It is geometry,
-    not a motion plan or a grasp/clearance check. Relative landmark heights must also agree, allowing
-    a constant height offset between the two surfaces; vertical placement stays with the caller.
+    All inputs share one frame. The caller chooses the correspondences and assumes the object sits rigidly in
+    the grasp. The proposed tool pose keeps its height and accounts for an off-centre grasp; nothing checks it
+    for reach or clearance. Landmark heights must agree up to one constant offset between the two surfaces,
+    and vertical placement is left to the caller.
     """
     a, b, tcp = (np.asarray(v, dtype=float) for v in (source, target, tool))
     if (a.ndim != 2 or a.shape[1:] != (3,) or len(a) < 3 or b.shape != a.shape

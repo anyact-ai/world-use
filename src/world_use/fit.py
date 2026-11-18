@@ -53,11 +53,11 @@ class FitError(TypedDict):
 class Model:
     """A robot model fitted from flight records: links' masses and centres of mass, joints' friction."""
     body: Name                                        # the manifest's name it was fitted for
-    # JSON arrays and Python tuples share the same contract; scalar values remain strict.
+    # strict=False lets a JSON array stand for each tuple; the numbers inside stay strict.
     links: dict[Name, Annotated[tuple[Positive, Vector], Field(strict=False)]]
     friction: list[Annotated[tuple[Nonnegative, Nonnegative], Field(strict=False)]]
+    joints: list[Name]                                # the chain's joint names, in URDF order
     records: list[str] = field(default_factory=list)
-    joints: list[Name] = field(default_factory=list)    # empty in legacy fits; otherwise URDF joint order
     samples: Annotated[int, Field(ge=0)] = 0
     check: dict[Name, FitError] = field(default_factory=dict)
     made: str = ""
@@ -65,7 +65,7 @@ class Model:
     def apply(self, chain: Chain):
         if len(self.friction) != chain.n:
             raise ValueError(f"fit friction: expected {chain.n} entries in URDF joint order")
-        if self.joints and self.joints != chain.joint_names:
+        if self.joints != chain.joint_names:
             raise ValueError(f"fit joints must follow URDF order: {chain.joint_names}")
         if unknown := self.links.keys() - chain.links.keys():
             raise ValueError(f"fit names unknown links: {', '.join(sorted(unknown))}")
@@ -91,9 +91,8 @@ class Model:
             lines += [f"  {j:8s} {c['urdf']:5.2f}  {c['fit']:6.2f}" for j, c in self.check.items()]
         else:
             lines.append("  (one record: nothing held out, so no check of how well it predicts)")
-        names = self.joints or [f"joint {i + 1}" for i in range(len(self.friction))]
         lines.append("  friction: " + (", ".join(f"{n} {c:.2f} Nm + {v:.2f} Nm s/rad"
-                                                for n, (c, v) in zip(names, self.friction, strict=True)
+                                                for n, (c, v) in zip(self.joints, self.friction, strict=True)
                                                 if abs(c) > 0.02 or abs(v) > 0.02) or "none above 0.02"))
         if chain is not None:
             moved = []
@@ -311,5 +310,5 @@ def fit(run_dirs, manifest) -> Model:
         fitted[name] = (round(m, 5), [round(float(x), 5) for x in h / m])
     friction = [(round(float(theta[free + 2 * i]), 4), round(float(theta[free + 2 * i + 1]), 4))
                 for i in range(chain.n)]
-    return Model(manifest.name, fitted, friction, sorted(rows), list(chain.joint_names), len(y), check,
-                 f"{datetime.now():%Y-%m-%d %H:%M}")
+    return Model(manifest.name, fitted, friction, list(chain.joint_names), records=sorted(rows), samples=len(y),
+                 check=check, made=f"{datetime.now():%Y-%m-%d %H:%M}")

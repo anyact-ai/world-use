@@ -1,7 +1,7 @@
 """Local MuJoCo sessions using the normal daemon, client and task records.
 
-Scene construction and scoring belong to the caller. Physics state is an evaluator/replay
-artifact; it is never added to the client observations or the kernel's estimated world.
+The caller builds the scene and scores the outcome. The recorded physics state is for evaluation and
+replay; it never reaches the client's observations or the kernel's estimated world.
 """
 from __future__ import annotations
 
@@ -30,7 +30,8 @@ from .world import World
 
 
 class MujocoRecording:
-    """Sample completed control steps; persist bounded batches off the control thread."""
+    """Samples the physics state after control ticks, at most every 0.02 s of simulated time, and writes it in
+    batches of up to 50 from its own thread."""
 
     def __init__(self, body: Any, output: Path):
         self.body, self.output = body, Path(output)
@@ -163,11 +164,11 @@ class _SessionClient(RecordedClient):
 
 
 class SimulationSession:
-    """Own one external MuJoCo episode, initially idle and unpowered.
+    """One external MuJoCo episode behind its own daemon, starting idle with torque off.
 
-    The caller constructs a simulated body with model/data and a reentrant lock, and
-    calibrated cameras over that body. Output may contain setup assets, but no earlier
-    session. Sources are declared explicitly, as in the recorded task launcher.
+    The caller builds the simulated body (with model, data and a reentrant lock) and calibrated cameras on it.
+    output may already hold setup assets, but not an earlier session. sources lists the files to snapshot
+    with the task record, as for the task launcher.
     """
 
     def __init__(self, body: Any, output: Path, *, cameras: dict, sources: dict[str, Path],
@@ -226,7 +227,7 @@ class SimulationSession:
         status = self.client.status()
         if any(status.get(key) for key in ("enabled", "power_uncertain", "job", "queued")):
             raise RuntimeError("stop active work and release power before closing the simulation session")
-        # The ordinary shutdown path owns release, stopping the loop and closing the body.
+        # Past _SessionClient.shutdown: the daemon's shutdown releases power, stops the loop and closes the body.
         reply = self.client._call("POST", "/shutdown", {})
         self.daemon.http.server_close()
         self.closed = True
@@ -236,8 +237,7 @@ class SimulationSession:
         status["physics_recording"] = dict(path=str(self.physics.folder), error=self.physics.error)
         with suppress(RecordingError):
             self.record.append("end", status=status)
-        saved = self.record.finish(result, status=status, exception=exception)
-        return saved
+        return self.record.finish(result, status=status, exception=exception)
 
     @property
     def elapsed_s(self) -> float:
@@ -248,7 +248,7 @@ class SimulationSession:
 
     def __exit__(self, kind, value, traceback):
         if not self.closed:
-            # Recovery remains usable even if recording failed. No implicit retreat motion.
+            # An unrecorded client, so recovery works even if recording failed. Nothing moves the arm back first.
             try:
                 recovery = Client(self.client.url)
                 recovery.stop("simulation session ended")

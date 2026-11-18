@@ -19,7 +19,7 @@ def test_urdf_limits_and_mass():
     assert CHAIN.joint_names == [f"joint{i}" for i in range(1, 7)]
     assert np.allclose(CHAIN.lower, [-2.8, 0, 0, -1.57, -1.57, -3.14])
     assert np.allclose(CHAIN.upper, [2.8, 3.14, 3.14, 1.57, 1.57, 3.14])
-    assert abs(CHAIN.mass - 6.01) < 0.02
+    assert abs(sum(m for m, _ in CHAIN.links.values()) - 6.01) < 0.02
 
 
 def test_jacobian_equals_finite_differences():

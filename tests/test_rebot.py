@@ -218,7 +218,7 @@ def test_a_fitted_model_sets_the_gravity_feedforward(fake):
     links = {name: (m, list(c)) for name, (m, c) in CHAIN.links.items()}
     m, c = links["link3"]
     links["link3"] = (1.2 * m, list(c))
-    body.use_fit(Model(rebot.MANIFEST.name, links, [(0.0, 0.0)] * 6))
+    body.use_fit(Model(rebot.MANIFEST.name, links, [(0.0, 0.0)] * 6, CHAIN.joint_names))
     body.command(q, np.zeros(6), 1.0)
     fitted = np.array([m.last[4] for m in body.motors[:6]])
     heavier = Chain(rebot.MANIFEST.urdf, rebot.MANIFEST.tool_link)

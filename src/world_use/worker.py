@@ -1,8 +1,8 @@
 """CPU-heavy robot calculations in a persistent spawned process, without hardware handles.
 
-Rehearsal, reach probes and per-step preparation share this worker. Requests are serialized on a helper
-thread; the control loop only submits a snapshot and polls a Future. A timeout kills the process through
-multiprocessing's public API.
+Rehearsals, reach probes and each step's path preparation share this worker, one request at a time on a helper
+thread; the control loop only submits a snapshot and polls a Future. A request that times out kills the worker,
+and a new one starts.
 """
 from __future__ import annotations
 
@@ -74,9 +74,9 @@ def _prepare(snap: plan.Snapshot, spec) -> dict:
         t.close()
 
 
-
 class Rehearser:
-    """Snapshot-only computation. Unsupported extensions fail explicitly; never fall back to the control process."""
+    """Plans from kernel snapshots in the worker. A behavior the worker cannot rebuild (registered after it started,
+    or only in this process) is refused; the control process never plans it instead."""
 
     def __init__(self, timeout_s: float = 120.0):
         self.timeout_s = timeout_s

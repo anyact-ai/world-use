@@ -225,7 +225,3 @@ class Chain:
     def potential(self, q) -> float:
         F = self.link_frames(q)
         return sum(m * G * (F[link] @ np.append(c, 1.0))[2] for link, (m, c) in self.links.items() if link in F)
-
-    @property
-    def mass(self) -> float:
-        return sum(m for m, _ in self.links.values())

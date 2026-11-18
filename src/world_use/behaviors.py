@@ -54,7 +54,8 @@ class Outcome:
         return d
 
     def feedback(self) -> dict:
-        """Compact policy feedback; step_done events retain each completed child's outcome."""
+        """to_dict() as a policy gets it: a finished sequence drops its list of step messages and reports only its
+        last step (step_done events keep every step's outcome)."""
         d = self.to_dict()
         if self.kind == "seq" and self.ok:
             data = {k: v for k, v in self.data.items() if k not in ("steps", "last_result")}
@@ -471,7 +472,7 @@ class ContactSense:
 def fragile_dtau(k: Kernel) -> float | None:
     """The contact limit of the fragile zones the tool is in (the lowest), or None outside them."""
     tool = k.chain.fk(k.state.q)[:3, 3]
-    limits = [float(b.params.get("dtau", 0.3)) for b in k.world.zones_at(tool) if b.kind == "fragile"]
+    limits = [float(b.params["dtau"]) for b in k.world.zones_at(tool) if b.kind == "fragile"]
     return min(limits) if limits else None
 
 
@@ -581,10 +582,11 @@ class Touchdown(Guarded):
 # -- measured arrival and gripper checks ---------------------------------------------------------------
 
 class Settle(Behavior):
-    """Wait for measured joints to reach their final commands; return early on arrival or stalled progress.
+    """Wait until the measured joints reach their final command; if they stop getting closer or the wait runs out,
+    it is a surprise.
 
-    seconds        maximum wait (default 1); every tick still passes the kernel's watchdogs
-    tolerance_deg  joint error allowed (default each joint's tracking tolerance / 6)
+    seconds        longest wait (default 1); the kernel's watchdogs run on every tick
+    tolerance_deg  joint error that counts as arrived (default each joint's tracking tolerance / 6)
     """
     kind = "settle"
     example = {"do": "settle", "seconds": 1, "tolerance_deg": 1}
@@ -639,13 +641,14 @@ def _grip_outside(k, expected):
 
 
 class CheckGrip(Behavior):
-    """Check measured opening over a bounded interval, without moving the hand or claiming object retention.
+    """Watch the measured gripper opening without moving; leaving the range or drifting too far is a surprise.
+    Width alone cannot tell whether the object is still held, so this does not say.
 
     expect_mm     [lo, hi] allowed opening in mm; required unless expect is given
     expect        the same in native gripper units
-    seconds       observation interval (default 0.2); cached samples do not count
-    max_drift_mm  largest allowed opening change over the interval, mm (optional)
-    max_drift     the same in native units; choose for sensor noise and object compliance
+    seconds       how long to watch (default 0.2); only fresh readings count
+    max_drift_mm  largest allowed opening change while watching, mm (optional)
+    max_drift     the same in native units; allow for sensor noise and how much the object gives
     """
     kind = "check_grip"
     example = {"do": "check_grip", "expect_mm": [35, 45], "seconds": .2, "max_drift_mm": 1}
@@ -686,13 +689,16 @@ class CheckGrip(Behavior):
                              reason="grip_consistent", **data)
         return None
 
-class Gripper(Behavior):
-    """Command an opening; optionally require measured arrival and return early on stalled settling.
 
-    aperture_mm  opening between the fingers, mm
-    to           the same in the gripper's native units (see the card)
-    seconds      how long to take (default: as fast as its speed limit allows)
-    check_arrival  require measured arrival within the final 0.3 s wait (default false: command completion)
+class Gripper(Behavior):
+    """Move the fingers to an opening; with check_arrival, the measured opening must get there too.
+    Without it the step ends 0.3 s after the command does, wherever the fingers are.
+
+    aperture_mm    opening between the fingers, mm
+    to             the same in the gripper's native units (see the card)
+    seconds        how long to take (default: as fast as its speed limit allows)
+    check_arrival  require the measured opening to arrive within 0.3 s of the command's end; a stall or a miss
+                   is a surprise (default false)
     """
     kind = "gripper"
     example = {"do": "gripper", "aperture_mm": 60}
@@ -779,7 +785,8 @@ class Grip(Behavior):
     hold_effort  least gripper effort (absolute) that counts as a firm hold once squeezed; less is a surprise, a grip on
                an edge or a taper that would slip on the lift (default: not checked; requires gripper_effort sensing)
     verify_s     optionally check the measured grip for this many seconds after squeezing
-    max_drift_mm, max_drift  allowed change during verify_s, in mm or native units; compliance is task dependent
+    max_drift_mm, max_drift  allowed opening change during verify_s, in mm or native units; allow for how much
+               the object gives
     """
     kind = "grip"
     example = {"do": "grip", "start_mm": 60, "expect_mm": [35, 45]}
@@ -851,7 +858,7 @@ class Grip(Behavior):
                 return self._no_contact(k) if self.closed_wait <= 0 else None
             k.set_gripper(nxt, self.speed)
             return None
-        # Contact can leave the fingers behind the command. Approach the bounded squeeze target smoothly.
+        # Contact can leave the fingers behind the command: step towards the squeeze target at up to v_max.
         delta = self.squeeze_target - k.cmd.gripper
         step = float(np.clip(delta, -g.v_max / k.manifest.rate_hz, g.v_max / k.manifest.rate_hz))
         k.set_gripper(k.cmd.gripper + step, step * k.manifest.rate_hz if abs(delta) > abs(step) else 0.0)
@@ -864,7 +871,7 @@ class Grip(Behavior):
         assert contact is not None, "the squeeze phase starts at a contact"
         if "verify_s" in p:
             if self.verifier is None:
-                # Verification may wait: an interrupted check must not allow home to open a possible payload.
+                # Mark it held before checking: if the check is interrupted, going home must not open on it.
                 k.touched("grip", f"grip contact at {contact:.2f} {g.unit}; checking stability")
                 k.gripped(contact, attach=False)
                 params: dict = dict(expect=self.expect or sorted((g.closed, g.open)), seconds=p["verify_s"])
@@ -920,7 +927,7 @@ class Grasp(Behavior):
     expect_mm, start_mm  as for grip, or expect and start in native units; a start is required: each retry reopens
                          to it
     squeeze, hold_effort  as for grip (a weak grip is a miss too)
-    verify_s, max_drift_mm, max_drift  as for grip; failed post-squeeze checks use the same bounded retry list
+    verify_s, max_drift_mm, max_drift  as for grip; a failed check after the squeeze is a miss too
     search_mm  [[across, along], ...] offsets from where the grasp began, mm: across the jaws (the direction the
                fingers are thin in) and along them (the way they open), both level (default: 6 mm each way across,
                then 6 mm each way along)
@@ -1067,8 +1074,9 @@ class Sequence(Behavior):
     """Steps in order; the first one that does not end "done" ends the sequence. A plain list is one too.
 
     steps  the steps
-    expect_grip_mm, expect_grip  optional opening range monitored on every tick, in mm or native units.
-                                Scope to lift/carry steps; place intentional opening outside this sequence.
+    expect_grip_mm, expect_grip  opening range checked on every tick, in mm or native units (optional); leaving
+                                it is a surprise. Use it on a sequence of lift and carry steps, and open the
+                                gripper outside that sequence.
     """
     kind = "seq"
     example = {"do": "seq", "label": "lift, wait", "steps": [{"do": "line", "up": 0.05}, {"do": "hold", "seconds": 1}]}

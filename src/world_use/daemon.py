@@ -24,14 +24,14 @@ import numpy as np
 
 from . import bodies, calibrate, cameras, views
 from .behaviors import REGISTRY, build
-from .config import _vector, load_robot, load_workcell
+from .config import load_robot, load_workcell
 from .errors import Refused, explain
 from .events import _plain
 from .fit import load as load_fit
 from .kernel import Kernel
 from .perception import Measurements
 from .plan import Report, rehearsal_coverage
-from .request_models import WorldChange, http_request
+from .request_models import http_request
 from .worker import Rehearser
 from .world import World
 
@@ -180,9 +180,6 @@ class Daemon:
             self._settle()                    # a fault still present latches again on the next tick
             return 200, dict(line=views.state_line(k))
         if route == ["home_route"]:
-            if "steps" not in body:
-                raise ValueError("home_route needs steps: a list of moves, [] to fold straight home from here, "
-                                 "or null to clear the route")
             return 200, self._home_route(body["steps"], body.get("note", ""))
         if route == ["home"]:
             return self._job(k.submit({"do": "seq", "steps": k.home_plan(), "label": "home"}).id, wait)
@@ -377,7 +374,6 @@ class Daemon:
     def _world(self, body: dict) -> tuple[int, dict]:
         """Change the world model. A request's changes are made on a copy first: all of them apply, or none."""
         k, w = self.k, self.k.world
-        body = WorldChange.model_validate(body).model_dump(exclude_unset=True)
         trial, lines = deepcopy(w), []
         if "frame" in body:
             f = body["frame"]
@@ -477,24 +473,19 @@ def session_identity(name: str, cell: dict) -> dict:
 
 
 def frame_pose(frame: dict) -> np.ndarray:
-    """A frame's pose in the base frame, from its origin (m) and rpy_deg as a workcell gives them."""
+    """A frame's pose in the base frame, from its origin (m) and rpy_deg as a workcell or request gives them."""
     from .geometry import rpy
     T = np.eye(4)
-    T[:3, 3] = _vector(frame.get("origin", [0, 0, 0]), 3, "frame.origin")
-    T[:3, :3] = rpy(*np.radians(_vector(frame.get("rpy_deg", [0, 0, 0]), 3, "frame.rpy_deg")))
+    T[:3, 3] = frame.get("origin", [0, 0, 0])
+    T[:3, :3] = rpy(*np.radians(frame.get("rpy_deg", [0, 0, 0])))
     return T
 
 
 def add_box(world: World, spec: dict, source: str):
-    """A box from a workcell or a request: name, kind, center and size (three numbers each, metres), optional frame,
-    yaw_deg and source, and the parameters of its kind."""
-    b = dict(spec)
-    for key in ("name", "kind", "center", "size"):
-        if key not in b:
-            raise ValueError(f"box: missing {key}")
-    return world.add_box(b.pop("name"), b.pop("kind"), b.pop("center"), b.pop("size"),
-                         b.pop("frame", "work"), b.pop("yaw_deg", 0.0),
-                         source=b.pop("source", source), **b)
+    """A box from a workcell or a request: name, kind, center and size (three numbers each, metres), optional frame
+    (default work), yaw_deg and source, and the parameters of its kind."""
+    box: dict = {"frame": "work", "source": source, **spec}
+    return world.add_box(**box)
 
 
 def apply_workcell(cell: dict, k: Kernel, truth: World | None = None):
@@ -544,7 +535,8 @@ def make_body(name: str, cell: dict, world: World | None = None):
     model = load_robot(cell["robot"]) if "robot" in cell else None
     options = dict(cell.get("body_options", {}))
     if name == "sim" or name.startswith("sim:"):
-        # Keep existing simulation workcells working. A hardware driver's options never go to SimBody.
+        # A simulation workcell may give SimBody options in body_options or [simulation]; a hardware workcell's
+        # body_options are its driver's, so a simulated run of it drops them.
         selected = cell.get("body", "sim")
         if selected != "sim" and not selected.startswith("sim:"):
             options = {}

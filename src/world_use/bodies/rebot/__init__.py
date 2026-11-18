@@ -38,6 +38,7 @@ MOTORS = (
 GRIPPER_MOTOR = ("gripper", 7, "rs-00", 50.0, 4.0)
 URDF_LIMITS = ((-2.8, 2.8), (0.0, 3.14), (0.0, 3.14), (-1.57, 1.57), (-1.57, 1.57), (-3.14, 3.14))
 
+
 def work_frame(chain: Chain, q) -> np.ndarray:
     """Where the arm points (set by joint 1 alone), flattened: x forward, y left, z up, at the base origin."""
     zero = chain.link_frames(np.zeros(chain.n))
