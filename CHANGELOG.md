@@ -1,32 +1,37 @@
 # Changelog
 
-## 0.3.0 (unreleased)
+## 0.3.0
 
 ### Highlights
 
-- **Measured execution checks.** `settle` and the controller-independent `Settling` checker return on arrival,
-  stalled progress or a deadline. `check_grip`, optional post-squeeze verification and scoped sequence opening
-  expectations report grip consistency without claiming object retention. Compact outcome feedback and CLI/MCP
-  measured facts retain detailed step outcomes in flight records. See [execution checks](docs/adapters.md#measured-completion).
-- **MuJoCo simulation.** The built-in rehearsal twin is a MuJoCo model with the robot's
-  meshes, frictional grasps and rendered cameras; objects can slip, tip and fall. `wu demo` runs a scripted block
-  task in it, with a success check and failure scenarios.
+- **LIBERO-10 evaluation.** GPT-6.2 Sol solves 30 of 50 LIBERO-10 episodes with world-use's tools and 15
+  alone, with 74% fewer model calls, in 50 matched pairs of which 30 are on held-out initial states. The
+  [example](examples/libero) has the runner, the results and how to reproduce them.
+- **MuJoCo simulation.** The built-in twin is a MuJoCo model with the robot's meshes, frictional grasps and
+  rendered cameras; objects can slip, tip and fall. `wu demo` runs a scripted block task in it, with a
+  success check and failure scenarios.
 - **Flight records and replay.** Every session records plans, outcomes, telemetry and pictures in chunks that
-  survive a killed process. `wu inspect`, `wu replay`, `wu fit` and the optional Rerun viewer (`wu view`, the
-  `rerun` extra) read them, a live run included. See [records](docs/records.md).
+  survive a killed process. `wu inspect`, `wu replay`, `wu fit` and the Rerun viewer (`wu view`, with the
+  `rerun` extra) read them, including a run still in progress. See [records](docs/records.md).
 - **Measuring from pictures.** `camera_frame` and `measure_pixels` over MCP, or `Client.frame` and
-  `Client.measure`, turn pixels into work-frame metres, and `run(requires=...)` stops a plan once a measurement is
-  too old or its camera was calibrated again. `wu mcp --vision` adds EdgeTAM tracking. Depth comes from simulated
-  cameras. See [measuring from pictures](docs/perception.md).
-- **Measured alignment.** Project edge pixels onto a fitted depth plane and use `align_planar` to fit
-  translation and yaw from corresponding landmarks. Tool-relative measurements support grasp checks;
-  the agent remains responsible for feature selection and outcome verification.
+  `Client.measure`, turn pixels into work-frame metres, and `run(requires=...)` stops a plan once a
+  measurement is too old or its camera was calibrated again. `wu mcp --vision` adds EdgeTAM tracking;
+  `space="image"` tracks in RGB without depth. `align_planar` fits translation and yaw from corresponding
+  landmarks. See [measuring from pictures](docs/perception.md).
+- **Positions from a wrist camera.** `world_use.parallax` places a tracked region from looks at least 3 cm
+  apart, without depth. `View.on(tool_pose)` describes a camera fixed to the hand.
+- **Arrival, contact and grip checks.** A `settle` step waits for the arm to arrive, `check_grip` and
+  `verify_s` check the finger opening after closing, and `expect_grip_mm` checks it on every tick of a carry.
+  `world_use.checks` has the same arrival test for other controllers (`Settling`) and a contact test without
+  torque sensing (`Following`). Successful sequences report a short `last_step` summary.
+- **Grasp and place procedures.** `world_use.procedures.grasp` and `place` run approach, close, grip check
+  and test lift, or release and withdrawal, through your own executor, and stop at the first step that fails.
 - **Task programs and demos.** Examples record Python source, inputs and calculations for repeated tasks.
-  New walkthroughs cover shape sorting, compact lunchbox packing and oven-dial control, with videos and
-  explicit descriptions of the model's role and each run's limits. See the [demos](README.md#demos).
-- **Other arms.** A workcell loads a robot from a URDF and a TOML description, with its own driver. Grippers with
-  one joint, revolute or prismatic, and five-joint arms (the tool's heading turns; `ik_weights` sets what a move
-  holds) work, and `package://` mesh paths resolve. See the [adapter guide](docs/adapters.md).
+  Walkthroughs cover shape sorting, lunchbox packing and an oven dial, with videos and what the model did
+  and did not do in each. See the [demos](README.md#demos).
+- **Other arms.** A workcell loads a robot from a URDF and a TOML description, with its own driver. Grippers
+  with one joint, revolute or prismatic, and five-joint arms work (`ik_weights` sets what a move holds), and
+  `package://` mesh paths resolve. See the [adapter guide](docs/adapters.md).
 - **Python 3.13 or newer** (0.2.0 needed 3.14). The reBot driver extra needs 3.13.
 - New commands: `wu policy`, `wu calibrate`, `wu record`, `wu inspect`, `wu replay`, `wu view`, `wu fit`,
   `wu demo`; new MCP tools: `policy`, `job`, `calibrate`, `reset`, `shutdown` and the perception tools.
@@ -81,8 +86,6 @@
 - Recording is bounded and runs off the control thread; a storage failure never blocks release or shutdown.
 - The daemon refuses requests from foreign hosts and origins, and non-JSON commands.
 - MuJoCo warnings go to Python logging instead of a stray `MUJOCO_LOG.TXT`.
-
-Procedure tools developed after 0.2.0 were never released; the measuring flow above replaces them.
 
 ## 0.2.0
 

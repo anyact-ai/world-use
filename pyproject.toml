@@ -52,6 +52,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/world_use"]
 
+[tool.hatch.build.targets.sdist]
+exclude = ["docs/assets/*.mp4"]    # demo videos for the README, 30 MB
+
 [tool.ruff]
 line-length = 120
 target-version = "py313"
