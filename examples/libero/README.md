@@ -289,8 +289,10 @@ The campaign admits a pair only while the conservative charge of its finished
 attempts plus the full caps of running pairs leaves room for one more pair cap.
 A pair that did not finish both arms, stopped by the transport, a lost simulator
 or an interruption, keeps its folder and its charge and is tried again in a
-`_retryN` folder, three attempts in all. Each pair holds a simulator of about
-3 GB, so choose `--workers` to fit the machine's memory. Pairs found complete in the folder are skipped, and each repeat
+`_retryN` folder, three attempts in all. Ctrl-C, or any signal that stops a
+pair, stops the campaign instead: it starts nothing more and waits for the
+running pairs to end. Each pair holds a simulator of about 3 GB, so choose
+`--workers` to fit the machine's memory. Pairs found complete in the folder are skipped, and each repeat
 after the first has its own `_repeatN` folder.
 
 Append the campaign's pairs, labelled with the commit they ran, to the compact
@@ -323,7 +325,9 @@ service counted in every recorded request. A raw arm that uses
 all 80 calls needs about $2.70 of conservative allowance. A request whose
 connection was never made is sent again up to three times, since nothing was
 sent. Any other failure is not retried: its usage is unknown, its reservation
-stays charged and the pair stops. All requests, responses and settled usage are
+stays charged and the pair stops. A response that used more than its
+reservation is charged in full and stops the whole campaign, since the size
+estimate behind every reservation was wrong. All requests, responses and settled usage are
 journalled without authentication headers. Prices are the model's published
 rates, not an Azure billing reconciliation, and local compute is excluded.
 
