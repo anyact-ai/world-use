@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from world_use import Refused, World
+from world_use.bodies.rebot import MANIFEST
 from world_use.body import JointSpec
 from world_use.envelope import Envelope
 
@@ -22,7 +23,7 @@ def test_keep_out_catches_a_link_between_joint_origins(lifted):
     assert trip is not None and trip.kind == "keep_out"
 
 
-def test_keep_out_covers_motion_between_control_samples(k):
+def test_keep_out_covers_motion_between_control_samples():
     # A tiny prismatic stick crosses a zone between two poses; neither endpoint is in it.
     def points(q):
         return np.array([[0, 0, 0], [q[0], 0, 0], [q[0], 0, 0.01]])
@@ -33,7 +34,7 @@ def test_keep_out_covers_motion_between_control_samples(k):
         return t
 
     chain = SimpleNamespace(points=points, fk=fk, links={}, motion_bound=lambda a, b: abs(b[0] - a[0]))
-    manifest = replace(k.manifest, joints=(JointSpec("slide", -1, 1, v_max=10, a_max=10000),),
+    manifest = replace(MANIFEST, joints=(JointSpec("slide", -1, 1, v_max=10, a_max=10000),),
                        turn_clearance=None, max_excursion=None, link_radius_m=0)
     world = World()
     world.add_box("thin wall", "keep_out", [0.005, 0, 0.005], [0.0001, 0.01, 0.01])
@@ -81,22 +82,15 @@ def test_fragile_zone_rejects_invalid_limits_on_creation_and_restore(dtau):
         World.from_dict(saved)
 
 
-def test_misspelled_box_parameter_preserves_the_previous_zone():
+@pytest.mark.parametrize("kind, change", [("object", dict(center=[True, 0, 0])), ("object", dict(size=["1", 1, 1])),
+                                          ("object", dict(speed=0.1)), ("fragile", dict(dtau=0.1, datu=0.03))])
+def test_box_geometry_and_kind_parameters_are_checked_before_replacement(kind, change):
     world = World()
-    original = world.add_box("glass", "fragile", [0, 0, 0], [1, 1, 1], dtau=0.1)
-    with pytest.raises(ValueError, match="datu"):
-        world.add_box("glass", "fragile", [0, 0, 0], [2, 2, 2], datu=0.03)
-    assert world.boxes["glass"] is original
-
-
-@pytest.mark.parametrize("change", [dict(center=[True, 0, 0]), dict(size=["1", 1, 1]), dict(speed=0.1)])
-def test_box_geometry_and_kind_parameters_are_checked_before_replacement(change):
-    world = World()
-    original = world.add_box("object", "object", [0, 0, 0], [1, 1, 1])
-    spec = dict(name="object", kind="object", center=[0, 0, 0], size=[1, 1, 1]) | change
-    with pytest.raises(ValueError):
+    original = world.add_box("box", kind, [0, 0, 0], [1, 1, 1])
+    spec = dict(name="box", kind=kind, center=[0, 0, 0], size=[2, 2, 2]) | change
+    with pytest.raises(ValueError, match=list(change)[-1]):               # names the offending field
         world.add_box(**spec)
-    assert world.boxes["object"] is original
+    assert world.boxes["box"] is original
 
 
 def test_rejected_fragile_update_cannot_disable_contact_detection(k):

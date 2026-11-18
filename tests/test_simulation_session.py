@@ -9,6 +9,7 @@ import pytest
 from PIL import Image
 
 from world_use import Refused, World, bodies
+from world_use.bodies.mujoco_scene import mj
 from world_use.body import ToolBox
 from world_use.cameras import SimCamera, View
 from world_use.client import Client
@@ -28,14 +29,20 @@ def session_at(path, *, camera=False, tool_boxes=()):
 
 
 def test_client_execution_keeps_physics_and_rehearsal_scope(tmp_path):
-    with session_at(tmp_path / "run") as session:
+    bounds = ToolBox("pin", (0, 0, .02), (.008, .008, .04), "measured pin dimensions")
+    with session_at(tmp_path / "run", tool_boxes=(bounds,)) as session:
         client = session.client
         assert client.status()["session"]["mode"] == "simulation"
         assert not client.status()["enabled"]
         assert "hidden" not in client.world()["boxes"]
-        coverage = client.capabilities()["rehearsal_coverage"]
+        card = client.capabilities()
+        coverage = card["rehearsal_coverage"]
         assert coverage["simulation_truth"] is False
         assert "external_scene_geometry_and_dynamics" in coverage["omitted"]
+        assert coverage["collision"]["tool_boxes"] == [
+            dict(name="pin", role="tool", source="measured pin dimensions")]
+        assert "declared_tool_and_finger_boxes" in card["collision_coverage"]["checked"]
+        assert "self_collision" in card["collision_coverage"]["unchecked"]
         assert client.check([])["coverage"] == coverage
         client.enable()
         outcome = client.run([dict(do="hold", seconds=.15)], wait=10, check=False)
@@ -56,18 +63,6 @@ def test_client_execution_keeps_physics_and_rehearsal_scope(tmp_path):
     assert any(e["kind"] == "intent" and e["inputs"].get("path") == "/run"
                for e in read_trace(root / "task"))
     assert saved["final_status"]["physics_recording"]["error"] is None
-
-
-def test_capabilities_identify_declared_collision_geometry(tmp_path):
-    bounds = ToolBox("pin", (0, 0, .02), (.008, .008, .04), "measured pin dimensions")
-    with session_at(tmp_path / "run", tool_boxes=(bounds,)) as session:
-        card = session.client.capabilities()
-        coverage = card["rehearsal_coverage"]
-        assert coverage["collision"]["tool_boxes"] == [
-            dict(name="pin", role="tool", source="measured pin dimensions")]
-        assert session.client.check([])["coverage"] == coverage
-        assert "declared_tool_and_finger_boxes" in card["collision_coverage"]["checked"]
-        assert "self_collision" in card["collision_coverage"]["unchecked"]
 
 
 @pytest.mark.parametrize("failure", [ValueError("policy failed"), KeyboardInterrupt("task interrupted")])
@@ -185,6 +180,5 @@ def test_external_replay_uses_saved_scene_and_preserves_raw_observations(tmp_pat
     with Image.open(gif) as image:
         assert image.size == (160, 120)
     # The scene is restored from its own integration state, including the hidden free body.
-    from world_use.bodies.mujoco_scene import mj
     model = mj.MjModel.from_binary_path(str(tmp_path / "run/scene.mjb"))
     assert model.body("box/hidden").id > 0

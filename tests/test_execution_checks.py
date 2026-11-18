@@ -12,6 +12,27 @@ from world_use.errors import Refused
 from world_use.views import incident, job_text
 
 
+def measured_gripper(k, monkeypatch, position):
+    read = k.body.read
+    monkeypatch.setattr(k.body, "read", lambda: replace(read(), gripper=position(), gripper_tau=0.))
+
+
+def tick_until(k, done, limit=10_000):
+    for _ in range(limit):
+        k.tick()
+        k.clock.wait()
+        if done():
+            return
+
+
+@pytest.fixture
+def block_in_jaws(lifted):
+    """The lifted arm with its jaws open 60 mm around a 4 cm block."""
+    assert lifted.run({"do": "gripper", "aperture_mm": 60}).ok
+    supported_object(lifted, size=[.04, .04, .04])
+    return lifted
+
+
 @pytest.mark.parametrize("rate", [20, 100])
 def test_settling_returns_on_a_plateau_at_different_control_rates(rate):
     check = Settling([.008, .1], 1, .2)
@@ -65,11 +86,6 @@ def test_a_measurement_after_the_deadline_cannot_confirm_arrival():
     check = Settling([.01], .4, .2)
     assert check.update(0., [.03]) is None
     assert check.update(.5, [0.]) == "timeout"
-
-
-def measured_gripper(k, monkeypatch, position):
-    read = k.body.read
-    monkeypatch.setattr(k.body, "read", lambda: replace(read(), gripper=position(), gripper_tau=0.))
 
 
 def test_a_stall_that_must_last_ignores_the_turning_points_of_a_swinging_arm():
@@ -130,9 +146,7 @@ def test_joint_settling_stops_a_blocked_plan_and_cancels_queued_work(k, monkeypa
     before = k.cmd.gripper
     job = k.submit([{"do": "settle", "seconds": 1, "tolerance_deg": .2}, {"do": "gripper", "to": 2}])
     queued = k.submit({"do": "hold", "seconds": 1})
-    while not job.finished:
-        k.tick()
-        k.clock.wait()
+    tick_until(k, lambda: job.finished)
     assert job.status == "surprise" and job.outcome.data["reason"] == "stalled"
     assert queued.status == "cancelled" and k.cmd.gripper == before
     np.testing.assert_allclose(k.cmd.q, stuck)
@@ -186,11 +200,7 @@ def test_scoped_grip_expectation_watches_motion_and_checkpoint_waits(k, monkeypa
     measured_gripper(k, monkeypatch, lambda: 1. if k.clock.now() - start < .1 else .8)
     job = k.submit({"do": "seq", "expect_grip": [.9, 1.1], "steps": [step, {"do": "gripper", "to": 2.}]})
     queued = k.submit({"do": "hold", "seconds": 1})
-    for _ in range(100):
-        k.tick()
-        k.clock.wait()
-        if job.finished:
-            break
+    tick_until(k, lambda: job.finished, 100)
     assert job.status == "surprise" and job.outcome.data["reason"] == "grip_range"
     assert queued.status == "cancelled" and k.cmd.gripper == command
     assert not np.any(k.cmd.dq)
@@ -216,9 +226,7 @@ def test_losing_feedback_during_a_watched_sequence_holds_and_cancels(k, monkeypa
     measured_gripper(k, monkeypatch, lambda: 1. if k.clock.now() - start < .1 else None)
     job = k.submit({"do": "seq", "expect_grip": [.9, 1.1], "steps": [{"do": "hold", "seconds": 1}]})
     queued = k.submit({"do": "gripper", "to": 2.})
-    while not job.finished:
-        k.tick()
-        k.clock.wait()
+    tick_until(k, lambda: job.finished)
     assert job.status == "refused" and job.outcome.data["rule"] == "sensing"
     assert queued.status == "cancelled" and k.cmd.gripper == command
     np.testing.assert_allclose(k.cmd.q, k.state.q)
@@ -266,27 +274,18 @@ def test_serialized_sequences_preserve_the_grip_expectation(k):
     assert k.cmd.gripper == command
 
 
-def test_grip_verification_on_a_physical_simulated_object(lifted):
-    k = lifted
-    assert k.run({"do": "gripper", "aperture_mm": 60}).ok
-    supported_object(k, size=[.04, .04, .04])
-    out = k.run({"do": "grip", "start_mm": 60, "expect_mm": [35, 45], "verify_s": .2, "max_drift_mm": 1})
+def test_grip_verification_on_a_physical_simulated_object(block_in_jaws):
+    out = block_in_jaws.run({"do": "grip", "start_mm": 60, "expect_mm": [35, 45], "verify_s": .2, "max_drift_mm": 1})
     assert out.ok, out.message
     assert out.data["verification"]["data"]["observed_s"] >= .2
     assert not out.data["object_retention_verified"]
 
 
-def test_interrupted_grip_verification_preserves_payload_and_invalidates_old_home(lifted):
-    k = lifted
-    assert k.run({"do": "gripper", "aperture_mm": 60}).ok
-    supported_object(k, size=[.04, .04, .04])
+def test_interrupted_grip_verification_preserves_payload_and_invalidates_old_home(block_in_jaws):
+    k = block_in_jaws
     k.set_home_route([])
     job = k.submit({"do": "grip", "expect_mm": [35, 45], "verify_s": 1})
-    for _ in range(1000):
-        k.tick()
-        k.clock.wait()
-        if job.finished or job.behavior.verifier is not None:
-            break
+    tick_until(k, lambda: job.finished or job.behavior.verifier is not None, 1000)
     assert not job.finished and k.held_at is not None and k.world.held is None
     with pytest.raises(Refused):
         k.home_plan()
@@ -297,10 +296,8 @@ def test_interrupted_grip_verification_preserves_payload_and_invalidates_old_hom
     assert all(step["do"] != "gripper" for step in k.home_plan())
 
 
-def test_grasp_uses_its_bounded_search_after_failed_verification(lifted, monkeypatch):
-    k = lifted
-    assert k.run({"do": "gripper", "aperture_mm": 60}).ok
-    supported_object(k, size=[.04, .04, .04])
+def test_grasp_uses_its_bounded_search_after_failed_verification(block_in_jaws, monkeypatch):
+    k = block_in_jaws
     monkeypatch.setattr(CheckGrip, "tick", lambda self, k: self.surprise("unstable measured grip"))
     out = k.run({"do": "grasp", "start_mm": 60, "expect_mm": [35, 45], "verify_s": .2,
                  "search_mm": [[6, 0]]})

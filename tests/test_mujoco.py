@@ -177,24 +177,8 @@ def test_an_incompatible_gripper_mapping_is_rejected():
         body.close()
 
 
-def test_a_one_joint_jaw_is_driven_in_its_own_units_and_holds_what_it_grips():
-    truth = World()
-    truth.add_box("pad", "surface", [.17, 0, .005], [.12, .12, .01])
-    truth.add_box("block", "object", [.17, 0, .025], [.02, .02, .03])
-    k = jaw_arm(truth)
-    try:
-        assert k.run({"do": "gripper", "to": .5}).ok
-        assert k.body.data.joint("jaw").qpos[0] == pytest.approx(.5, abs=.005)
-        out = k.run([{"do": "line", "up": -.065}, {"do": "grip", "expect_mm": [10, 25]},
-                     {"do": "line", "up": .05}])
-        assert out.ok, out.message
-        assert truth.held is not None and truth.held[0] == "block"
-        assert truth.boxes["block"].pose[2, 3] > .06
-    finally:
-        k.close()
-
-
-def test_fixed_child_finger_pads_hold_and_release_by_contact(tmp_path):
+def _with_fixed_pads(tmp_path):
+    """The jaw arm's URDF with each finger's collision moved to a child link on a fixed joint."""
     robot = ET.parse(JAW_ARM.urdf)
     root = robot.getroot()
     for name in ("hand", "jaw"):
@@ -208,13 +192,20 @@ def test_fixed_child_finger_pads_hold_and_release_by_contact(tmp_path):
         ET.SubElement(joint, "child", link=f"{name}_pad")
     urdf = tmp_path / "padded-jaw.urdf"
     robot.write(urdf)
+    return urdf
+
+
+@pytest.mark.parametrize("fixed_pads", [False, True])
+def test_a_one_joint_jaw_is_driven_in_its_own_units_and_grips_and_releases_by_contact(tmp_path, fixed_pads):
     truth = World()
     truth.add_box("pad", "surface", [.17, 0, .005], [.12, .12, .01])
     truth.add_box("block", "object", [.17, 0, .025], [.02, .02, .03])
-    k = jaw_arm(truth, urdf=urdf)
+    k = jaw_arm(truth, urdf=_with_fixed_pads(tmp_path) if fixed_pads else JAW_ARM.urdf)
     try:
-        out = k.run([{"do": "gripper", "to": .5}, {"do": "line", "up": -.065},
-                     {"do": "grip", "expect_mm": [10, 25]}, {"do": "line", "up": .05}])
+        assert k.run({"do": "gripper", "to": .5}).ok
+        assert k.body.data.joint("jaw").qpos[0] == pytest.approx(.5, abs=.005)
+        out = k.run([{"do": "line", "up": -.065}, {"do": "grip", "expect_mm": [10, 25]},
+                     {"do": "line", "up": .05}])
         assert out.ok, out.message
         assert truth.held is not None and truth.held[0] == "block"
         assert truth.boxes["block"].pose[2, 3] > .06
