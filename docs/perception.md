@@ -1,15 +1,15 @@
 # Measuring from pictures
 
-world-use turns selected pixels into measured geometry. An agent captures a frame, selects a surface,
-then uses its measurement in a motion plan. `requires` prevents the next step from starting with evidence
-that is too old, withdrawn or invalidated by recalibration. After motion, the agent measures again to
-check the result. The [perception example](../examples/perception) shows the complete loop.
+world-use turns pixels an agent selects into positions a plan can use. The agent captures a frame, measures a
+point or box in it, and plans with the result. `requires` keeps the next step from starting on a measurement
+that is too old, withdrawn, or from a camera calibrated since. After moving, the agent measures again to check
+the result. The [perception example](../examples/perception) shows the whole loop.
 
-The [shape-sorting experiment](shape-sorting.md) uses plane projection and measured alignment;
-the [lunchbox task](../examples/robocasa-lunchbox) uses EdgeTAM, alignment and grasp checks.
+The [shape-sorting experiment](shape-sorting.md) uses plane projection and landmark alignment; the
+[lunchbox task](../examples/robocasa-lunchbox) adds EdgeTAM tracking and grasp checks.
 
-Depth comes only from simulated (MuJoCo) cameras for now. Other cameras give pictures without depth, and
-measuring them reports `missing_depth`.
+Depth comes only from simulated (MuJoCo) cameras. Other cameras give pictures without depth, and measuring them
+reports `missing_depth`.
 
 ## The flow
 
@@ -23,8 +23,8 @@ measure_pixels(...) again after the step, and compare
 
 MCP `run`, `job` and `answer` also accept `camera="top", depth=true`: once the job reaches a checkpoint or
 outcome, the same reply includes a fresh picture and `frame.id` for measuring. A job still running at the wait
-timeout returns without a picture; wait with `job`, never resubmit it. A camera failure preserves the job and
-outcome and reports `camera_error`.
+timeout returns without a picture; wait with `job`, never resubmit it. If the camera fails, the reply still
+carries the job and its outcome, with `camera_error`.
 
 To try it, start the block workcell (`wu up --workcell block`): its block's top face is near pixel (374, 112)
 of the `top` camera, and a measurement there gives a `surface_center` of about [0.34, 0.03, 0.25], the middle
@@ -33,7 +33,7 @@ of that face in the work frame.
 `camera_frame` returns the picture at native resolution with nothing drawn on it, and a frame id. Pixel
 coordinates refer to that picture: `look` scales and annotates its pictures, so do not take coordinates
 from it. `inspect_image(frame, crop=[left, top, right, bottom])` shows part of a frame again, enlarged,
-with the matrix that maps its pixels back to the frame's. The daemon keeps the last 8 frames (64 MiB).
+with the matrix that maps its pixels back to the frame's. The daemon keeps the last 8 frames (64 MiB at most).
 
 `measure_pixels` measures the visible surface under a point or a box of a frame. The daemon measures its
 own copy of the frame with the camera calibration it had when the picture was taken, saves the result
@@ -58,30 +58,30 @@ robot.run(plan, requires=[{"evidence": block["id"], "max_age_s": 30}], wait=60)
 
 ### Features on a measured plane
 
-At a hole or silhouette, the selected pixel can contain background depth rather than the edge's depth.
-If the feature lies on a visible flat surface, select a box wholly inside that surface and pass it as `plane`:
+At a hole or a silhouette edge, the selected pixel may see the background behind the edge. If the feature lies
+on a flat surface you can see, select a box wholly inside that surface and pass it as `plane`:
 
 ```python
 edge = robot.measure(frame, point=[420, 210],
                      plane={"box": [360, 180, 390, 205], "max_error_m": .001})
 ```
 
-The same option works with MCP `measure_pixels`. It fits a plane to the box's depth samples, then intersects
-the point's camera ray with that plane. It supports tilted planes and cameras; no surface height is supplied.
-The caller establishes that the feature belongs to the selected plane. This is an inferred point on that
-plane, not a depth observation at the point; selecting the wrong flat surface can still give a valid result.
+MCP `measure_pixels` takes the same option. It fits a plane to the box's depth samples and intersects the
+point's camera ray with that plane, so tilted surfaces and cameras work and no height is needed. The result is a
+point inferred on the plane, not a depth reading at the pixel: you decide that the feature lies on that plane,
+and a feature on a different surface still gives a valid, wrong result.
 
-The box needs depth samples spread across an area. The fit is refused if any sample's perpendicular error
-exceeds `max_error_m`, or the ray is nearly parallel to the plane or intersects behind the camera. A clean,
-broad patch gives a better estimate than a tiny or occluded patch. Plane fit error is not an accuracy bound
-for projected points, especially far outside the supporting patch. No outlier rejection or feature matching
-is performed. A poor patch should be reselected, not accommodated by relaxing its tolerance.
+The box needs depth samples spread over an area. The measurement is invalid when the samples do not span an
+area (`degenerate_plane_support`), when any sample lies farther than `max_error_m` from the fitted plane
+(`nonplanar_support`), when the ray nearly grazes the plane (`grazing_plane_ray`) or when the plane lies behind
+the camera (`plane_behind_camera`). There is no outlier rejection: when a patch fails, select a cleaner, broader
+one rather than raising the tolerance. The fit error is not an accuracy bound for the projected point,
+especially far from the patch.
 
-Replies have `method: "plane_projection"` and a `plane` diagnostic with the supporting box, fitted center,
-normal and maximum fit error (geometry in the base frame). Sample/depth diagnostics describe the supporting
-patch. The overlay marks that patch in blue; the saved `.npz` also keeps its `support_points`. `surface_center`,
-`from_tool` and `in_tool` describe the inferred point. Its freshness and calibration are those of the original
-frame, so projection neither refreshes evidence nor changes the existing `requires` contract.
+Replies have `method: "plane_projection"` and a `plane` entry with the box, the fitted `center_m` and `normal`
+(base frame) and the largest fit error, `fit_error_m`. The sample counts describe the patch, which the overlay
+draws in blue; the saved `.npz` keeps its `support_points`. `surface_center`, `from_tool` and `in_tool` describe
+the projected point. Its age and calibration are those of the frame, as for any other measurement.
 
 ## What a measurement contains
 
@@ -102,36 +102,37 @@ Shape is the agent's knowledge. The example knows its block is a 4 x 4 x 10 cm u
 the block's centre 5 cm below the measured top. A measurement never changes the world model; tell the
 kernel about an object with `add_box` and name the measurement in its source.
 
-For a grip check, measure the same visible feature before and after a short lift or rotation. Its `in_tool`
-coordinates should stay within the procedure's measurement tolerance while `surface_center` moves. Unlike
-`from_tool`, `in_tool` accounts for wrist rotation and is independent of the work frame. This is a coordinate
-conversion, not tracking: a different selected surface, occlusion or a shifting box median makes the comparison
-inconclusive. One point cannot detect rotation about that point; inspect separated features when rotation matters.
+To check a grip, measure the same visible feature before and after a short lift or turn. If the object moved
+with the hand, its `in_tool` coordinates stay the same, within your measurement tolerance, while
+`surface_center` changes. `in_tool` follows the wrist's rotation and does not depend on the work frame, unlike
+`from_tool`. The comparison holds only for the same surface: occlusion, a different selection or a box whose
+median shifts make it inconclusive. One point cannot show rotation about itself; measure separated features
+when rotation matters.
 
-After release and clear withdrawal, measure the expected position and depth in a fresh frame. If revisiting
-an apparently incomplete placement, remeasure from the approach view before closing the gripper: the object
-may have settled in the meantime. Preserve an outcome that now meets the criteria; base recovery on a current
-measured discrepancy. Freshness guards bound evidence age, but cannot verify correspondence or seating.
+To check a placement, withdraw clear of the object and measure its position and depth in a fresh frame. Before
+regrasping a placement that looked incomplete, measure again from the approach view: the object may have
+settled into place since. Keep a result that now meets the criteria, and correct only a discrepancy you have
+just measured.
 
 ## Aligning measured landmarks
 
-For planar placement, Python integrations can use `world_use.geometry.align_planar(source, target, tool,
-max_error_m=...)`. Supply at least 3 corresponding XYZ landmarks in each list and the captured 4x4 tool pose,
-all in the same coordinate frame. The caller chooses which visible features correspond; no object
-model or feature matching is supplied. Measure the source after verifying the grasp, while the part
-is held in the same way that the proposed motion assumes.
+For planar placement in Python, `world_use.geometry.align_planar(source, target, tool, max_error_m=...)` finds
+the tool pose that moves a held part's landmarks onto their targets. `source` and `target` are lists of at least
+three corresponding XYZ points, and `tool` is the 4x4 tool pose captured with the source, all in one coordinate
+frame. You choose which visible features correspond; there is no object model or feature matching. Measure the
+source after checking the grasp, while the part is held as the coming motion assumes. The landmarks must span
+an area, not lie along one edge.
 
-The helper fits translation and yaw without scale or reflection, then applies the same correction to
-the captured tool pose. This accounts for an off-centre grasp. `tool_pose` preserves the tool's height;
-approach, insertion depth and collision checking remain the procedure's decisions. Inspect above contact,
-then remeasure if the part slips or the grasp changes. The inputs must span an area, not one edge.
+It fits a translation and a yaw, without scale or reflection, and applies them to the captured tool pose, which
+accounts for an off-centre grasp. The returned `tool_pose` keeps the tool's height: approach, insertion depth
+and collision checks remain the procedure's decisions. Inspect from above before contact, and measure again if
+the part slips or the grasp changes.
 
-The result includes each horizontal fit error and disagreement between relative landmark heights.
-If either exceeds the caller's `max_error_m`, `valid` is false and `tool_pose` is absent (`None`). Check
-correspondence, depth and tilt instead of loosening the tolerance to force a fit. A small residual can
-still come from consistently wrong correspondences; it is not confidence in an object pose or proof
-of a secure grasp. Keep the original measurement IDs in the plan's `requires`: fitting does not
-create fresh evidence, change the world model or move the robot.
+The result reports each landmark's horizontal error (`errors_m`) and how far the landmarks' relative heights
+disagree (`height_error_m`). If either exceeds `max_error_m`, `valid` is false and `tool_pose` is `None`; check
+correspondence, depth and tilt rather than loosening the tolerance. A small error can still come from
+consistently wrong correspondences, so it is no proof of the part's pose or a secure grasp. Fitting moves
+nothing and creates no new measurement: keep the source measurement IDs in the plan's `requires`.
 
 ## Freshness
 
@@ -146,113 +147,122 @@ the arm is, when the measurement:
 
 This check runs before rehearsal, when the run is accepted, and before every step starts moving, also with
 `rehearse=false`: inside sequences, after a path computed in the background, and between a grip's opening and
-its closing. A step that is already moving finishes. The check compares numbers copied when the run was
-submitted, so it reads no files or pictures in the control loop, and the run keeps its copy even after the daemon
-forgets the measurement. Plans with custom (plugin) steps cannot require measurements, because their own moves
-would go unchecked, unless an embedded adapter explicitly audits and admits those exact types through
+its closing. A step that is already moving finishes. The run copies what the check needs when it is submitted,
+so the control loop reads no files or pictures and the check still works after the daemon forgets the
+measurement. Plans with custom (plugin) steps cannot require measurements, because their own moves would go
+unchecked, unless an embedded adapter admits those exact types through
 [`Kernel.guarded_steps`](adapters.md#guarded-custom-steps). The agent picks `max_age_s`: long enough for its
 decisions, short enough for how fast the scene can change.
 
 ## Tracking
 
 `wu mcp --vision` loads [EdgeTAM](../examples/tracking) in its own process before the arm is powered, and
-adds two tools. `select_target(frame, target, point|box)` selects an object in a frame and measures it;
-`observe_targets([target, ...])` measures it again in a new frame without selecting it again. Both return
-the same measurements as `measure_pixels`, with `tracking` set to `tracked` or `lost`.
+adds two tools. `select_target(frame, target, point|box)` selects an object in a frame, names it `target` and
+measures it; `observe_targets([target, ...])` measures named targets again in one new frame per camera, without
+selecting them again. Both return the same measurements as `measure_pixels`, with `tracking` set to `tracked` or
+`lost`. In Python, `Tracking(client, TrackerProcess())` from `world_use.tracking` and `world_use.vision_worker`
+offers the same `select` and `observe`.
 
-An agent often thinks for longer than the tracker accepts a picture's age (15 s). A selection made in such
-a picture is followed into a new picture before it is measured. A target the tracker loses is retired, and
-the measurements made of it are withdrawn: a run that requires one stops before its next step. Select it
-again to continue. Repeated observations of that name return the retained loss instead of erasing the
-unresolved target; Python callers can enumerate `Tracking.lost` alongside active `Tracking.targets`.
-The tracker follows up to four targets and runs one request at a time; selecting a name
-again withdraws its previous measurements. A stopped provider withdraws all its targets. Each target keeps 256
-measurement IDs; before forgetting an older one, it withdraws it too, including from already accepted jobs.
-Nothing tracks in the background. In Python, `Tracking(client, TrackerProcess())` from
-`world_use.tracking` and `world_use.vision_worker` offers the same `select` and `observe`.
+The tracker accepts frames up to 15 s old, and an agent often thinks for longer. A selection made in an older
+frame is followed into a new frame and measured there. The tracker follows up to four targets, handles one
+request at a time, and runs only when one of these calls is made: nothing tracks in the background.
 
-Targets observing the same camera capture share one image encoding, while their prompts, masks and temporal
-histories remain independent. The cache holds one capture and is scoped to the loaded model and processor;
-camera, capture identity and image content must agree. Reading an existing capture again must preserve its
-`Frame.id` and monotonic `timestamp`. A new capture gets a new identity even when its pixels are unchanged.
-Reusing features never refreshes evidence age, and repeated frames do not advance tracking history.
+When the tracker loses a target, the target is retired and every measurement made of it is withdrawn, so a run
+that requires one stops before its next step. Observing that name again returns the same loss until you select
+it again; Python callers find lost targets in `Tracking.lost`, beside the active `Tracking.targets`. Selecting a
+name again also withdraws its earlier measurements, and if the tracker process stops, all its targets are lost.
+Each target remembers its latest 256 measurement IDs and withdraws older ones as they drop out, which also stops
+accepted jobs that require them, so a later loss never leaves a job relying on a measurement nobody can withdraw.
 
-For an RGB camera without depth, select with `space="image"`. The same observe tool then returns
-native-pixel bounds, centre and mask area, with camera, frame identity, monotonic `captured_at` and age.
-Consecutive observations also report centre displacement, mask-area ratio and mask intersection-over-union
-(`motion.mask_iou`), referencing the earlier frame. These
-are image changes, not velocity or object motion in metres; camera motion and occlusion can change them.
-`camera_motion_compensated=False` makes that limitation explicit. A low overlap is a reason to inspect the
-RGB and reassess association, not proof of a wrong identity or a calibrated confidence score.
-`dominant_region` describes the largest connected mask component, including its bounds and centre,
-with `other_area_px` and `components` exposing disconnected predictions. A few isolated pixels can
-otherwise make the full mask's bounding box span unrelated objects. The raw mask is preserved; selecting
-the largest region does not establish that it is the intended object.
-The default `space="world"` preserves the metric RGB-D contract. Reselecting a target in either mode
-withdraws its earlier metric measurements.
+The tracker recognises a frame by its `Frame.id`: a camera source must keep a capture's `id` and `timestamp`
+when it reads that capture again, and give every new capture a new `id`, even when the pixels are unchanged.
 
-Image results have no measurement `id` and cannot satisfy `run(requires=...)`. A tracked mask does not
-verify object identity, retention, or support. Inspect the RGB and reacquire a lost target explicitly;
-do not interpret a new mask after loss as proof that it is the same object. Task programs can record
-the returned image evidence alongside their commands using the existing task recorder.
+### Tracking without depth
+
+For an RGB camera without depth, select with `space="image"`. Both tools then return the mask's geometry in
+pixels instead of a measurement: `bbox` (native pixels, right and bottom exclusive), `center` and `area_px`,
+with the `camera`, `frame` id, `captured_at` (on the host's monotonic clock) and `age_s`. From the second
+observation on, `motion` compares the mask with the previous frame's: `center_delta_px`, `area_ratio` and
+`mask_iou` (intersection over union), with `from_frame`. These are changes in the image, not object motion in
+metres, and a moving camera or occlusion changes them too (`camera_motion_compensated: false`). A low
+`mask_iou` is a reason to look at the picture again, not proof that the tracker switched objects.
+
+`dominant_region` describes the largest connected part of the mask: its `bbox`, `center` and `area_px`, the area
+outside it (`other_area_px`) and the number of `components`. A few stray pixels can stretch the whole mask's
+`bbox` across unrelated objects; the region's box leaves them out. The raw mask is unchanged, and the largest
+region is not necessarily the intended object. `dominant_region` also gives the narrowest box around the region:
+`width_px`, `length_px` and `axis_deg`, the direction of its length from image x toward image y.
+
+Image results have no measurement `id` and cannot satisfy `run(requires=...)`. A tracked mask does not show
+that it is the right object, or that the object is held or supported: check the picture. After a loss, select
+the target again yourself, and do not take a new mask as proof that it is the same object. The default
+`space="world"` returns metric measurements and needs RGB-D.
 
 ## Positions from a camera on the hand
 
-A camera fixed to the hand measures no depth, but its pose follows from the tool pose in every frame.
-Describe it once as a `View` in the tool frame; `mount.on(tool_pose)` is the base-frame view for a measured
-tool pose. A negative focal length describes an image published mirrored (`fx`) or with its rows flipped
-(`fy`), with the principal point mirrored too (`width - 1 - cx` or `height - 1 - cy`), so pixels and points
-convert both ways without turning the image.
+A camera fixed to the hand measures no depth, but the tool pose gives its pose in every frame, so looks from two
+places fix a point. Describe the camera once as a `View` in the tool frame, its mount; `mount.on(tool_pose)` is
+its base-frame view for a measured tool pose. For an image published mirrored, give a negative `fx` (or, for
+flipped rows, a negative `fy`) and mirror the principal point to match (`width - 1 - cx` or
+`height - 1 - cy`), so pixels and points convert both ways without turning the image.
 
-`world_use.parallax` turns looks at one tracked region into a position. One look fixes a ray;
-`triangulate(looks)` returns the point nearest the rays once two camera positions are 3 cm apart and the
-point lies at least 5 cm in front of every one, and otherwise nothing. `locate(move, look, arrive_m=...)`
-is the bounded loop around it: look, move the hand level, look again, until the hand is over the point
-the looks fix. `look()` returns a `Look` (the frame's view, the tool point and the region's centre and box
-in native pixels, the box ending one past its last pixel as the tracker reports it); `move(xy)` runs
-through your own executor and returns its `Outcome`.
-Like the [manipulation procedures](adapters.md#bounded-manipulation-procedures) it sends no command
-itself, so it works over the kernel client or another controller. A done result has `x, y, z` in the base
-frame, the looks and moves it took, `pixel` while the region is visible and `extent_m` when the whole
-region is in view. A move that fails ends the search with that move's outcome.
+`world_use.parallax` places a tracked region from such looks:
 
-Only looks at the whole region place it once one has been had: the centre of a region the image border
-cuts off is not the region's centre. The result is a position of the region the tracker follows, with the
-tracker's errors in it. It has no measurement `id`, and it is invalidated by the object moving, not by age.
-Pass a position found earlier as `known`: the first move heads straight over it and one look that shows
-the region within `arrive_m` of it confirms it; a region that has moved is placed afresh.
+- `Look(view, hand, center, bbox)` is one sighting: the camera's base-frame `View` and the tool point (base
+  frame, metres) when the frame was taken, and the region's centre and box in native pixels, `None` when it is
+  not visible. The box ends one past its last pixel, as the tracker reports it.
+- `triangulate(looks)` returns the base-frame point nearest the looks' rays, or `None` unless two of the camera
+  positions are at least 3 cm apart and the point lies at least 5 cm in front of every camera.
+- `locate(move, look, arrive_m=...)` moves the hand level, looking after each move, until it is within
+  `arrive_m` of being over the point the looks fix. `look()` returns a `Look`; `move(xy)` takes the hand to
+  base-frame x, y through your own executor and returns its `Outcome`. Like the
+  [grasp and place procedures](adapters.md#grasp-and-place-procedures), it sends no command itself, so it works
+  with the kernel client or another controller.
 
-`dominant_region` also reports the narrowest box around the region: `width_px`, `length_px` and `axis_deg`,
-the direction of its length in the image. `footprint(view, region, depth_m)` turns that into metres for a
-region seen face-on at a known depth, with the base-frame direction across its narrow side, the one a
-gripper's fingers close along to take it by that side. A region that covers only part of an object has
-that part's narrow side.
+`locate` returns a `done` `Outcome` with `x`, `y`, `z` in the base frame, the number of `looks` and `moves`,
+`pixel`, where the point is in the latest image while the region is visible, and `extent_m`, the region's box
+size at that depth, when the last look shows the whole region. `region` notes a region lost after the looks or
+never seen whole. A move that fails ends the search with that move's outcome. A region the camera does not
+show before it is placed is a `surprise`, and one still not placed after five moves is `stopped`.
 
-In the simulator, `body.capture(mount, mounted=True)` renders such a camera, given its mount in the tool
-frame, and returns the image, depth and tool pose of one physics state; `mount.on(tool)` is the view to look
-with. [`tests/test_parallax.py`](../tests/test_parallax.py) locates a block this way to within a
-centimetre and picks it up there, with the kernel told nothing about the block. The
-[LIBERO runner](../examples/libero) uses the same functions for a simulated Panda's wrist camera.
+Once a look has shown the whole region, only looks that show all of it count: the centre of a region the image
+border cuts off is not the region's centre. The result is the position of the region the tracker follows,
+tracker errors included. It has no measurement `id`, and it goes stale when the object moves, not with age.
+Pass a position found earlier as `known`: the first move heads straight over it, and one look that shows the
+region within `arrive_m` of it confirms it; a region that has moved is placed afresh. Until the looks fix a
+point, each move heads for where the latest ray meets `assumed_z`, a base-frame height, when you give one;
+otherwise the hand sidesteps for a second look.
+
+`footprint(view, region, depth_m)` converts a `dominant_region` seen face-on, at a known depth along the view's
+optical axis, into metres: `across_m` and `along_m`, and `across`, the base-frame unit direction across the
+region's narrow side, which is the direction a gripper's fingers close along to take it by that side. A region
+that covers only part of an object gives that part's narrow side.
+
+In the simulator, `body.capture(mount, mounted=True)` renders such a camera from its mount in the tool frame and
+returns the image, depth, tool pose and timestamp of one physics state; `mount.on(tool)` is the view to look
+with. [`tests/test_parallax.py`](../tests/test_parallax.py) locates a block this way to within a centimetre and
+picks it up there, with the kernel told nothing about the block. The [LIBERO runner](../examples/libero) uses the
+same functions for a simulated Panda's wrist camera.
 
 ## Records
 
-Each measurement adds one `measurement` event and two files to the run: `perception/<id>.png`, the picture
-with what was measured drawn on it, and `perception/<id>.npz` with the measured `points` (base frame,
-metres) and their `pixels`. They are written before the reply, so a full disk fails the measurement rather
-than losing it later. [Rerun](records.md#view-in-rerun) shows the picture at its capture time and the points
-from when they were measured.
+Each measurement adds a `measurement` event and two files to the run's
+[flight record](records.md#what-a-record-holds): `perception/<id>.png`, the picture with what was measured drawn
+on it, and `perception/<id>.npz` with the measured `points` (base frame, metres) and their `pixels`. They are
+written before the reply, so a full disk fails the measurement rather than losing it later.
+[Rerun](records.md#view-in-rerun) shows the picture at its capture time and the points from when they were
+measured.
 
 ## Limits
 
-Depth is currently supplied by simulated cameras. Physical RGB-D needs a sensor integration with measured
-calibration and timing. A point, box or mask measures a visible surface; EdgeTAM can supply the mask,
-but object pose estimation, feature correspondence and grasp selection remain task responsibilities.
-Calibration accuracy limits every measurement. `requires` checks age, calibration and withdrawal;
-it cannot detect an unobserved scene change.
-
-Workcell camera configuration assumes a fixed camera pose; a camera on the hand is constructed in Python.
-The kitchen examples provide a custom
-[wrist camera](../examples/robocasa-lunchbox/sensor_views.py) that captures RGB-D, camera pose and tool pose
-from the same simulation state. Its calibration identity describes the mounting and intrinsics;
-each frame carries the current camera transform. Physical wrist-camera calibration is not implemented,
-and a position from parallax is only as good as the mount it is given.
+- Physical RGB-D needs a sensor integration with measured calibration and timing; depth comes only from
+  simulated cameras.
+- A point, box or mask measures a visible surface. EdgeTAM can supply the mask; object pose estimation, feature
+  correspondence and grasp selection are up to the task.
+- Calibration accuracy limits every measurement. `requires` checks age, calibration and withdrawal; it cannot
+  notice a scene change that nobody observed.
+- Workcell cameras are fixed; a camera on the hand is built in Python. The kitchen examples' custom
+  [wrist camera](../examples/robocasa-lunchbox/sensor_views.py) captures RGB-D, camera pose and tool pose from
+  the same simulation state; its calibration identity covers the mount and intrinsics, and each frame carries
+  the current camera transform. There is no calibration procedure for a physical wrist camera, and a position
+  from parallax is only as good as the mount it is given.

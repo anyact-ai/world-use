@@ -2,8 +2,8 @@
 
 `--body sim`, `--body sim:rebot`, `wu check` and `wu demo` use MuJoCo, a core
 dependency. The built-in rehearsal twin uses the same engine, including when
-checking a plan for hardware. The kernel owns commands, motion limits, watchdogs,
-faults and recovery.
+checking a plan for hardware. As on hardware, the kernel sends the commands and
+enforces motion limits, watchdogs, faults and recovery.
 
 The bundled reBot uses Seeed's URDF, link inertias, colored component meshes,
 and convex finger collision segments. Arm collision uses component convex hulls
@@ -50,8 +50,8 @@ changed tray, starting pose and destination with a separate outcome check.
 Articulated environment objects such as hinged doors, arbitrary scene meshes,
 soft objects and fluids are outside this box workcell. Robot URDF geometry can
 include primitive shapes and meshes, but loading a robot does not add support for
-those environment types. Their dynamics require an external environment/body
-integration; the kernel can still reason about conservative boxes supplied in its
+those environment types. Their dynamics need an external environment and body
+integration; the kernel can still plan around conservative boxes in its
 estimated `World`. The [RoboCasa adapter](../examples/robocasa-counter) integrates
 an external kitchen scene, including the [articulated oven dial](../examples/robocasa-dial).
 It executes in the original scene but disables full-plan rehearsal: the native
@@ -69,11 +69,12 @@ model parameters, not validated hardware measurements. Fitted link masses,
 centers of mass, and joint friction apply to dynamics as well as the kernel's
 torque prediction. Heating remains a separate approximate thermal model.
 
-MuJoCo contacts improve rehearsal fidelity; they do not replace conservative
-planning. Path and measured-state checks use padded link segments, the tool point,
+MuJoCo contacts make rehearsals more realistic, but planning does not rely on them:
+path and measured-state checks use padded link segments, the tool point,
 [declared tool/finger bounds](adapters.md#collision-bounds) and the estimated held
-object. A passing rehearsal depends on geometry, physical parameters and scene
-estimates; it does not cover undeclared geometry or self-collision.
+object. A passing rehearsal is only as good as that geometry, the physical
+parameters and the scene estimate, and covers neither undeclared geometry nor
+self-collision.
 
 ## Cameras and replay
 
@@ -103,7 +104,7 @@ uv run pytest tests/test_simulation_recovery.py tests/test_simulation_transfer.p
 uv run pytest tests/test_simulation_variations.py
 ```
 
-The recovery test moves an unknown block during a checkpoint, explicitly withdraws its measurement,
+The recovery test moves an unknown block during a checkpoint, withdraws its measurement,
 and checks that the old grasp is refused. The perception procedure then observes again and completes
 the task in the same session, at two changed positions. This tests recovery after invalidation, not
 automatic detection of scene changes, and needs camera rendering. The transfer test uses CPU physics:
@@ -121,10 +122,10 @@ MuJoCo normally uses the larger friction coefficient of two contacting geoms at 
 use 1.0 and the tray 0.8, so lowering only the object's setting to 0.4 does not reduce these contact coefficients.
 That variation checks the configuration path, not robustness to a more slippery grip.
 
-Records keep the URDF and copies of a custom robot's meshes. A built-in robot's
-meshes ship with world-use; replay finds them by the recorded URDF's exact
-contents. Native workcell replay renders measured joints and the recorded **estimated world**, not
-a second physics rollout or a reconstruction of unobserved object motion. Saved
+Records keep the URDF and copies of a custom robot's meshes; replay finds a
+built-in robot's meshes in world-use by the recorded URDF's exact contents.
+Replay of a native workcell renders the measured joints and the recorded estimated
+world, not a second physics rollout or the unobserved motion of objects. Saved
 camera observations and the demo GIF show the original simulation truth.
 
 ## External simulation sessions
@@ -152,26 +153,27 @@ with SimulationSession(body, Path("runs/new-episode"), cameras=cameras,
     session.close({"verdict": "inconclusive", "reason": "physical audit pending"})
 ```
 
-The normal `Client` API records calls and exact RGB-D frame transport. Pass this
-client to `Tracking` or `mcp_server.build(client=...)` to include their internal
-observations. Its `shutdown` is refused, including the MCP tool: only
-`session.close()` stops the daemon, because it saves the task record. A source snapshot documents the live caller; it does not execute
-that snapshot. Use [`world_use.tasks`](../examples/task-programs) when a task
-must execute its frozen source in a fresh Python process.
+`session.client` is a normal `Client` that also records its calls and the exact RGB-D
+frames it receives. Pass it to `Tracking` or `mcp_server.build(client=...)` to record
+their observations too. Its `shutdown`, the MCP tool included, is refused: only
+`session.close()` stops the daemon, because it saves the task record. The source
+snapshot records what the caller ran; the session does not run it. Use
+[`world_use.tasks`](../examples/task-programs) when a task must run its frozen
+source in a fresh Python process.
 
-Sessions use wall-clock control by default. Closing requires idle, confirmed
-power-off state. Exiting the context stops work and requests release, including
-after a task exception; it never chooses a retreat motion. A refused release
-leaves the daemon available for explicit recovery. Use a new output folder for
-each trial, even after a simulator reset.
+Sessions use wall-clock control by default. Closing requires an idle robot with
+power confirmed off. Leaving the `with` block, also after a task exception, stops
+work and requests release; it never chooses a retreat motion. If the release is
+refused, the daemon stays up for recovery. Use a new output folder for each trial,
+even after a simulator reset.
 
-The output keeps the ordinary `flight/` record, `task/` source and observation
-trace, a compiled `scene.mjb`, and bounded `physics/` chunks written off the
-control thread. Successful finalization also produces `replay.npz` with full
-MuJoCo integration state, wall time and simulation time. Recording errors remain
-distinct from task outcomes; interrupted records retain their committed chunks.
-The compiled model records the MuJoCo version in `physics/format.json` and needs
-a compatible MuJoCo runtime to load.
+The output keeps the ordinary `flight/` record, the `task/` source and observation
+trace, a compiled `scene.mjb`, and `physics/` chunks written off the control
+thread. A successful close also writes `replay.npz` with the full MuJoCo
+integration state, wall time and simulation time. Recording errors are reported
+apart from task outcomes, and an interrupted record keeps the chunks already
+written. The compiled model records its MuJoCo version in `physics/format.json`
+and needs a compatible MuJoCo runtime to load.
 
 ```sh
 wu replay runs/new-episode/flight --out scene.gif --speed 3
@@ -179,9 +181,9 @@ wu replay runs/new-episode/flight --out scene.gif --speed 3
 
 For these sessions, replay restores the original external scene without stepping
 physics. It uses the first camera's initial pose as a fixed viewpoint and labels
-both clocks. Actual policy observations remain in `task/artifacts/`; replay is
-not a substitute for them. Keep the whole episode folder together. `wu view`
-still displays measured joints and the estimated world in Rerun.
+both clocks. What the policy actually saw is in `task/artifacts/`, not in the
+replay. Keep the whole episode folder together. `wu view` shows the measured
+joints and the estimated world in Rerun.
 
 The card and rehearsal reports expose `rehearsal_coverage`: estimated boxes and
 approximate dynamics, with external scene geometry and contact dynamics omitted.
@@ -189,27 +191,28 @@ Recording a detailed scene does not extend the planning twin's coverage.
 
 ## Reference checks and repeated evaluation
 
-The [scene-validation example](../examples/scene-validation) records reference
-provenance, alignment, fixed tolerances and reserved observations against a hashed
-scene revision. Appearance/camera, metric geometry and physical response have
-separate results. Synthetic examples exercise the checks; the measured MIT pushing
-example currently fails the physical-response tolerance and has no camera evidence.
-Neither establishes a validated real-to-sim twin.
+The [scene-validation example](../examples/scene-validation) records where its
+reference came from, the alignment, fixed tolerances and reserved observations
+against a hashed scene revision. Appearance and camera, metric geometry and
+physical response get separate results. Synthetic examples exercise the checks;
+the measured MIT pushing example fails the physical-response tolerance and has no
+camera data. Neither is a validated real-to-sim twin.
 
-[`world_use.evaluation`](../src/world_use/evaluation.py) executes named seeded
-cases from frozen policy/evaluator sources and declared input snapshots. It keeps
-task outcome, scene validity, recording integrity and power cleanup separate.
-Every declared case remains in the summary, including invalid or interrupted runs.
-`held_for` evaluates sustained conditions on simulation time with a bounded sample
-gap; wall time is recorded independently. See the
+[`world_use.evaluation`](../src/world_use/evaluation.py) runs named, seeded
+cases from frozen policy and evaluator sources and declared input snapshots. It
+reports task outcome, scene validity, recording integrity and power cleanup
+separately, and every declared case stays in the summary, invalid and interrupted
+runs included. `held_for` checks that a condition holds over simulation time,
+with a limit on the gap between samples; wall time is recorded separately. See the
 [pushing evaluation](../examples/push-letters/README.md#compare-policy-revisions-on-fixed-cases) for a
 concrete camera-policy case and an independent physical audit.
 
 An optional `setup` program prepares each case's scene in its own process before the
-policy starts: seeded initial variations, settling and the start-validity check. Its
-revision joins the case identity and its result decides whether the start is valid,
-so neither depends on policy code. The policy and evaluator receive the prepared
-directory as `params["scene"]`; a changed scene invalidates the attempt.
+policy starts: seeded initial variations, settling and the check that the start is
+valid. Its revision is part of the case identity and its result decides whether the
+start is valid, so neither depends on policy code. The policy and evaluator receive
+the prepared directory as `params["scene"]`; a changed scene invalidates the
+attempt.
 
 `rerun` recreates a named case in a fresh directory and refuses changed inputs,
 sources or runtime versions. `compare` requires identical case identities,
@@ -224,11 +227,11 @@ come from outside the task directory. They join the policy source bundle and its
 revision; the policy receives saved paths in `params["context"]`. Scene inputs
 remain in `inputs`, which determines case identity. This permits comparisons of
 different prompts or skills on identical scenes, seeds and evaluator code.
-Reruns use the saved context. Changed shared inputs or source/context snapshots
-detected before or after execution invalidate the attempt and remain in the report.
+Reruns use the saved context. If shared inputs or the source or context snapshots
+change before or after execution, the attempt is invalid and stays in the report.
 
-The caller must declare the knowledge actually used; copying a document alone
-does not establish that an authoring agent read it. Freeze the policy and knowledge
+The caller must declare the knowledge actually used; a copied document does not
+show that an authoring agent read it. Freeze the policy and knowledge
 before evaluating held-out cases. Case roles are labels, not an access barrier.
 Keep task development and skill promotion outside the kernel. Reproducing a lesson
 from its text tests whether the instructions suffice; transfer needs separate
@@ -236,22 +239,18 @@ held-out tasks and embodiments with their assumptions and results recorded.
 
 ## Other robots
 
-A custom URDF must provide physically valid inertias and collision geometry.
-Visual meshes are optional; referenced meshes must be STL or OBJ files available
-locally, relative to the URDF or as `package://` paths inside their package. The
-planar adapter example includes inertias and primitive geometry.
+A custom URDF must provide physically valid inertias and collision geometry, and
+any meshes it references must be local STL or OBJ files; the
+[adapter guide](adapters.md#describe-the-robot) has the details, and the planar
+adapter example includes inertias and primitive geometry.
 
-The simulation drives a gripper's joints outside the arm chain: one joint, revolute
-or prismatic, in its URDF coordinate, or two opposed prismatic fingers that share
-a calibrated opening (`m_per_unit`), zero at closed. A hinged jaw's servo acts
-like a finger's 5 cm from the hinge. An object counts as held when it touches
-both fingers, or the jaw and the link it closes against. Other mechanisms need an
-explicit simulation model. Fixed child links, such as finger collision pads, are
-part of the same MuJoCo rigid group and contribute to those contact labels. The
-label never attaches an object to the tool; release and motion remain physics.
-Without a gripper description, joints outside the arm
-chain stay at their URDF zero. Arm joints are revolute or continuous; see the
-[adapter guide](adapters.md).
+The simulation drives the joints outside the arm chain as the gripper; the
+[gripper description](adapters.md#grippers) lists the mechanisms it supports. A hinged
+jaw's servo acts like a finger's 5 cm from the hinge. An object counts as held when it
+touches both fingers, or the jaw and the link it closes against; fixed child links,
+such as finger collision pads, count as part of their finger. Being held is only a
+label: it never attaches the object to the tool, and release and motion remain
+physics.
 
 A workcell's `[simulation]` table accepts `start_deg` (or `q` in radians),
 `gripper`, `temp_c`, `ambient_c`, `noise`, and `seed`.

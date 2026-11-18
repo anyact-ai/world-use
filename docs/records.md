@@ -15,19 +15,19 @@ wu fit runs/RUN-1 runs/RUN-2                          # link masses and joint fr
 `wu inspect` prints the robot, the mode, whether the record closed normally, the powered and moving time, and each
 job's outcome. `powered` counts from each attempt to switch torque on to a confirmed switch-off, ramps and
 unconfirmed intervals included. `moving` is the time spent in motion steps, not independently detected movement.
-Both are elapsed time on one monotonic clock that events and telemetry share.
-For current records, "closed normally" means the final completion marker matches the committed chunk and event
-counts. A `closed` event alone means the robot connection closed; its final recording write may still have failed.
-An open or interrupted record reports only the telemetry already committed to disk.
+Both are elapsed time on one monotonic clock that events and telemetry share. A record closed normally when its
+`complete.json` matches the saved chunk and event counts; a `closed` event alone only means the robot connection
+closed, and the final write may still have failed. An open or interrupted record reports only the telemetry
+already saved.
 
 `wu replay` renders the measured joints and the recorded world model with the saved robot geometry, and labels the
 frames as a reconstruction. The original camera pictures stay in `views/`. `wu fit` writes `fit.json`; the
 [2026-09-28 hardware record](hardware.md#2026-09-28-a-model-fitted-from-flight-records) shows what a fit changes.
 
-[External simulation sessions](simulation.md#external-simulation-sessions) additionally save the compiled scene,
-full physics states and exact policy observations beside `flight/`. For these records, `wu replay` follows
+[External simulation sessions](simulation.md#external-simulation-sessions) also save the compiled scene, full
+physics states and exact policy observations beside `flight/`. For these records, `wu replay` follows
 `flight/external-scene.json` to restore the actual scene through a fixed recorded camera, without stepping physics.
-Keep the whole episode folder together. Rerun's 3D view continues to show the estimated world.
+Keep the whole episode folder together. Rerun's 3D view still shows the estimated world.
 
 ## Inspect an experiment
 
@@ -47,36 +47,36 @@ Inspection also accepts a recorded Python task directory. `task_trace.phases` li
 named phases with their IDs, parents and completion state. Expand one with
 `wu inspect runs/evaluation --case nominal-seed17 --phase 42 --json`, using an ID
 from that list. The result includes nested phases, recorded calls, checked artifact
-references and known job outcomes. Large frames and arrays remain in their files.
-A missing phase end or unanswered call retains an unknown outcome; inspection
-does not infer that motion stopped or succeeded. Phase clocks remain relative to
-the task start. Job IDs connect the trace to flight evidence without aligning clocks.
+references and known job outcomes; large frames and arrays stay in their files.
+A phase without an end, or a call without a reply, shows an unknown outcome:
+inspection does not guess whether motion stopped or succeeded. Phase times count
+from the task start, and job IDs link the trace to the flight record, whose clock
+starts with the kernel.
 
-The evidence panes label reference comparisons, raw policy frames and estimated
-geometry separately. `--scene` additionally renders a snapshot of recorded full
-simulation state and needs the same graphics support as replay. It never advances
-physics. Full motion remains available through `wu replay`; a snapshot is not a
-new observation or a physical validation result.
-Raw frames use `policy_elapsed` from the task start; flight telemetry uses
-`elapsed` from the kernel start. Select the appropriate timeline; the viewer does
-not claim these different clock origins are aligned.
+The viewer labels reference comparisons, raw policy frames and estimated geometry
+separately. `--scene` adds a snapshot rendered from the recorded simulation state,
+with the same graphics needs as replay. It never advances physics, and it is not a
+new observation or a physical validation; `wu replay` shows the full motion.
+Raw frames use the `policy_elapsed` timeline, counted from the task start; flight
+telemetry uses `elapsed`, counted from the kernel start. The two are not aligned:
+choose the one you need.
 
-Inspection is read-only. `wu rerun` explicitly executes the recorded trusted
-Python policy and evaluator in fresh processes and a fresh output directory. It
-refuses changed source, inputs or runtime; failed and interrupted saved cases
-can be recreated. A completed attempt can still have a failed task verdict.
+Inspection is read-only. `wu rerun` runs the recorded, trusted Python policy and
+evaluator again, in fresh processes and a fresh output directory, and refuses if the
+source, inputs or runtime changed. It can recreate failed and interrupted cases; a rerun
+that completes can still fail its task check.
 
 For embedded scene development, [`SimulationWorkspace`](../src/world_use/inspection.py)
-owns an explicit `factory(fresh_output) -> SimulationSession`. `reset()` builds
-a new episode under the same declared scene revision; `reload(factory,
+takes a `factory(fresh_output) -> SimulationSession`. `reset()` builds a new
+episode under the same declared scene revision; `reload(factory,
 scene_revision=...)` tries a revised scene. Both require the current simulation
-to be idle with confirmed power off. Failed candidates retain the last valid
-record and publish the error in `inspection.json`. `wu view WORKSPACE --follow`
-follows that pointer in one viewer. This is an explicit Python lifecycle API;
-the viewer does not edit scene source or control hardware. The scene owner must
-serialize reset/reload with other control calls.
-A storage failure while publishing a replacement closes the candidate and keeps
-the previous recorded scene selected; the previous daemon may already be closed.
+to be idle with power confirmed off. A failed candidate keeps the last valid
+record and writes the error to `inspection.json`, the pointer that
+`wu view WORKSPACE --follow` follows in one viewer. Reset and reload are Python
+calls only: the viewer edits no scene source and controls no hardware. The scene
+owner must not make other control calls while resetting or reloading. If storage
+fails while the replacement is published, the candidate is closed and the previous
+recorded scene stays selected, although its daemon may already be closed.
 
 ## View in Rerun
 
@@ -91,7 +91,7 @@ temperature, gripper, power and the active job, and the events, all on the run's
 timeline to inspect a grasp, a refusal or a recovery. Joint plots keep every committed sample; the world and the
 last ten seconds of tool path update at up to 20 Hz.
 
-The 3D scene shows **measured joints and the estimated world**: a carried box is what the runtime believed it held,
+The 3D scene shows measured joints and the estimated world: a carried box is what the runtime believed it held,
 not recovered physical motion. Camera pictures show the captured scene, with any overlays `wu look` drew. A
 [measurement](perception.md) adds its picture to its camera's pane at the time the picture was taken, and its
 surface points to the 3D scene, in green, from the time it was measured.
@@ -162,34 +162,35 @@ power transitions and the latest 5,000 events. If storage stays down long enough
 dropped, status reports the loss at once, `recording.json` keeps the counts, and `wu inspect` and Rerun flag the
 record as incomplete. Gaps show in the sample indices and event numbers, and durations do not count across them.
 
-Summaries add up durations and extremes as the run goes. After 8,192 powered ticks, the tick median and p99 come
-from a uniform sample of that size (`tick_percentile_sample`); the maximum stays exact, and `wu inspect` computes
-exact percentiles from the saved chunks.
+Summaries add up durations and extremes as the run goes. Beyond 8,192 powered ticks, the summary's tick median
+and p99 come from a uniform sample of that size (`tick_percentile_sample`); the maximum is exact, and `wu inspect`
+computes exact percentiles from the saved chunks.
 
 ## What an agent adds
 
-Named simulation evaluations keep `suite.json` with frozen setup/policy/evaluator source,
-declared input hashes, runtime identity, scene revision and every case/seed. Each
+Named simulation evaluations keep `suite.json` with the frozen setup, policy and evaluator source,
+declared input hashes, runtime identity, scene revision and every case and seed. Each
 `trials/<name>/trial.json` records execution status, outcome, reasons, interventions,
 wall and simulation time, recording integrity and power cleanup. Setup, policy and
 privileged evaluator artifacts stay in separate directories beside `scene/` and `episode/`.
-Status is decided once from the recorded facts: an interrupt or a policy process lost
-without a terminal record is `interrupted`; a failed setup or evaluator, changed inputs,
-sources or runtime, or incomplete evidence is `invalid`; anything else is `completed`.
-A case that never wrote `trial.json` remains an interrupted attempt in the summary.
+The status follows from what was recorded: an interrupt, or a policy process lost
+without a final record, is `interrupted`; a failed setup or evaluator, changed inputs,
+sources or runtime, or an incomplete recording or evaluator result is `invalid`;
+anything else is `completed`.
+A case that never wrote `trial.json` stays in the summary as an interrupted attempt.
 
-A matching `scene-validation.json` and its hashed evidence can accompany the
-suite. The report's artifact manifest includes raw stability samples as well as
-reference inputs, comparison details and images. Every listed file is verified
-and copied for both evaluations and reruns. Regenerate older reports without an
-artifact manifest before attaching them to a suite.
-Camera/appearance, geometry and physical-response results remain separate
-from task success. An absent reference is `unvalidated`; a stale scene revision
-is rejected. See [reference checks and repeated evaluation](simulation.md#reference-checks-and-repeated-evaluation).
+A matching `scene-validation.json` and its hashed files can accompany the
+suite. The report's artifact manifest lists the raw stability samples, reference
+inputs, comparison details and images; every listed file is verified and copied
+for both evaluations and reruns. Regenerate a report that has no artifact manifest
+before attaching it to a suite. Camera and appearance, geometry and physical-response
+results stay separate from task success. A missing reference is `unvalidated`; a
+stale scene revision is rejected. See
+[reference checks and repeated evaluation](simulation.md#reference-checks-and-repeated-evaluation).
 
 For saved Python tasks, the [task-program example](../examples/task-programs) records source snapshots,
-parameters, full frames and computations alongside the existing flight record. Each invocation uses fresh
-observations; offline analysis and recorded-motion replay remain separate from new robot execution.
+parameters, full frames and computations beside the flight record. Each run of the program takes fresh
+observations; analysing a record or replaying its motion never runs the robot again.
 
 ```python
 robot.record(context={"model": "your-model", "prompt": "move the block", "role": "live policy"})
@@ -200,14 +201,14 @@ From the shell: `wu record --context inputs.json --note '...'`; MCP's `record` t
 saved as given, so keep credentials out of them. A `done` outcome means the commands completed; the block example
 saves its separate success check in `result.json` and a `task_result` event.
 
-CLI and MCP job replies include the final step's relevant measured facts, including
-settling reasons and grip consistency. MCP uses `Outcome.feedback()` to compact
-successful sequence outcomes into a summary and `last_step`; embedded callers can
-use it too. HTTP job replies and `to_dict()` retain the full final-step result and
-existing step messages. Each completed sequence child also writes its
-full outcome in `step_done`, so shorter replies do not discard the underlying
-evidence. Failure feedback retains expected, observed and recovery hints. A grip
-consistency result explicitly leaves object retention unverified.
+CLI and MCP job replies include the final step's measured facts, such as a settling
+`reason` or a grip check's drift. For a successful sequence, MCP sends
+`Outcome.feedback()`, which replaces the list of step messages with `last_step`, the
+final step's own feedback; embedded callers can use it too. HTTP job replies and
+`Outcome.to_dict()` keep the full final-step result and the step messages, and every
+completed step of a sequence writes its full outcome to a `step_done` event, so the
+record keeps what shorter replies leave out. Failures keep their `expected`,
+`observed` and `hint`.
 
 Each measurement adds a `measurement` event with what the agent received: its id, camera and frame, `valid` and
 `reason`, `surface_center`, `visible_bounds` and `from_tool` in the work frame, the picture's capture time

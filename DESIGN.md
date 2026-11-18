@@ -30,9 +30,8 @@ numbers that shaped it:
   refusals, from a harder start pose.
 
 These are single-task, single-robot observations, not benchmarks. They are why the rules below exist.
-The original moving-time percentages were computed from nominal-rate tick counts. Current records use
-elapsed monotonic time, including stalled ticks and power transitions; do not compare the two accounting
-methods as if they were the same measurement.
+The moving-time percentages above count ticks at the nominal control rate. Flight records measure elapsed
+monotonic time, stalled ticks and power transitions included, so their percentages are not directly comparable.
 
 ## Rules
 
@@ -43,24 +42,25 @@ methods as if they were the same measurement.
    whole plan; when the job is accepted, and again at its first tick, the kernel verifies that the state it
    checked from is still current. `--no-check` and embedded `Kernel.run` check each step as it starts, so
    earlier steps may have moved. HTTP and MCP reject unknown arguments, invalid types and nonfinite numbers
-   before dispatch; shared Pydantic definitions describe those request contracts.
+   before dispatch, using shared Pydantic request models.
 3. **Make refusals useful.** A refusal names the violated limit and, where available, a correction
    ("lift at least 2 cm more first"). The card says which way the gripper points and opens, where known
    things are in the frame moves use, and which short moves are possible from here. A model should never
    have to find the limits one refusal at a time.
 4. **Every step says what it expects.** Contact within a distance, a grip within a width, an answer at a
    checkpoint. Anything else is a surprise: the robot holds where it really is, queued work is cancelled,
-   and the model gets an incident report instead of a stream of numbers.
-   Measured settling has a deadline and can return early on stalled progress. Optional grip checks and scoped
-   opening expectations report sensor consistency; the policy still verifies object retention from observations.
-5. **Idle means holding.** No idle timeouts that move. Holding still can heat motors and is not safe in every
-   situation. A heat trip may use a home route the agent set, only if no contact has made it stale and the
-   kernel is not faulted. Home routes contain only built-in motion and gripper steps, with no waits or contact
-   operations. Completion includes torque release; a failed thermal return clears the route. Without a route
-   the kernel holds and alarms for immediate operator action. The agent must resolve motor power before
-   handing off asynchronously; software cannot safely release a raised, unsupported arm. The daemon rehearses
-   a candidate home route while idle and installs it only if the check passes and its starting state is current.
-   A failed candidate leaves the installed route unchanged, including any existing staleness.
+   and the model gets an incident report instead of a stream of numbers. A wait for arrival ends at a deadline
+   or as soon as progress stalls, and grip checks compare the measured opening with an expected range; whether
+   the object is still held, the policy checks from observations.
+5. **Idle means holding.** Nothing moves on a timer. Holding still heats the motors and is not safe in every
+   situation, so the agent resolves motor power, normally by going home and releasing torque, before it hands
+   off or waits for a reply: software cannot safely release a raised arm that has no brakes. The one automatic
+   motion is a thermal return. When a motor reaches its limit, the arm follows the home route the agent set and
+   torque is released, unless contact has made the route stale or the kernel is faulted; without a usable
+   route, the kernel holds and alarms for the operator at once. A home route holds only built-in motion and
+   gripper steps, with no waits or contact steps. The daemon rehearses a new route while idle and installs it only if the rehearsal passes and its
+   starting state is still current; otherwise the installed route stays as it was, stale or not. A failed
+   thermal return clears the route and calls the operator.
 6. **Monitor unexpected contact.** On adapters with joint torque sensing, readings are compared with what the arm's own weight explains;
    guarded moves use tighter thresholds, fragile zones tighter still. Filtering, sensing, and model error
    determine detection latency. The checks do not replace hardware protection or an operator.
@@ -93,17 +93,17 @@ excursion from the session's start pose, gravity load, keep-out zones, surfaces,
 may not turn its base while the gripper is at table height). An agent can tighten it; loosening it is an operator
 override with a reason, and it is logged.
 
-Keep-out geometry includes segments from joint to joint, padded by the manifest's `link_radius_m`
-(3 cm by default), plus declared tool/finger boxes and the estimated held-object box. Planning bounds their
-swept motion, including payload rotation; measured ticks check the same declared geometry. Surfaces constrain
-the tool point and those boxes. Guarded support contact grants one support a bounded allowance, shared by every
-part that reaches it wholly above its footprint; interruption and completion clear its unused budget, while
-withdrawal from existing contact remains possible. Remaining allowances can shrink during withdrawal but never grow
-at ordinary step boundaries or in planning snapshots. Re-measured support or payload geometry restarts from its
-measured overlap, so withdrawal stays possible.
-Undeclared fingers/tools, the base pedestal, self-collision, arm-link/surface collision and unattached objects as
-obstacles remain omitted.
-The capability report states the declaration sources and omissions. Slow zones cap the planned tool speed.
+Keep-out checks cover segments from joint to joint, padded by the manifest's `link_radius_m` (3 cm by default),
+declared tool and finger boxes, and the estimated box of a held object. Planning checks their swept motion,
+payload rotation included, and every measured tick checks the same geometry. Surfaces constrain the tool point
+and those boxes. A guarded move toward a support may plan a small allowance past its surface to find contact,
+shared by every part that reaches it wholly above its footprint. The allowance ends with the step or its
+interruption, leaving only the overlap already measured: that can shrink as the arm withdraws, but never grows
+at step boundaries or in planning snapshots. A re-measured support or payload starts again from its measured
+overlap, so withdrawal stays possible. Undeclared tools and fingers, the pedestal, self-collision, arm links
+against surfaces and objects that are not held are not checked; the capability report lists the declared
+geometry and these omissions ([collision bounds](docs/adapters.md#collision-bounds)). Slow zones cap the planned
+tool speed.
 
 Faults latch until an operator resets them, and a watchdog trip while idle cancels anything queued. An incomplete
 power transition, or failed I/O while powered, marks motor power unconfirmed (`power_uncertain`): commands stay
@@ -147,13 +147,12 @@ a headless host ([simulation](docs/simulation.md)). The optional Rerun viewer re
 process; it never imports a hardware driver or checks a plan.
 
 Perception turns pixels into numbers a plan can use. The daemon keeps the last few camera frames, unannotated
-and unrecorded (`look` is the recorded, annotated view); a MuJoCo frame can add aligned metric depth and the
-calibration the camera had. Measuring a point or a box of a frame gives the visible surface's centre and extent in
-the work frame and its offset from the tool, and saves the picture and points with the run. A run can require
-measurements: before each step the kernel refuses once one is too old for the run, its camera was calibrated
-again, or a tracker withdrew it, judging only numbers copied when the run was accepted. Measurements never change
-the world model; checking an outcome means measuring again and comparing, in the agent's procedure. Optional
-EdgeTAM tracking runs in its own process, never in the control loop, and returns the same measurements. See
+and unrecorded (`look` is the recorded, annotated view); a MuJoCo frame can add aligned metric depth. Measuring
+a point or box of a frame gives the visible surface's position in the work frame and saves the picture and points
+with the run. A run can require measurements: before each step the kernel refuses once one is too old, its
+camera was calibrated again or a tracker withdrew it, judging only numbers copied when the run was accepted, so
+the control loop reads no files. Measurements never change the world model; the agent checks an outcome by
+measuring again. Optional EdgeTAM tracking runs in its own process, never in the control loop. See
 [measuring from pictures](docs/perception.md).
 
 ## Where it goes
@@ -162,10 +161,9 @@ The [block example](examples/pick-place) provides a complete run, a separate suc
 and a recovery to inspect. The [Panda kitchen adapter](examples/robocasa-counter) extends this to an external
 environment, while [shape sorting](docs/shape-sorting.md) tests a live model using measured alignment.
 The next development cycle connects scene reconstruction, execution, evaluation and visual inspection.
-The shared [simulation session](docs/simulation.md#external-simulation-sessions) serves pushing and kitchen
-packing. Reference checks, comparable evaluations, declared collision bounds and shared inspection now have
-working first slices.
-The milestones below retain the acceptance criteria and limits of the wider development cycle.
+Pushing and kitchen packing share a [simulation session](docs/simulation.md#external-simulation-sessions), and
+reference checks, comparable evaluations, declared collision bounds and shared inspection each have a first
+working version. The milestones below keep the acceptance criteria and limits of the whole cycle.
 
 World-use's direction is to help agents turn observations into checked robot actions and improve from recorded
 outcomes. Other projects, including [RoboSimStudio](https://robosimstudio.github.io/) and
@@ -178,7 +176,7 @@ problem in setup, scene accuracy, execution or diagnosis, with a concrete way to
 
 A useful scene must reproduce the observations and physical interactions that matter to the task.
 For world-use, reconstruction quality should make observations, motion checks and predicted outcomes more
-trustworthy. Retain separate evidence for three aspects of reconstruction:
+trustworthy. Keep separate results for three aspects of reconstruction:
 
 - **Appearance and camera:** compare reference frames with renders at matching viewpoints and timestamps.
   Inspect silhouettes, occlusion, materials and lighting; measure landmark error and mask overlap where suitable.
@@ -188,7 +186,7 @@ trustworthy. Retain separate evidence for three aspects of reconstruction:
   render or a good silhouette match alone does not establish the geometry behind it.
 - **Physical response:** check finite state, penetration, support and drift, then compare task-relevant motion
   such as sliding distance, rotation, settling or deformation. Compare forces only when the reference has force
-  measurements. Record solver settings and parameter sources; leave unmeasured properties explicitly uncertain.
+  measurements. Record solver settings and parameter sources, and mark unmeasured properties as uncertain.
 
 Define tolerances from the task and available measurements before tuning. Fit on selected frames or motions,
 then validate on reserved observations; several views from the same clip do not establish transfer to another
@@ -204,7 +202,7 @@ thermal fitting needs corresponding measurements. No new hardware operation is p
 
 - **Scene setup** owns simulator construction, initial conditions, cameras and physical-state capture. Start
   with the existing MuJoCo integrations and extract shared code only as two tasks use it. Keep task geometry
-  and simulator-specific details with their scene; retain the six-method `Body` contract.
+  and simulator-specific details with their scene; keep the six-method `Body` contract.
 - **The kernel** owns robot I/O, power, limits, faults and evidence freshness. Planning remains in its worker.
   Its estimated `World` stays separate from simulation truth. A reconstructed model may contribute declared
   calibration and prior geometry; live hidden object state and evaluator answers do not enter policy tools.
@@ -221,12 +219,13 @@ thermal fitting needs corresponding measurements. No new hardware operation is p
   artifacts rather than maintaining a second generic recording system. Views show reference footage,
   reconstruction, policy observations and estimated geometry with their roles labelled.
   Named task phases group observations, computations and calls in the same trace. Inspection expands one
-  phase's artifacts and known job outcomes; incomplete calls retain an unknown outcome.
+  phase's artifacts and known job outcomes; incomplete calls show an unknown outcome.
 
 Perception, grasp proposals and planning are separate from the `Body` I/O contract. Add a provider boundary
 when a task needs another implementation, using explicit frames, units, observation provenance and failure
-results. Isolate heavyweight dependencies in an optional process or service and retain the CPU setup.
-Backend selection and fallback must be explicit; resulting actions still pass through kernel checks.
+results. Isolate heavyweight dependencies in an optional process or service and keep the CPU setup working.
+Choosing a backend, or falling back to another, must never happen silently; the resulting actions still pass
+through kernel checks.
 Keep agent-facing help and request validation tied to the same contracts.
 
 ### Delivery sequence
@@ -238,11 +237,11 @@ step, and revise the scope when the evidence shows that a different approach ser
    session and recording path, preserving their task programs and physical audits. Start independent episodes
    with a fresh kernel, measurement store, clock and output folder; a simulator reset alone is insufficient.
    Keep lifecycle and state capture outside the robot adapter where possible. Completion means both tasks can
-   run through the normal client, preserve their evidence and replay the actual external scene, with explicit
-   rehearsal coverage. Check interruption and cleanup as well as successful execution.
+   run through the normal client, preserve their evidence and replay the actual external scene, with their
+   rehearsal coverage stated. Check interruption and cleanup as well as successful execution.
 2. **Add reference comparison and scene validation.** Pin a reference clip, scale evidence and task-relevant
    tolerances. Produce aligned image comparisons, geometry residuals and physical-response measurements tied to
-   a scene revision. Start with explicit correspondences and editable parameters. Completion means an agent can
+   a scene revision. Start with hand-picked correspondences and editable parameters. Completion means an agent can
    identify a mismatch, revise the scene and show improvement on reserved observations. Deliberately wrong scale,
    camera pose or unstable contacts must fail the relevant checks; missing measurements remain unvalidated.
    The [first implementation](examples/scene-validation) covers explicit landmarks, dimensions, trajectories
@@ -257,12 +256,12 @@ step, and revise the scope when the evidence shows that a different approach ser
    in the report. Completion means a failed episode can be recreated under pinned versions and policy revisions
    can be compared on identical cases. Tests must catch transient success, invalid starts, stale evidence and
    accidental exposure of evaluator state to the policy-facing interface.
-   The [shared runner](src/world_use/evaluation.py) and [pushing cases](examples/push-letters) now freeze source,
+   The [shared runner](src/world_use/evaluation.py) and [pushing cases](examples/push-letters) freeze source,
    inputs and runtime, retain every attempt, and compare camera cases with a separate physical audit. Broader
    performance across held-out scenes remains an experiment to run, not a claim from infrastructure tests.
 4. **Extend collision coverage for concrete motions.** Begin with fingers, the tool and a carried object's
-   conservative geometry, using the same declared geometry in planning and runtime checks. Add explicit handling
-   for intended support/contact transitions and identify remaining omissions, including self-collision. Full
+   conservative geometry, using the same declared geometry in planning and runtime checks. Handle intended
+   support and contact transitions, and list the remaining omissions, including self-collision. Full
    external-scene rehearsal is separate work and must use a declared estimated model, not hidden scene state.
    Completion means the planner rejects representative finger/payload collisions while allowing validated
    placements and withdrawal. Add obstacle-avoiding search or an optional planner only when those cases need it.
@@ -273,7 +272,7 @@ step, and revise the scope when the evidence shows that a different approach ser
    powered-off simulation; keep the last valid scene visible on a failed build and display the error. Never
    hot-reload hardware. Completion means an agent and a person can inspect the same revision, compare it with
    the reference, rerun a named episode and inspect its actual observations and failure without custom scripts.
-   [Experiment inspection](docs/records.md#inspect-an-experiment) now connects these saved artifacts in the
+   [Experiment inspection](docs/records.md#inspect-an-experiment) connects these saved artifacts in the
    existing CLI and viewer, including named reruns and optional recorded-scene snapshots. Persistent reset/reload
    is an embedded, simulation-only lifecycle API; interactive scene authoring and measured video alignment remain.
 

@@ -4,10 +4,9 @@ A robot needs a URDF, a TOML description, and a driver with six methods. Keep th
 in your own project or Python package. The daemon loads the driver by its import
 path; the planning worker uses the description, without loading hardware code.
 
-For an external simulation, the [Panda kitchen adapter](../examples/robocasa-counter/adapter.py)
-shows the same I/O contract connected to a RoboCasa scene. Its
-[setup guide](../examples/robocasa-counter) explains what the integration supports and where
-it disables rehearsal. MuJoCo tasks can share lifecycle and recording through
+The [Panda kitchen adapter](../examples/robocasa-counter/adapter.py) implements the same six methods over a
+RoboCasa scene; its [setup guide](../examples/robocasa-counter) says what it supports and where it turns off
+rehearsal. A MuJoCo task can get its lifecycle and recording from
 [`SimulationSession`](simulation.md#external-simulation-sessions).
 
 ## Try the complete path
@@ -35,69 +34,15 @@ uv run wu inspect runs/YOUR-RUN
 uv run wu replay runs/YOUR-RUN --out replay.gif
 ```
 
-Both runs are simulated. This exercises setup, worker rehearsal, execution and
-portable records without connecting hardware. For an embedded Python example,
-run `uv run python examples/adapters/planar.py`.
+Neither run touches hardware: `--body sim` is MuJoCo, and the example's own adapter is an in-memory
+controller. Together they exercise setup, rehearsal in the worker, execution and records. For an embedded
+Python example, run `uv run python examples/adapters/planar.py`.
 
-To adapt a complete task before substituting the robot, follow the
-[block workcell recipe](../examples/pick-place/README.md#adapt-the-task): change
-the initial scene and destination, compose phases, then evaluate the released
-object separately from command completion. The planar example has no gripper;
-it demonstrates the adapter path rather than a block-transfer task. A second
-fixture, [jaw_arm.toml](../tests/jaw_arm.toml), supplies five joints and a revolute
-jaw. Its [simulation tests](../tests/test_mujoco.py) exercise grips, fixed child
-finger pads, release and Cartesian motion with free heading. Neither fixture
-establishes the dynamics or safe power behavior of a physical robot.
-
-## Guarded custom steps
-
-Embedded kernels may extend `Kernel.guarded_steps` with audited behavior types:
-`guarded_steps = Kernel.guarded_steps | {MyMove}` in a kernel subclass. Admission checks exact types, so this
-does not admit subclasses automatically. A custom primitive must start through `kernel.start_behavior`;
-every internal submove, including after waiting or background preparation, must pass `start_behavior` or
-`check_guard` before commanding motion. Ordinary custom steps remain refused when a plan has a guard.
-Keep perception and planning outside the control tick.
-
-### Measured completion
-
-Finishing a joint trajectory means its commands were sent. Add `{"do": "settle"}`
-when the next step needs measured arrival. It waits at the final joint command
-for at most one second, returning sooner on arrival or insufficient progress.
-`seconds` changes the cap; `tolerance_deg` sets the allowed joint error. Without
-it, each joint uses one sixth of its declared tracking tolerance. Stalls and
-timeouts report residuals, hold the measured arm pose and cancel following work.
-They do not establish whether contact, controller lag or an unreachable target
-caused the error. Kernel watchdogs continue to run throughout the wait.
-
-External controllers can use `world_use.checks.Settling(tolerances, timeout_s,
-window_s, stable_s=0)` with their own measured residuals, including a vector mixing
-metres and radians. `update(feedback_timestamp, absolute_errors,
-command_active=...)` returns `None`, `"arrived"`, `"stalled"` or `"timeout"`.
-Use a monotonic measurement timestamp and declare tolerances in the residuals'
-units. Cached samples cannot complete the wait; missing feedback still needs the
-adapter's stale-data watchdog. Set `command_active=False` while an approver or
-controller is still changing the applied target: this clears the progress window
-without extending the deadline. A full window with at least three measurements
-is needed for a stall, and slow progress projected to arrive before the deadline
-keeps its remaining time. This checker sends no commands and changes no controller.
-
-Two things a tolerance alone gets wrong on a lightly damped arm. A hand passing through its target has
-not arrived: add its travel over the last control step as one more residual, with the travel you accept
-at rest as its tolerance. And an arm that swings past its target makes no progress while it turns round:
-`stall_s` is how long a stall must last before `update` reports it.
-
-`world_use.checks.Following(position, lead_m=..., progress_m=...)` tells a hand that something holds from
-one that only trails its command, without torque sensing. Call `update(position, applied_command)` after
-each control step; it returns `True` once the hand has gained less than `progress_m` toward a command more
-than `lead_m` ahead of it, twice running. That ends a move early instead of pressing until a timeout, and
-lets a descent end on contact. It does not say what holds the hand, and nearer than `lead_m` it concludes
-nothing. `travel_m` is the hand's travel over the last step, the residual above.
-
-A hand that closes on an object has no target opening to arrive at. Give the checker its
-travel toward the commanded end instead: `"arrived"` then means the fingers met nothing,
-`"stalled"` means they stopped apart, and `"timeout"` means they were still moving. Compare
-the settled opening with the expected range afterwards. The
-[LIBERO runner](../examples/libero/native.py) judges its arm and fingers with these checks.
+The planar arm has no gripper. [tests/jaw_arm.toml](../tests/jaw_arm.toml) describes a five-joint arm with a
+revolute jaw, and its [simulation tests](../tests/test_mujoco.py) cover grips, finger pads on fixed child links,
+release, and Cartesian moves that let the heading turn. To adapt a whole task before changing the robot, follow
+the [block workcell recipe](../examples/pick-place/README.md#adapt-the-task): change the scene and destination,
+compose the phases, and check the released object separately from whether the commands completed.
 
 ## Describe the robot
 
@@ -106,7 +51,7 @@ specifications. `urdf` is relative to that file. `tool_link` identifies the poin
 that `line`, `lines` and `move_to` steps control. Each `[[joints]]` entry must follow the URDF chain's
 joint order; its limits may be tighter than the URDF's, never wider.
 
-The MuJoCo twin prepares every motion, also on hardware, so the description must
+The worker prepares every motion on a MuJoCo twin, on hardware too, so the description must
 load in MuJoCo: physically valid inertias, collision geometry, and STL or OBJ meshes.
 Mesh paths are relative to the URDF. A ROS `package://name/...` path resolves in the
 nearest folder called `name` that holds the URDF or sits beside a folder above it;
@@ -133,7 +78,7 @@ The fields follow [Manifest](../src/world_use/body.py):
 | `max_segment_m`, `link_radius_m`, `max_excursion` | Cartesian segment length, collision padding, joint excursion in radians |
 | `[turn_clearance]` | Joint names in `joints`, required clearance in `height_m` |
 | `ik_weights` | Weights of x, y, z, rx, ry, rz (base frame) that Cartesian moves hold; 0 frees one |
-| `notes`, `hardware_notes` | Lines for the card. `hardware_notes` describe the physical robot, not its simulation: name its motor supply there, which an operator switches off when the arm cannot go home |
+| `notes`, `hardware_notes` | Lines for the card. `hardware_notes` describe the physical robot, not its simulation: name the motor supply there, which an operator switches off when the arm cannot go home |
 
 An arm with fewer than six joints cannot hold every tool orientation. Unless
 `ik_weights` says otherwise, it holds position and tilt and lets the heading (yaw
@@ -169,91 +114,7 @@ start at zero share the opening along `opens_along`; they need `m_per_unit`. Oth
 mechanisms need their own simulation model. Without `[gripper]`, joints outside the
 arm chain stay at their URDF zero.
 
-`gripper` accepts `check_arrival: true` to require measured arrival after its trajectory,
-with a maximum settling wait of 0.3 s. Arrival requires 0.1 s within one sixth of the gripper's tracking
-tolerance; a plateau or timeout ends with a surprise and holds the measured hand
-and arm positions. The default preserves command completion after the existing wait,
-including in home routes, and reports `command_complete` with target and measured
-position. It does not establish arrival. Use `grip` for intentional object contact;
-its pre-opening requires arrival before closing. Neither position nor contact alone
-verifies retention.
-
-`check_grip` observes opening over a bounded interval (default 0.2 s), using an
-explicit `expect_mm` range or native-unit `expect`. Optional `max_drift_mm` or
-`max_drift` bounds the peak-to-peak change during that interval. Millimetre inputs
-need calibration; missing measurements refuse the check. Range or drift failures
-hold the arm and retain the gripper command, then cancel following work. Sensor
-noise, reseating and compliance affect these readings: consistency does not prove
-object retention, and a change does not prove loss. The feedback states that
-object retention remains unverified.
-
-`grip` and `grasp` accept `verify_s` to run the same check after squeezing, with
-optional drift bounds. Their `expect_mm`/`expect` range then also applies to the
-post-squeeze measurements, so allow for the object's compliance. A failed check
-uses `grasp`'s existing bounded offsets; it does not add new search directions.
-For subsequent lift/carry steps, `seq` accepts `expect_grip_mm` or `expect_grip`
-and checks that range every tick, including checkpoint waits. Put intentional
-opening outside that sequence. See the [block example](../examples/pick-place#check-a-grip-before-carrying)
-for composing measured checks with an independent visual check.
-
-### Bounded manipulation procedures
-
-`world_use.procedures.grasp(execute, observe, approach=..., close=..., check=..., lift=...)` composes
-arrival at a chosen pose, close, measured grip check, bounded test lift and second check. `place(execute,
-observe, move=..., release=..., withdraw=..., check=...)` composes measured arrival, release,
-an opening check and withdrawal. Each command is a dictionary passed unchanged to `execute`,
-which must validate it, use the adapter's normal control path and return an `Outcome`.
-`observe()` returns fresh policy-visible evidence. Both functions run in the procedure process,
-never on the control tick, and return stage outcomes plus before/after observations.
-
-The adapter must enforce arrival before closing or releasing, count every internal step, and
-monitor expected opening during lift/carry. These functions stop on the first non-success outcome;
-they never automatically open, retreat or retry after uncertainty. The caller inspects the evidence
-and chooses a bounded recovery explicitly. Command completion is returned with
-`completion_verified=False`: finger consistency and image overlap do not establish retention or support.
-Native termination and observation errors propagate immediately without subsequent motion.
-
-Bind RGB procedures to `object_target="cup"` and, for placement,
-`destination_target="shelf"`. The observer then returns `targets`, a list of current
-tracking results with `target` and `valid` fields. Missing or lost bindings refuse
-before the first command and stop at subsequent observation checkpoints. Results retain `intent` and,
-without an assessor, report `assessment="unknown"`:
-the policy must compare the intended object's appearance and before/after motion,
-then judge retention or placement from fresh views. A tracker follows the selected
-region; the policy owns identity, spatial semantics and any corrective action.
-Bindings are optional for callers that supply another observation contract.
-
-Pass `assess(checkpoint, observations)` to make observations control continuation. Grasp calls it at
-`before_close`, `before_lift` and `after`; place calls it at `before_release` and `after` withdrawal.
-Each checkpoint captures a fresh observation and rechecks the bound selections first. The callback
-receives independent copies of the observation history and returns an `Outcome`: only `done` permits
-the next stage. Use `stopped` for unknown evidence or `surprise` for a measured mismatch. At `after`, where
-no stage follows, the callback may return `None` to abstain; the result then reports `assessment="unknown"`,
-as it does without an assessor. Assessor errors propagate without further motion. Assessments should inspect evidence; choose corrective actions after
-the procedure returns, through the normal executor. No automatic retry, release or resumption occurs.
-An assessor's pass does not refresh evidence: retain the source measurement requirements on subsequent
-commands so the executor checks their age and validity again when motion starts.
-
-For example, a calibrated-depth placement assessor can compare the measured object's position with its
-destination before release, then compare its released position after withdrawal. The
-[perception example](../examples/perception) uses that contract and explicitly chooses a new bounded
-approach after a failed position check. RGB-only callers must have the policy assess identity and spatial
-relations; mask overlap alone cannot establish them. All successful caller checks yield
-`assessment="passed_caller_checks"`, with their individual outcomes recorded, while
-`completion_verified=False` remains explicit: those checks do not certify physical support.
-
-Use `world_use.procedures.feedback(outcome)` for a compact policy report: stage statuses, the current
-checkpoint and next stage, the latest assessment, and at most two observations. The grasp reference is
-the observation before lifting, when available, so co-motion can be judged. A failed command retains
-its attempted command and measured feedback. `next_stage` describes what has not completed; it is not a
-resume token or permission to resend the whole procedure. The caller owns recovery and motor power.
-Archive `outcome.to_dict()` separately for the complete command, observation and assessment history.
-
-Async tool clients can `await async_place(...)` with awaitable `execute` and `observe`; its assessor
-can be synchronous or awaitable. It uses the same stages and checks. Cancellation prevents later stages,
-but cannot cancel a command already accepted by a remote executor: reconcile that job and motor power.
-Do not put a whole synchronous procedure in a background thread that could keep issuing commands after
-its caller is cancelled.
+The steps that check the measured opening are described under [measured completion](#measured-completion).
 
 ### Collision bounds
 
@@ -272,20 +133,18 @@ rpy = [0.0, 0.0, 0.0]         # radians
 source = "caliper measurement of mounted probe"
 ```
 
-Planning and measured ticks check these boxes against keep-out zones and support
-surfaces. The estimated held-object box uses its declared attachment transform;
-it does not reveal simulator state. Planning includes the swept corners of a
-rotating payload. A guarded, nearly normal approach can select one support for
-the existing bounded contact search. Every part that reaches it wholly above its
-footprint, such as two fingers, shares that allowance; overhanging parts and other
-geometry keep their clearance.
-That allowance ends with the step or interruption. It is a search allowance under
-contact monitoring, not evidence that physical penetration is acceptable.
+Planning and every measured tick check these boxes, and the box of a held object, against keep-out zones and
+support surfaces. A held object's box keeps the offset from the tool it had when it was gripped, in the kernel's
+estimated world, not in simulator truth. Planning includes the corners a rotating payload sweeps through.
 
-The card and rehearsal report list declared sources and omissions. Empty
-`tool_boxes` means no tool/finger bounds were declared. Self-collision, the
-pedestal, arm-link/surface collision and unattached objects as obstacles remain
-outside these checks. Declaring bounds does not change simulator geometry.
+A guarded move that approaches a support nearly along its normal may plan a short way past the surface, so its
+contact search can reach it. Every part that reaches that support wholly above its footprint, such as both
+fingers, shares this allowance; overhanging parts and other geometry keep their clearance. The allowance ends
+with the step or its interruption.
+
+The card and rehearsal report list each box's `source` and what is not checked. Without `tool_boxes`, no tool
+or finger geometry is checked. Self-collision, the pedestal, arm links against surfaces, and collisions with
+objects that are not held are never checked. The boxes do not change simulator geometry.
 
 ### Rest or brakes
 
@@ -302,10 +161,9 @@ tol = 0.1
 Home targets `q` within `tol`, joint planning limits, and clearance from declared
 stops. It refuses when no supported target satisfies those constraints.
 
-Otherwise explicitly set `self_supporting = true`. Use that only when disabling
-cannot make the robot fall, such as a braked arm or the in-memory example. A
-missing rest declaration is an error. Do not copy another arm's limits or folding
-pose.
+An arm that cannot fall when its torque is off, such as a braked arm or the in-memory example, sets
+`self_supporting = true` instead. A missing rest declaration is an error. Do not copy another arm's limits or
+folding pose.
 
 Check a rest declaration in simulation before using it. With torque off, a
 simulated joint holds only about 0.3 Nm (gearbox friction), so a rest pose that
@@ -349,11 +207,11 @@ Paths for the robot, fit and camera images are relative to the workcell file;
 `~` expands to your home directory. Camera commands run as supplied. See the
 [reBot guide](rebot.md#configure-a-camera-and-workcell) for camera sources and
 calibration. `[[box]]` and `[[fact]]` entries describe the scene; the
-[block workcell](../src/world_use/workcells/block.toml) shows boxes.
+[block workcell](../src/world_use/workcells/block.toml) shows boxes, and
+[scene limits](simulation.md#scene-and-model-assumptions) says what the simulation builds from them.
 
-Fit files reject unknown fields, nonfinite values, nonpositive link masses and negative friction. Applying
-a fit checks its link names and requires one friction pair per robot joint, in URDF order. Older fits without
-joint names still use that positional order; supplied joint names must match it exactly.
+`fit` names a file written by [`wu fit`](records.md). It is refused if its link names, joint names or number of
+friction entries do not match this robot's URDF.
 
 `[envelope]` holds operator overrides, applied to execution and rehearsal.
 `max_excursion_deg` with `reason` replaces the manifest's `max_excursion`. For robots
@@ -361,17 +219,9 @@ with a `turn_clearance` rule, `turn_height_m` sets an absolute tool height in th
 work frame (metres), with `turn_reason` explaining the scene clearance; it replaces
 the default height relative to the starting pose.
 
-`--body sim` uses MuJoCo with the same robot description and `[simulation]` settings;
-see [simulation requirements](simulation.md#other-robots). Driver options stay with
-the driver. The built-in reBot driver uses its own model; a different robot uses its
-own adapter and description.
-
-The native environment is a set of static surface boxes and free object boxes.
-`known = false` on an object or surface puts it in physics while leaving it out of the kernel's
-estimate. Adding a kernel box later changes only that estimate. A different
-robot's URDF can supply shaped collision geometry, but articulated or shaped
-environment objects require their own environment integration; see
-[scene limits](simulation.md#scene-and-model-assumptions).
+`--body sim` simulates the same robot description with the `[simulation]` settings
+([simulation of other robots](simulation.md#other-robots)); a hardware driver's `body_options` are not passed
+to it.
 
 Unknown fields, duplicate names and conflicting camera sources are rejected.
 `wu up` also checks the robot, URDF and fit contents before reusing a daemon.
@@ -392,11 +242,172 @@ that manifest and opens no connection until `connect`. The
 | `disable` | Confirm torque-off, or raise with the unconfirmed motors |
 | `close` | Close the connection without changing motor power |
 
-The kernel calls I/O from one thread. Keep `read` and `command` bounded to the
-control period. The time the driver received a sample, or a sequence counter,
-establishes freshness; changing values do not. Test constant fresh samples, frozen caches, disconnects,
-and partial power transitions with a fake transport before connecting hardware.
+The kernel calls I/O from one thread. Keep `read` and `command` within the control
+period. Freshness comes from the time the driver received a sample, or a sequence counter, not from whether the
+values change. Test constant fresh samples, frozen caches, disconnects, and partial power transitions with a fake
+transport before connecting hardware.
 
-Check the card, frames, motions, stop, home, release and records in simulation.
-Then validate your driver on the actual arm in a supervised session. The example
-proves the integration path; it does not establish another arm's physical behavior.
+Check the card, frames, motions, stop, home, release and records in simulation first. Neither the simulation
+nor the example says how your physical arm behaves: validate the driver on it in a supervised session.
+
+## Measured completion
+
+A joint or gripper trajectory ends once its last command has been sent, whether or not the hand has got there.
+These steps check measured state instead. Each failure is a surprise: the arm holds where it is and the steps
+after it are cancelled.
+
+- `{"do": "settle"}` waits at the final joint command until every measured joint is within `tolerance_deg` of
+  it (default: one sixth of the joint's `track_tol`), for at most `seconds` (default 1). It ends early as a
+  surprise when the error stops shrinking, which can mean contact, controller lag or an unreachable target.
+  The outcome gives the `reason` (`arrived`, `stalled` or `timeout`) and each joint's error. Kernel watchdogs
+  keep running during the wait.
+- `gripper` waits 0.3 s after its trajectory and ends `done` with `reason: "command_complete"` and the target
+  and measured positions, wherever the fingers are. With `check_arrival: true`, it instead requires the
+  measured opening to stay within one sixth of the gripper's `track_tol` for 0.1 s before those 0.3 s run out.
+  `grip` opens to its start width this way before it closes.
+- `check_grip` watches the measured opening for `seconds` (default 0.2). It fails if the opening leaves
+  `expect_mm` (or `expect` in native units), or if its peak-to-peak change exceeds `max_drift_mm` (or
+  `max_drift`). Millimetre values need the gripper's `m_per_unit`, and a gripper without a measured position
+  is refused. The gripper keeps its command when the check fails.
+- `grip` and `grasp` take `verify_s` to run `check_grip` for that long after squeezing, with the same drift
+  options. Their `expect_mm` or `expect` range then applies to these readings too, so allow for the object
+  giving under the squeeze. For `grasp`, a failed check is a miss like any other: it retries at its next
+  `search_mm` offset.
+- A `seq` with `expect_grip_mm` (or `expect_grip`) checks the measured opening against that range on every
+  tick of its steps, checkpoint waits included. Put lift and carry steps in it, and open the gripper outside it.
+
+Grip checks report `object_retention_verified: false`. The opening cannot tell whether the object is still
+held: a steady opening can hold nothing, and a compliant or reseating object can change the opening without
+being lost. Check the object in a camera. The
+[block example](../examples/pick-place#check-a-grip-before-carrying) combines these checks with a visual one.
+
+### Checks for an external controller
+
+`world_use.checks` provides the same checks for a controller outside the kernel, such as a simulator's own.
+They send no commands.
+
+`Settling(tolerances, timeout_s, window_s, progress_fraction=0.05, stable_s=0, stall_s=0)` decides when a wait
+for a final target ends. Call `update(stamp, errors, command_active=True)` with each new sample: `stamp` is
+the sample's time on a monotonic clock, and `errors` the absolute remaining errors, one per tolerance and in
+its units (one vector can mix metres and radians). It returns `None` to keep waiting, or:
+
+- `"arrived"` once every error has been within its tolerance for `stable_s`;
+- `"stalled"` when, over at least `window_s` and three samples, each error still outside its tolerance shrank
+  by less than `progress_fraction` of that tolerance and its current rate would not bring it in before the
+  deadline;
+- `"timeout"` `timeout_s` after the first sample.
+
+A sample whose `stamp` has been seen before counts as a cached reading and never ends a wait. Without new
+samples nothing calls `update`, so the adapter's stale-data watchdog must still catch lost feedback. Pass
+`command_active=False` while an approver or controller is still changing the applied target: the wait then
+cannot arrive or stall, its progress window and arrival timer restart, and the deadline still applies.
+
+On a lightly damped arm a tolerance alone is not enough. A hand passing through its target is within
+tolerance without having stopped: add its travel over the last control step as one more error, with the
+travel you accept at rest as its tolerance. An arm that swings past its target makes no progress while it
+turns round: `stall_s` is how long a stall must last before `update` reports it.
+
+`Following(position, lead_m=..., progress_m=...)` detects a position-controlled hand that something holds
+back, without torque sensing. After each control step, call `update(position, command)` with the measured
+position and the command that step applied. It returns `True` once, two steps running, the command was more
+than `lead_m` ahead of the hand and the hand gained less than `progress_m` toward it. Use it to end a move
+early instead of pressing until a timeout, or to end a descent on contact. It does not say what holds the
+hand, and while the command is within `lead_m` it never reports. After each update, `travel_m` is the hand's
+travel over the last step: the extra error for `Settling` above.
+
+A hand that closes on an object has no target opening to arrive at. Give `Settling` the fingers' remaining
+travel to fully closed instead: `"arrived"` then means the fingers closed on nothing, `"stalled"` that they
+stopped apart, and `"timeout"` that they were still moving. Compare the settled opening with the expected range
+afterwards. The [LIBERO runner](../examples/libero/native.py) uses these checks for its arm and fingers.
+
+## Grasp and place procedures
+
+`world_use.procedures` runs a grasp or a placement as a fixed series of commands, observing between them. It
+runs in your procedure's process and sends nothing to the robot itself: each command is a dictionary passed
+unchanged to your `execute(command)`, which validates it, runs it through the normal control path (for example
+`Client.run` or the MCP `run` tool) and returns its result as an `Outcome`. `observe()` returns a fresh
+observation as a dictionary.
+
+| Call | Stages, in order | Observations |
+| --- | --- | --- |
+| `grasp(execute, observe, approach=, close=, check=, lift=)` | `approach`, `close`, `check_before_lift`, `test_lift`, `check_after_lift` | `before`, `before_close`, `before_lift`, `after` |
+| `place(execute, observe, move=, release=, check=, withdraw=)` | `arrive`, `release`, `check_release`, `withdraw` | `before`, `before_release`, `after` |
+
+`grasp` runs `check` twice, before and after the test lift. `before` is observed ahead of the first command,
+and `after` after the last. The commands carry their own checks: end the approach or move with `settle`, run
+the test lift (and, for `place`, the move) in a `seq` with `expect_grip_mm`, keep the lift short, and make
+`check` a `check_grip`. For example:
+
+```python
+from world_use.procedures import place
+
+outcome = place(execute, observe,
+                move={"do": "seq", "expect_grip_mm": [35, 45],
+                      "steps": [{"do": "move_to", "to": [0.34, -0.07, 0.12]}, {"do": "settle"}]},
+                release={"do": "gripper", "aperture_mm": 65},
+                check={"do": "check_grip", "expect_mm": [60, 70]},
+                withdraw={"do": "line", "up": 0.08})
+```
+
+The first command that does not end `done` ends the procedure. It observes once more (as `after`) and returns
+that command's status, expected, observed and hint, with its message prefixed by the stage. It never opens,
+retreats or retries by itself, so an uncertain grip never leads to an automatic opening over a payload. An
+exception from `execute`, `observe` or `assess` propagates at once, and no further command is sent.
+
+A `done` result means every command and check passed, not that the object is held or placed:
+`completion_verified` is always `False`. Judge that from the observations, and send any correction through the
+same executor.
+
+Pass `object_target="cup"`, and for `place` also `destination_target="shelf"`, to tie the procedure to tracked
+targets. Each checkpoint's observation must then hold `targets`, a list of tracking results with `target`
+and `valid` fields, such as `observe_targets` returns. If a named target is missing or not `valid`, the procedure is
+refused before its first command or stopped at that observation. The name is your claim about which object
+the region is; a tracker follows a region and does not recognise objects.
+
+Pass `assess(checkpoint, observations)` to decide at each checkpoint after `before` whether to continue. It
+receives the checkpoint's name and a copy of the observations so far, and returns an `Outcome`: `done` lets
+the next stage run; return `stopped` when the observation cannot be judged and `surprise` for a measured
+mismatch. Any status but `done` ends the procedure with that outcome, so a failed check at `before_release`
+keeps the gripper closed. At `after`, where no stage follows, it may return `None` to abstain. The result's
+`assessment` is `"passed_caller_checks"` when the assessor passed at `after`, and `"unknown"` without an
+assessor or when it abstained. An assessment does not refresh the measurements behind it: keep them in the
+`requires` of later commands so the kernel checks their age again before moving.
+
+The [perception example](../examples/perception) assesses a placement with calibrated depth: before release it
+compares the measured block with its target, and after withdrawal it checks where the block was left. When the
+check before release fails, the task lifts, corrects the target and calls `place` again. With RGB tracking only, mask overlap
+cannot show that the right object is in the right place; have the policy judge that from the images.
+
+`outcome.data` holds every stage's command and outcome (`stages`), the `observations` by checkpoint, the bound
+targets (`intent`), `assessment` and every `assessments` entry, the last `checkpoint`, and `next_stage`, the
+first stage that has not completed (`None` once all have). `next_stage` is not a point to resume from: the
+procedure never replays completed stages, and recovery is a new command or call through the executor. Archive
+`outcome.to_dict()` to keep the whole history.
+
+`procedures.feedback(outcome)` makes a short report for a policy: the status and message, each stage's status,
+`checkpoint`, `next_stage`, the latest assessment, and two observations, the latest and a reference
+(`before_lift` for a grasp when there is one, otherwise `before`), so the policy can compare the object before
+and after. A failure adds the last command with its outcome, and the failure's `expected`, `observed` and
+`hint`. Motor power stays the caller's responsibility.
+
+`async_place(...)` takes the same arguments with awaitable `execute` and `observe`; `assess` may be either. It
+runs in the caller's event loop. Cancelling it stops later stages but not a command that a remote executor has
+already accepted: find out how that job ended and resolve motor power. Do not run a synchronous procedure in a
+background thread, which could keep issuing commands after its caller is cancelled.
+
+## Guarded custom steps
+
+A plan that `requires` measurements runs with a guard: before each step starts to move, the kernel checks that
+the measurements are still current ([freshness](perception.md#freshness)). Custom steps are refused in such a
+plan, because their internal moves would go unchecked. Embedded code can admit a custom step type in a kernel
+subclass once that type checks the guard itself:
+
+```python
+class MyKernel(Kernel):
+    guarded_steps = Kernel.guarded_steps | {MyMove}
+```
+
+The set holds exact types; a subclass of a listed type is not admitted. The step must be started with
+`kernel.start_behavior`, and each move inside it, including one after a wait or after background preparation,
+must pass `kernel.start_behavior` or `kernel.check_guard()` before it commands motion. Keep perception and
+planning out of `tick`.

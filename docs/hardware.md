@@ -47,10 +47,9 @@ request thread while the control thread kept reading the body. motorbridge is a 
 start pose misread during an engage is a jump. Once the control loop runs, only its thread calls the body: `enable`
 and `release` from other threads are posted to it and awaited, a body exception does not kill the loop, and after a
 loop has died enable is refused while release still runs. A second hole: an engage that failed after the motors
-were switched on left them on with nothing commanding them. The adapter attempts to switch every motor off before
-propagating the error, reporting any unconfirmed torque-off. On the arm, `wu status` answered throughout the engage,
-and a `kill -TERM` at rest released through
-the control thread and wrote the record.
+were switched on left them on with nothing commanding them. The adapter now tries to switch every motor off before
+raising the error, and reports any motor whose torque-off it could not confirm. On the arm, `wu status` answered
+throughout the engage, and a `kill -TERM` at rest released through the control thread and wrote the record.
 
 **Contact sensing stopped on nothing.** All four contact stops in the 18:51 run touched nothing:
 
@@ -231,14 +230,15 @@ recovery. Damage was not assessed. These trials do not establish safe unattended
 
 ### Corrections
 
-- Home routes reject checkpoints, holds, contact steps, and arbitrary plugin behaviors, including inside
-  nested sequences. Routes are copied and checked again before use. `null` explicitly clears a changed route.
+- Home routes reject checkpoints, holds, contact steps and plugin behaviors, including inside nested
+  sequences. Routes are copied and checked again before use. Setting the route to `null` clears it when the
+  scene has changed.
 - Thermal recovery is tracked by job identity, not its editable label. A successful return releases torque;
   a failed return clears its route and raises an alarm instead of retrying automatically.
 - Read or command failures while powered latch unconfirmed power and suspend commands across reconnection.
   Stale feedback is identified with its age, and stale heat forecasts are suppressed.
-- The operating instructions require confirmed torque-off before asynchronous handoff. If returning is
-  blocked, immediate operator-assisted support and physical motor-supply shutdown are necessary.
+- The operating brief requires confirmed torque-off before the agent hands off or waits for a reply. If the
+  way home is blocked, an operator must support the arm and switch off its motor supply at once.
 
 Regression tests use simulation and a fake CAN driver. No physical robot was used to validate these changes.
 Software cannot remove motor power through a disconnected USB adapter, nor safely drop an unsupported arm.
