@@ -10,7 +10,7 @@ The agent looks at camera images, picks out objects and decides what to do. worl
 with EdgeTAM, measures where they are, checks each motion against the robot's limits, runs it in a 100 Hz
 control loop and reports what happened. Use it over **MCP, from Python or with the `wu` CLI**.
 
-Early software: tested in simulation and on one Seeed reBot arm under supervision. Start in MuJoCo; no robot needed.
+Start in MuJoCo, no robot needed. Tested in simulation and on a Seeed reBot arm.
 
 [LIBERO-10](#libero-10) · [Demos](#demos) · [Quickstart](#quickstart) · [Give it to an agent](#give-it-to-an-agent) · [Documentation](#documentation)
 
