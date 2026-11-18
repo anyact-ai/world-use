@@ -14,7 +14,7 @@ requires-python = ">=3.13"
 authors = [{ name = "Dmytro Hrybov" }]
 keywords = ["robotics", "llm", "agents", "policy", "robot-arm", "mcp"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
