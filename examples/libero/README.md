@@ -88,14 +88,66 @@ Simulator truth scores them and never reaches a policy.
   mug went 3 cm further and fell back out when released.
 - The World Use arm is told the wrist camera's mount and the hand's dimensions.
   The raw arm is not.
-- A pair is one episode per arm. Repeat pairs or run more states before reading
-  a difference on one case.
 
 ## Results
 
-None yet for these tools with GPT-6.2 Sol. An evaluation of GPT-6.1 Sol with the
-tools as they were then is recorded at commit `02a3ba1`: with World Use it solved
-28 of 53 matched pairs and alone 17.
+GPT-6.2 Sol alone and with World Use at `ee263a4`, one matched pair per case:
+the twenty development cases and thirty held-out cases, states 4, 5 and 6 of
+every task, run once after the tools were finished.
+
+| | pairs | Sol alone solved | with World Use | calls alone / WU | est. USD alone / WU | steps alone / WU |
+|---|---|---|---|---|---|---|
+| development states 0 and 1 | 20 | 7 | 13 | 1,224 / 337 | 23.63 / 3.51 | 13,182 / 12,140 |
+| held-out states 4, 5 and 6 | 30 | 8 | 17 | 1,871 / 478 | 37.81 / 5.22 | 18,831 / 18,503 |
+| all | 50 | 15 | 30 | 3,095 / 815 | 61.44 / 8.73 | 32,013 / 30,643 |
+
+The median episode took 71.5 model calls alone and 13 with World Use, and 27.3
+million input tokens became 6.2 million. On the 12 pairs both arms solved, World
+Use made 67% fewer calls, sent 65% fewer input tokens and took 34% more
+simulator steps. World Use alone solved 18 pairs and Sol alone 3. Of the
+episodes that failed, Sol alone gave up in 23, claimed done in 6 and ran out of
+steps in 6; World Use claimed done in 11, gave up in 8 and ran out of steps in 1.
+
+| task | Sol alone | with World Use | held-out, alone / WU | mean calls, alone / WU |
+|---|---|---|---|---|
+| 0: soup and tomato sauce into the basket | 1 of 5 | 3 of 5 | 0 / 2 of 3 | 74 / 12 |
+| 1: cream cheese and butter into the basket | 5 of 5 | 5 of 5 | 3 / 3 of 3 | 41 / 14 |
+| 2: turn on the stove, moka pot onto it | 1 of 5 | 3 of 5 | 1 / 1 of 3 | 66 / 26 |
+| 3: bowl into the bottom drawer, close it | 0 of 5 | 1 of 5 | 0 / 1 of 3 | 80 / 14 |
+| 4: two mugs onto their plates | 1 of 5 | 5 of 5 | 0 / 3 of 3 | 57 / 10 |
+| 5: book into the caddy | 1 of 5 | 2 of 5 | 1 / 0 of 3 | 43 / 9 |
+| 6: mug onto the plate, pudding right of it | 1 of 5 | 4 of 5 | 1 / 3 of 3 | 48 / 11 |
+| 7: soup and cream cheese into the basket | 4 of 5 | 5 of 5 | 2 / 3 of 3 | 62 / 12 |
+| 8: both moka pots onto the stove | 1 of 5 | 2 of 5 | 0 / 1 of 3 | 68 / 27 |
+| 9: mug into the microwave, close it | 0 of 5 | 0 of 5 | 0 / 0 of 3 | 79 / 26 |
+
+Where World Use fell short:
+
+- Eleven of its twenty failures were a `done` the success check rejected: the
+  book in the caddy three times, the bowl and drawer three times, the moka
+  pots twice, the soup and sauce twice, and the mug on its plate once. Nothing
+  here checks what an object is or how it rests; that judgement is the model's.
+- No episode of either arm put the mug in the microwave. Held from above by its
+  rim, it does not pass under the oven's roof (see Limits).
+- On pairs both arms solved it took a third more simulator steps.
+
+What these results do not show:
+
+- Each case was run once. Two World Use runs of the development cases, with
+  tools that differed only in how a push leans the hand, solved 14 and 13 of
+  20, and five cases came out differently between them. A per-task difference
+  of one or two episodes is within that spread.
+- The development states are the ones the tools were adjusted on. The held-out
+  states had never been run and their records were not read to change anything.
+- Three attempts stopped on a dropped connection or a lost simulator and were
+  run again; a pair counts only when both arms finished in one run.
+
+[paid-results.jsonl](paid-results.jsonl) has one row per arm of every pair, with
+how the episode ended, calls, counted steps, wall time, tokens and estimated
+cost; `report.py tables` prints the per-case table and these totals from it.
+The evaluation's 53 attempts cost an estimated $73.54, $101.19 at the
+conservative rate the transport reserves. An evaluation of GPT-6.1 Sol with
+earlier tools is recorded at commit `02a3ba1`.
 
 ## Rebuild the runtime
 
