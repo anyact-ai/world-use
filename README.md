@@ -16,21 +16,18 @@ Early software: tested in simulation and on one Seeed reBot arm under supervisio
 
 ## LIBERO-10
 
-GPT-6.2 Sol as the policy of a simulated Franka Panda on the ten LIBERO-10 tasks solves **30 of 50 episodes
-with world-use and 15 alone**, with 74% fewer model calls. Each pair of episodes starts from the same state,
-with the same simulator, step limit and success check; 30 of the pairs are on initial states that were run
-once, after the tools were finished.
+GPT-6.2 Sol, driving a simulated Franka Panda, solves **30 of 50 episodes with world-use vs 15 alone**, with
+74% fewer model calls. Both arms of a pair start from the same state; 30 of the 50 pairs are held-out states,
+run once.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/anyact-ai/world-use/main/docs/assets/libero-results-dark.png">
   <img src="https://raw.githubusercontent.com/anyact-ai/world-use/main/docs/assets/libero-results-light.png" alt="Episodes solved: 15 of 50 alone, 30 of 50 with world-use. Model calls: 3,095 alone, 815 with world-use. Estimated model cost: $61.44 alone, $8.73 with world-use.">
 </picture>
 
-Alone, the model sends the hand to poses it picks from camera images. With world-use it can also mark
-objects for EdgeTAM to follow, locate them from the wrist camera without depth, and call grasp, place and
-push tools that report position error, contact and finger opening. No episode of either arm got the mug into
-the microwave, and 11 of world-use's 20 failures were a `done` the success check rejected.
-[Setup, per-task results, limits and how to reproduce](examples/libero/README.md)
+Alone, the model picks hand poses from camera images. With world-use it also gets EdgeTAM tracking,
+wrist-camera positions without depth, and grasp, place and push tools that report position error, contact
+and grip. [Setup, per-task results and limits](examples/libero/README.md)
 
 ## Demos
 
