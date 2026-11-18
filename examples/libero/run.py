@@ -243,7 +243,7 @@ def main():
         "--held-out", action="store_true", help="run a held-out case as a test of finished tools, never to tune them"
     )
     parser.add_argument(
-        "--arms", choices=ARMS, default="both", help="world_use runs only that arm, reusing an earlier raw result"
+        "--arms", choices=ARMS, default="both", help="world_use runs only that arm, for a development check"
     )
     parser.add_argument("--total-budget", type=float, default=7.0, help="conservative USD cap for this pair")
     parser.add_argument("--arm-budget", type=float, default=3.4, help="conservative USD cap for each arm")
@@ -317,8 +317,8 @@ def main():
             report["results"].append(row)
             (args.output / "summary.json").write_text(json.dumps(report, indent=2))
             print(json.dumps(row), flush=True)
-    except Exception as exc:
-        report["stopped"] = dict(type=type(exc).__name__, reason=str(exc))
+    except BaseException as exc:
+        report["stopped"] = dict(type=type(exc).__name__, reason=str(exc) or type(exc).__name__)
         raise
     finally:
         transport.dispose()

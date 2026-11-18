@@ -86,9 +86,14 @@ class AzureBudget(httpx.BaseTransport):
         self.total, self.per_arm = total, per_arm
         self.deadline = time.monotonic() + seconds
         self.max_output_tokens, self.sleep = max_output_tokens, sleep
-        # An explicit HTTPTransport otherwise ignores HTTPX's client proxy defaults.
+        # An explicit HTTPTransport otherwise ignores HTTPX's client proxy defaults. A new connection per
+        # request: each stopped request of the last evaluation had gone out on an idle pooled connection
+        # that failed after sending, which leaves usage unknown, while a connection that cannot be made
+        # fails before sending and is tried again.
         self.inner = inner or httpx.HTTPTransport(
-            proxy=os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy"), retries=0
+            proxy=os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy"),
+            retries=0,
+            limits=httpx.Limits(max_keepalive_connections=0),
         )
         self.used = self.estimated = 0.0
         self.arm_used = self.arm_estimated = 0.0
@@ -179,9 +184,16 @@ class AzureBudget(httpx.BaseTransport):
             cached, written = details.get("cached_tokens", 0), details.get("cache_write_tokens", 0)
             if any(type(n) is not int or n < 0 for n in (inp, out, cached, written)) or cached + written > inp:
                 raise BudgetStop("invalid or missing usage; reservation retained")
-            if inp > tokens or out > self.max_output_tokens:
-                raise BudgetStop("actual usage exceeded reservation; campaign stopped")
             charge = (inp * RATES["conservative_input"] + out * RATES["output"]) / 1e6
+            if inp > tokens or out > self.max_output_tokens:
+                # The size estimate is wrong: charge what was used, and stop everything that relies on it. The
+                # transport stays blocked, and the campaign admits nothing once a ledger holds this row.
+                self.used += charge - reserve
+                self.arm_used += charge - reserve
+                self.record(
+                    event="over_reservation", request=ident, usage=usage, charge_usd=charge, total_charge=self.used
+                )
+                raise BudgetStop("actual usage exceeded reservation; campaign stopped")
             cost = (
                 (inp - cached - written) * RATES["input"]
                 + cached * RATES["cached_input"]

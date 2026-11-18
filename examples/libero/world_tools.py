@@ -31,7 +31,7 @@ it is over the region, and reports that position as centred. The approach then n
 region's x, y, z, its extent_mm along the finger axis and across it, and pixel, where that point
 is in the wrist image you see next. Check there that it lies on what you meant. Use it once for
 a destination such as a basket or plate before carrying anything there; the position holds
-while that object is not moved. z reads low, by up to 3 cm on flat things and 6 cm on tall ones
+while that object is not moved. z reads low, by up to 1.5 cm on flat things and 6 cm on tall ones
 in recorded trials: use it for clearance, not as a grasp or release height.
 A position found for a target is kept until you select the target again or a grasp closes on it:
 locate or grasp it again without a new selection and one look confirms it.
@@ -88,8 +88,8 @@ by side along its longer extent: release the first a fifth of that extent to one
 located centre and the second a fifth to the other side, so neither lands on the other or on
 a wall.
 push closes the fingers and moves the fingertips in a straight line from start to end, to shut a
-drawer or a door or to slide something along a surface. For a level line the hand turns its
-finger axis across the line and leans 30 degrees back from the direction of the push, so the
+drawer or a door or to slide something along a surface. For a line that runs more level than
+up or down the hand turns its finger axis across it and leans 30 degrees back from it, so the
 fingertips lead and the hand body stays behind them, clear of what is above the thing pushed;
 tilt_deg sets another lean, from 0 for an upright hand to 60. It goes to start through free
 space, rising to travel_z first when you give one, so put start a few centimetres clear of what
@@ -97,7 +97,8 @@ you push, on the side you push from, with the fingertips at the height of its mi
 ends at end or where contact stops the hand: pushed says which, with travelled_mm and short_mm.
 Put end a few centimetres past where the thing should stop, since a drawer or door that reaches
 its stop holds the hand there. The hand then backs off up to 10 cm along the line, standing
-upright again as it goes. A hinged door moves along an arc: push it along two or three straight
+upright again as it goes, also after a push that failed on its way, whose result says how that
+went in back_off. A hinged door moves along an arc: push it along two or three straight
 lines.
 Every interpolation and settling step counts toward the 900-step episode limit; one clean pick
 and place takes about 200.
@@ -369,7 +370,7 @@ SCHEMAS = [
     schema(
         "push",
         "Close the fingers, go to start through free space, then move the fingertips in a straight line to "
-        "end or to where contact stops the hand, and back off 10 cm. For shutting a drawer or door or sliding "
+        "end or to where contact stops the hand, and back off up to 10 cm. For shutting a drawer or door or sliding "
         "an object.",
         dict(
             start=dict(POINT, description="{x, y, z} where the line begins, clear of what is pushed."),
@@ -552,8 +553,8 @@ class WorldTools:
         tilt = args.get("tilt_deg", LEAN_DEG)
         if type(tilt) not in (float, int) or not 0 <= tilt <= 60:
             raise ValueError("tilt_deg is between 0 and 60")
-        # A line with no level direction, straight up or down, has nothing to lean back from.
-        level = math.hypot(line[0], line[1]) >= 0.01
+        # Only a mostly level line leans the hand: a steep one has no direction to lean back from.
+        level = math.hypot(line[0], line[1]) >= abs(line[2])
         turn = leaning(self.driver.observation.state["eef_state"], line, tilt) if level else {}
         stages = [
             self._move({"gripper": 1}, "push_close"),
@@ -566,19 +567,21 @@ class WorldTools:
         short = outcome.data.get("short_m")
         state = self.driver.observation.state["eef_state"]
         retreat = {}
-        if outcome.ok:
-            # Leave what was pushed, back along the line but never past where the push began.
-            back = state[:3] - line / length * min(BACK_OFF_M, max(length - (short or 0.0), 0.0))
-            retreat.update(zip("xyz", map(float, back), strict=True))
-        if turn and tilt:
-            # The other tools expect an upright hand. Standing up while backing off keeps its body behind
-            # its fingertips all the way.
-            retreat.update(leaning(state, None, 0))
+        if command is stages[-1]:
+            # Leave what was pushed, back along the line but never past where the push began, also when the
+            # push failed on its way. The other tools expect an upright hand; standing up while backing off
+            # keeps its body behind its fingertips all the way.
+            unit = line / length
+            along = float(np.clip((state[:3] - [start[k] for k in "xyz"]) @ unit, 0.0, BACK_OFF_M))
+            retreat.update(zip("xyz", map(float, state[:3] - unit * along), strict=True))
+            if turn and tilt:
+                retreat.update(leaning(state, None, 0))
         left = self.driver.execute(self._move(retreat, "push_back_off")) if retreat else outcome
         if not outcome.ok:
-            return self._result(
-                outcome.feedback(), dict(status=outcome.status, message=outcome.message, **outcome.data)
-            )
+            told = dict(status=outcome.status, message=outcome.message, **outcome.data)
+            if retreat:
+                told["back_off"] = dict(status=left.status, arm=left.data.get("arm"))
+            return self._result(outcome.feedback(), told)
         told = dict(
             status=left.status,
             pushed=dict(
@@ -763,6 +766,8 @@ class WorldTools:
                 return self._procedure(outcome, name, **found)
             if call.name == "place":
                 self.pending = None
+                if not isinstance(args.get("object_target"), str):
+                    raise ValueError("place needs object_target, the held object's selected target")
                 grip = self._range(args["expect_grip_mm"])
                 for key in ("move", "withdraw"):
                     self._validate_pose(args[key])

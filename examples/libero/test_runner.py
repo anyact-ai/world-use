@@ -76,7 +76,7 @@ def guard(folder, handle, *, key="test", total=15.0, waits=None):
     return AzureBudget(folder / "api", key=key, total=total, per_arm=7.4, seconds=7200, inner=transport, sleep=sleep)
 
 
-@pytest.mark.parametrize("case", ["network", "status", "usage", "oversized"])
+@pytest.mark.parametrize("case", ["network", "status", "usage"])
 def test_unknown_usage_blocks_any_following_dispatch(tmp_path, case):
     sent = []
 
@@ -86,9 +86,7 @@ def test_unknown_usage_blocks_any_following_dispatch(tmp_path, case):
             raise httpx.ReadTimeout("interrupted")
         if case == "status":
             return response(503)
-        if case == "usage":
-            return response(usage=False)
-        return httpx.Response(200, json={"status": "completed", "usage": {"input_tokens": 999999, "output_tokens": 1}})
+        return response(usage=False)
 
     budget = guard(tmp_path, handle)
     budget.begin("baseline")
@@ -99,6 +97,27 @@ def test_unknown_usage_blocks_any_following_dispatch(tmp_path, case):
     assert budget.uncertain and budget.used > 0
     with pytest.raises(BudgetStop):
         budget.begin("world_use")
+
+
+def test_a_request_that_used_more_than_its_reservation_is_charged_for_it_and_stops_the_pair(tmp_path):
+    sent = []
+
+    def handle(req):
+        sent.append(req)
+        return httpx.Response(200, json={"status": "completed", "usage": {"input_tokens": 999999, "output_tokens": 1}})
+
+    budget = guard(tmp_path, handle)
+    budget.begin("baseline")
+    with pytest.raises(BudgetStop, match="exceeded"):
+        budget.handle_request(request())
+    # 999,999 tokens at the conservative rate, not the far smaller reservation.
+    assert budget.used == pytest.approx((999999 * 2.5 + 10) / 1e6)
+    rows = [json.loads(line) for line in (tmp_path / "api" / "ledger.jsonl").read_text().splitlines()]
+    over = next(r for r in rows if r["event"] == "over_reservation")
+    assert over["total_charge"] == pytest.approx(budget.used)
+    with pytest.raises(BudgetStop):
+        budget.handle_request(request())
+    assert len(sent) == 1
 
 
 def test_sealed_reasoning_is_sized_as_the_little_it_counts_for_and_plain_text_is_not(tmp_path):
@@ -667,17 +686,42 @@ def test_a_push_straight_down_does_not_turn_the_hand():
     assert [c["targets"].keys() for c in tools.driver.commands[1:]] == [set("xyz"), set("xyz")]
 
 
-def test_a_push_that_fails_on_its_way_still_leaves_the_hand_upright(monkeypatch):
+@pytest.mark.parametrize(("stopped_at", "back_to"), [(-0.13, -0.13), (0.02, -0.08), (0.06, -0.04)])
+def test_a_push_that_fails_on_its_way_backs_off_what_it_ran_and_stands_upright(monkeypatch, stopped_at, back_to):
     tools = tools_fixture()
     execute = tools.driver.execute
     stalled = Outcome("surprise", "move", "fixture: blocked on the way", dict(arm="not_approaching"))
-    monkeypatch.setattr(tools.driver, "execute", lambda c: stalled if c.get("stage") == "push" else execute(c))
+
+    def blocked(command):
+        if command.get("stage") != "push":
+            return execute(command)
+        tools.driver.pose.update(x=0.0, y=stopped_at, z=0.45)
+        tools.driver.observation.state["eef_state"][:3] = list(tools.driver.pose.values())
+        return stalled
+
+    monkeypatch.setattr(tools.driver, "execute", blocked)
     request = call("push", start=dict(x=0.0, y=-0.1, z=0.45), end=dict(x=0.0, y=0.1, z=0.45))
     told = json.loads(tools.execute(request, tools.driver.observation).note)
-    assert told["status"] == "surprise" and "blocked" in told["message"]
-    # No retreat along a line it never ran, but the hand is stood up again.
-    (upright,) = (c for c in tools.driver.commands if c.get("stage") == "push_back_off")
-    assert "x" not in upright["targets"] and approach_axis(upright["targets"]) == pytest.approx([0, 0, -1], abs=1e-9)
+    assert told["status"] == "surprise" and "blocked" in told["message"] and told["back_off"]["status"] == "done"
+    # Back along the line, never past where it began and never more than 10 cm, standing upright as it goes.
+    (back,) = (c for c in tools.driver.commands if c.get("stage") == "push_back_off")
+    assert back["targets"]["y"] == pytest.approx(back_to)
+    assert approach_axis(back["targets"]) == pytest.approx([0, 0, -1], abs=1e-9)
+
+
+def test_a_steep_push_does_not_lean_the_hand():
+    tools = tools_fixture()
+    press = call("push", start=dict(x=0.0, y=0.0, z=0.5), end=dict(x=0.0, y=0.012, z=0.45))
+    assert json.loads(tools.execute(press, tools.driver.observation).note)["status"] == "done"
+    line = next(c for c in tools.driver.commands if c.get("stage") == "push")
+    assert line["targets"].keys() == set("xyz")
+
+
+def test_a_place_without_its_object_is_refused_before_the_hand_moves():
+    tools = tools_fixture()
+    request = call("place", move={"x": 0.1, "z": 0.45}, withdraw={"z": 0.7}, expect_grip_mm=[5, 70])
+    told = json.loads(tools.execute(request, tools.driver.observation).note)
+    assert told["status"] == "refused" and "object_target" in told["message"] and not tools.driver.commands
 
 
 @pytest.mark.parametrize(

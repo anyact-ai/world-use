@@ -55,6 +55,7 @@ class Campaign:
         self.run_args, self.call = run_args, call
         self.lock = threading.Lock()
         self.running: dict[str, float] = {}
+        self.stopping = threading.Event()
 
     def spent(self) -> float:
         attempts = (a for a in self.folder.glob("task*_init*") if a.is_dir() and a.name not in self.running)
@@ -62,6 +63,11 @@ class Campaign:
 
     def admit(self, name: str) -> bool:
         with self.lock:
+            if self.stopping.is_set():
+                return False
+            if any('"over_reservation"' in ledger.read_text() for ledger in self.folder.glob("*/api/ledger.jsonl")):
+                print(f"NOT ADMITTED {name}: a request used more than its reservation", flush=True)
+                return False
             total, running = self.spent(), sum(self.running.values())
             if total + running + self.pair_cap > self.cap:
                 print(
@@ -93,7 +99,10 @@ class Campaign:
                 c, u = charge(folder)
                 wall = time.monotonic() - started
                 print(f"FINISHED {name} exit={code} charge={c:.3f} unknown={u} wall={wall:.0f}s", flush=True)
-            if complete(folder):
+                if code < 0 or code == 130:
+                    # A pair stopped by a signal was stopped on purpose: no retry, and no more pairs.
+                    self.stopping.set()
+            if complete(folder) or self.stopping.is_set():
                 return
         print(f"UNFINISHED {base}: {ATTEMPTS} attempts", flush=True)
 
@@ -110,11 +119,19 @@ class Campaign:
                 self.run(*case)
 
         threads = [threading.Thread(target=worker) for _ in range(workers)]
-        for thread in threads:
-            thread.start()
-            time.sleep(stagger)  # stagger simulator and tracker start-up
-        for thread in threads:
-            thread.join()
+        try:
+            for thread in threads:
+                thread.start()
+                time.sleep(stagger)  # stagger simulator and tracker start-up
+            for thread in threads:
+                thread.join()
+        except KeyboardInterrupt:
+            # The running pairs got the interrupt too. Start nothing more, and wait for them to stop.
+            self.stopping.set()
+            for thread in threads:
+                if thread.is_alive():
+                    thread.join()
+            raise
         total = self.spent()
         print(f"CAMPAIGN conservative charge {total:.3f} of cap {self.cap:.2f}", flush=True)
         return total

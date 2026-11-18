@@ -43,17 +43,19 @@ def pair_rows(commit, pair):
         head["repeat"] = int(repeat)
     done = {r["arm"] for r in report.get("results", [])}
     stopped = [arm for arm in protocol["arms"] if arm not in done]
-    if report.get("stopped") and stopped:
-        # The transport refused a request. The pair is no comparison: one row, for the arm that was running,
-        # charged with the whole pair, and no result for an arm that finished before it.
+    if stopped:
+        # The pair did not finish: the transport refused a request, or the run was interrupted or killed. It is
+        # no comparison: one row, for the arm that was running, charged with the whole pair, and no result for
+        # an arm that finished before it.
         arm = stopped[0]
         steps = pair / arm / "execution" / "steps.jsonl"
+        reason = report.get("stopped", {}).get("reason", "interrupted")
         return [dict(
-            head, arm=ARM[arm], success=None, ended="infrastructure stop: " + report["stopped"]["reason"],
+            head, arm=ARM[arm], success=None, ended="infrastructure stop: " + reason,
             calls=sum(r["event"] == "settled" and r["arm"] == arm for r in ledger),
             steps=len(steps.read_text().splitlines()) if steps.exists() else 0, wall_seconds=0, **tokens[arm],
-            estimated_usd=round(report["total_estimated_usd"], 3),
-            conservative_usd=round(report["total_budget_charge_usd"], 3), tool_calls={},
+            estimated_usd=round(report.get("total_estimated_usd", 0.0), 3),
+            conservative_usd=round(report.get("total_budget_charge_usd", 0.0), 3), tool_calls={},
         )]  # fmt: skip
     rows = []
     for result in report.get("results", []):
