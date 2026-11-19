@@ -38,8 +38,9 @@ STABLE_S = 2 / HZ  # three consecutive samples
 # move can be drifting away from its command for a few steps, which settling waits out. A descent
 # that may end on contact starts from a hand at rest above the pose, so half that lead is enough.
 LEAD_M, CONTACT_LEAD_M, PROGRESS_M = 0.03, 0.015, 0.001
-# A swinging hand also makes no progress while it turns round. A stall is one that lasts.
-STALL_STEPS = 5
+# A swinging hand also makes no progress while it turns round, for about five steps after the hand has
+# been turned. A stall is one that lasts longer.
+STALL_STEPS = 10
 RELIEF_STEPS = 12
 
 
@@ -373,6 +374,9 @@ class Driver:
             # that is neither arrival nor a stall.
             requested = self.last_action is final
             arm_state = arm.update(self.steps / HZ, residuals(), command_active=requested)
+            if arm_state == "stalled" and all(e <= t for e, t in zip(errors(), ARM_TOLERANCE, strict=True)):
+                # At its pose and still swaying, as after a turn: nothing holds it back, and the wait goes on.
+                arm_state = None
             if hand is not None:
                 # The hand's own command ramps toward its end. While closing, the ramp only
                 # tightens fingers that have already stopped. While opening, it does not move

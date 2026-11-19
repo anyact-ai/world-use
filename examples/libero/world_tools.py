@@ -176,6 +176,7 @@ OUTWARD = 0.17  # the x part of a level unit direction beyond which a lean point
 SWING_DEG = 120  # a finger axis turning further than this turns halfway first
 BACK_OFF_M = 0.1  # a push leaves what it pushed by this much, room for the leaning hand to stand up again
 SETTLE_STEPS = 40  # raised high above the table the arm needs about 25 steps to stop swinging
+IN_VIEW_M = 0.3  # from a hover of 15-25 cm the wrist camera sees no further to the side than this
 
 
 ROTATION = ("r00", "r10", "r20", "r01", "r11", "r21")  # the finger axis, tool x, then tool y
@@ -551,6 +552,15 @@ class WorldTools:
         def move(goal):
             targets = dict(x=float(goal[0]), y=float(goal[1]), **hand)
             state = self.driver.observation.state["eef_state"]
+            if math.hypot(goal[0] - state[0], goal[1] - state[1]) > IN_VIEW_M:
+                # Looks from too near, or at a region the hand covers, meet far outside what the camera sees.
+                return Outcome(
+                    "stopped",
+                    "locate",
+                    "the looks at the region do not place it within the wrist camera's view",
+                    hint="hover 15-25 cm above the object with all of it in the wrist image and select it "
+                    "there again; later stages did not run",
+                )
             if approach_axis(state)[2] > -UPRIGHT:
                 # The last look is taken from over the region, straight down: a hand that a grasp or a
                 # carry left leaning stands up on its way there.

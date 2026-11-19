@@ -116,9 +116,12 @@ earlier tools is recorded at commit `02a3ba1`.
   offsets up to 20 cm; `locate` says which way its image lies in the world; an upright hand's fingers are
   turned the way that keeps the wrist joint off its stop, so a `yaw_deg` of 90 now puts them along -x; a
   push leans the hand only on a line more level than steep, stays upright toward +x and backs off along its
-  line also after failing on the way; `place` checks `object_target` before the hand moves; and `DOCS`
-  gives the height error on flat things as 1.5 cm instead of 3 and says a push backs off up to 10 cm. To
-  rerun the evaluated version, fetch it with `git fetch origin pull/23/head` and check out `ee263a4`.
+  line also after failing on the way; a hand has to make no progress for half a second, not a quarter,
+  before it counts as held back, since it sways for longer than that after it has been turned; a wrist
+  search that cannot place its region says so instead of sending the arm out of bounds; `place` checks
+  `object_target` before the hand moves; and `DOCS` gives the height error on flat things as 1.5 cm
+  instead of 3 and says a push backs off up to 10 cm. To rerun the evaluated version, fetch it with
+  `git fetch origin pull/23/head` and check out `ee263a4`.
 
 ## How the tools work
 
