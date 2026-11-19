@@ -30,7 +30,9 @@ does for a small object.
 it is over the region, and reports that position as centred. The approach then needs only z.
 - locate does the same without descending or moving the fingers and returns located: the
 region's x, y, z, its extent_mm along the finger axis and across it, and pixel, where that point
-is in the wrist image you see next. Check there that it lies on what you meant. Use it once for
+is in the wrist image you see next. Check there that it lies on what you meant. image_right and
+image_down are the level world directions that right and down in that image point along: an
+offset toward something you see there is its distance times that direction. Use it once for
 a destination such as a basket or plate before carrying anything there; the position holds
 while that object is not moved. z reads low, by up to 1.5 cm on flat things and 6 cm on tall ones
 in recorded trials: use it for clearance, not as a grasp or release height.
@@ -72,6 +74,26 @@ fingers: take it by the rim. Give grasp an offset of the rim radius along the fi
 the centre of the wrist region, so one finger goes inside, with the approach z 2-3 cm below the
 rim top instead of a low z. Choose a side clear of any handle and of neighbours, which the hand
 body meets up to 10 cm along the finger axis, and turn the fingers with yaw_deg to reach it.
+An upright hand stays above what it holds, 10 cm and more over the grip, so it cannot take a
+thing in under a roof or shelf lower than that. grasp's tilt_deg, up to 60, leans the hand
+instead: the fingertips point down and toward `toward`, a level point {x, y}, with the finger
+axis level across that direction. The hand turns where it is, then comes in along its own axis
+from 10 cm back to the approach x, y, z or to contact short of it, which takes about 50 steps
+more than an upright grasp. Its body stays behind and above the grip, on the side it came from,
+and it keeps the lean afterwards: what it holds is ahead of the fingertips and goes in under a
+roof first, where a place with via takes it. The wrist leans toward +y, -y or -x, where the
+robot's base is, and not toward +x. yaw_deg does not go with tilt_deg. The result's leaning
+gives tilt_deg and toward, the level unit direction the fingertips point.
+To take an object by its handle, lean the hand. Locate the whole object in the wrist camera,
+then give grasp an offset from the region's centre to the middle of the handle's top, outside
+the body's wall: about half the region's along_mm toward the handle. With an offset and no
+toward the hand leans toward the region's centre, so it comes at the handle from outside,
+pinches it across its thickness and carries the object upright ahead of it. Use tilt_deg 45
+and an approach z at the handle's top, 3-4 cm below a mug's rim: in recorded trials a mug's
+handle held for offsets of 5 to 8 cm and grip heights 5.5 to 8.5 cm above the table, and at 4
+cm the fingers closed on its body. Without an offset, name toward yourself.
+A leaning hand's wrist camera looks along the lean, not down; locate and a wrist-selected grasp
+stand the hand upright again on their first move.
 place rises straight up to travel_z when the hand is below it, moves level to above your release
 pose, descends with the grip monitored and stops early on contact the same way, then returns
 BEFORE opening with a one-use checkpoint. Its approach_ended_short_m tells a landing on
@@ -82,7 +104,8 @@ an oven, give via: the hand moves level to over that point, down to it and then 
 pose, stopping early on contact along that line. Put via in front of the opening at the height
 of the pose, far enough out that the hand and what it holds are clear of the frame. After the
 release the hand goes straight to your withdraw pose, so choose one that takes the fingers off
-the object before any move sideways, and leave an enclosure with move_to. Inspect the views, then
+the object before any move sideways, back along its own axis for a leaning hand, as far up as
+back at 45 degrees, and leave an enclosure with move_to. Inspect the views, then
 call release_placement to open and withdraw, or correct the pose. Any motion or reselection
 voids the checkpoint. Two objects for one container go side
 by side along its longer extent: release the first a fifth of that extent to one side of the
@@ -92,7 +115,8 @@ push closes the fingers and moves the fingertips in a straight line from start t
 drawer or a door or to slide something along a surface. For a line that runs more level than
 up or down the hand turns its finger axis across it and leans 30 degrees back from it, so the
 fingertips lead and the hand body stays behind them, clear of what is above the thing pushed;
-tilt_deg sets another lean, from 0 for an upright hand to 60. It goes to start through free
+tilt_deg sets another lean, from 0 for an upright hand to 60. A push toward +x stays upright,
+since the wrist does not lean that way. It goes to start through free
 space, rising to travel_z first when you give one, so put start a few centimetres clear of what
 you push, on the side you push from, with the fingertips at the height of its middle. The line
 ends at end or where contact stops the hand: pushed says which, with travelled_mm and short_mm.
@@ -137,30 +161,85 @@ FIT_MM = 70  # the widest narrow side the fingers are turned to take: 78 mm of o
 LONGER = 1.3  # a region this much longer than it is wide has a narrow side to take it by
 CLOSE_STEPS = 120
 LEAN_DEG = 30  # a pushing hand leans this far back, which puts its body behind its fingertips
+MAX_LEAN_DEG = 60
+STANDOFF_M = 0.1  # a leaning hand comes in along its own axis from this far back
+UPRIGHT = 0.995  # the approach axis is this close to straight down, about 6 degrees, in an upright hand
+# Fingers along a direction and along its opposite close on the same thing, half a turn of the wrist
+# joint apart, and that joint turns 166 degrees each way. For an upright hand it was measured near the
+# middle of its range with the finger axis 20 to 70 degrees from world y toward -x, and 8 degrees from its
+# stop with the axis along +x at the table's left side.
+WRIST_MIDDLE = (-math.sin(math.radians(45)), math.cos(math.radians(45)), 0.0)
+WRIST_DEG = 110  # an upright hand's finger axis stays within this turn of WRIST_MIDDLE
+# The wrist cannot bend the fingertips away from the robot's base, toward +x. Leaning 25 degrees that way
+# over the middle of the table, the hand rested 14 mm off its pose; 45 degrees was out of reach.
+OUTWARD = 0.17  # the x part of a level unit direction beyond which a lean points away from the base
+SWING_DEG = 120  # a finger axis turning further than this turns halfway first
 BACK_OFF_M = 0.1  # a push leaves what it pushed by this much, room for the leaning hand to stand up again
 SETTLE_STEPS = 40  # raised high above the table the arm needs about 25 steps to stop swinging
 
 
-def turned(yaw_deg):
-    """Pose targets for the finger axis, tool x, turned from world y toward world x with the approach axis down."""
+ROTATION = ("r00", "r10", "r20", "r01", "r11", "r21")  # the finger axis, tool x, then tool y
+
+
+def fingers(eef_state, along):
+    """An upright hand's finger axis along a level direction or along its opposite: the one nearer its
+    present finger axis, or nearer WRIST_MIDDLE when both are a quarter turn away, and in either case the
+    other one if that is more than WRIST_DEG from WRIST_MIDDLE. Chosen by nearness alone, turn after turn
+    adds up to the wrist joint's stop; chosen with no regard to the present axis, the hand turns half round
+    where it need not move."""
+    axis = np.array([along[0], along[1], 0.0]) / math.hypot(along[0], along[1])
+    near = float(axis @ np.asarray(eef_state[3:6], dtype=float))
+    if (axis @ WRIST_MIDDLE if abs(near) < 0.1 else near) < 0:
+        axis = -axis
+    return axis if axis @ WRIST_MIDDLE >= math.cos(math.radians(WRIST_DEG)) else -axis
+
+
+def upright(axis):
+    """Pose targets for an upright hand with its finger axis, tool x, along a level unit direction."""
+    x, y = float(axis[0]), float(axis[1])
+    return dict(zip(ROTATION, (x, y, 0.0, y, -x, 0.0), strict=True))
+
+
+def turned(eef_state, yaw_deg):
+    """Pose targets for an upright hand with the finger axis turned from world y toward world x."""
     turn = math.radians(yaw_deg)
-    columns = [math.sin(turn), math.cos(turn), 0.0, math.cos(turn), -math.sin(turn), 0.0]
-    return dict(zip(("r00", "r10", "r20", "r01", "r11", "r21"), columns, strict=True))
+    return upright(fingers(eef_state, [math.sin(turn), math.cos(turn)]))
 
 
-def leaning(eef_state, along, tilt_deg):
-    """Pose targets for a hand leaning back from a level direction of travel: its approach axis, tool z, turned
-    from straight down toward that direction, and its finger axis level and across it, whichever way round
-    turns the hand least. With no direction the hand is set upright on the finger axis it has."""
+def leaning(eef_state, toward, tilt_deg):
+    """Pose targets for a leaning hand: its approach axis, tool z, turned tilt_deg from straight down toward
+    a level direction, and its finger axis level and across that direction. With no direction the hand is
+    set upright on the finger axis it has.
+
+    A leaning hand keeps tool y, the side its camera is on, underneath. That way round the wrist joint
+    stayed within 1.9 rad of the middle of its range for every lean the arm reached. The other way round
+    it ran into its stop leaning toward -y, and at the height a grasp turns at the hand rested 13 mm off
+    its pose, outside ARM_TOLERANCE. The caller keeps the lean from pointing outward.
+    """
     a, b = np.asarray(eef_state[3:6], dtype=float), np.asarray(eef_state[6:9], dtype=float)
-    now, down = np.column_stack([a, b, np.cross(a, b)]), np.array([0.0, 0.0, -1.0])
-    if along is None:
-        rotation = aim(now, [0, 0, 1], [1, 0, 0], down)
+    down = np.array([0.0, 0.0, -1.0])
+    if toward is None:
+        rotation = aim(np.column_stack([a, b, np.cross(a, b)]), [0, 0, 1], [1, 0, 0], down)
     else:
-        level, tilt = np.array([along[0], along[1], 0.0]) / math.hypot(along[0], along[1]), math.radians(tilt_deg)
-        across = [level[1], -level[0], 0.0]
-        rotation = aim(now, [0, 0, 1], [1, 0, 0], math.cos(tilt) * down + math.sin(tilt) * level, across)
-    return dict(zip(("r00", "r10", "r20", "r01", "r11", "r21"), map(float, rotation[:, :2].T.ravel()), strict=True))
+        level, tilt = np.array([toward[0], toward[1], 0.0]) / math.hypot(toward[0], toward[1]), math.radians(tilt_deg)
+        across = np.array([level[1], -level[0], 0.0])
+        if not tilt:
+            across = fingers(eef_state, across)
+        approach = math.cos(tilt) * down + math.sin(tilt) * level
+        rotation = np.column_stack([across, np.cross(approach, across), approach])
+    return dict(zip(ROTATION, map(float, rotation[:, :2].T.ravel()), strict=True))
+
+
+def outward(direction):
+    """Whether a level direction points away from the robot's base, where the hand cannot lean."""
+    return direction[0] / math.hypot(direction[0], direction[1]) > OUTWARD
+
+
+def approach_axis(eef_state):
+    """The unit direction the fingers point along, tool z, for a measured or commanded tool pose."""
+    a, b = np.asarray(eef_state[3:6], dtype=float), np.asarray(eef_state[6:9], dtype=float)
+    axis = np.cross(a, b)
+    return axis / np.linalg.norm(axis)
 
 
 def wrist_view(eef_state):
@@ -323,9 +402,9 @@ SCHEMAS = [
     schema(
         "grasp",
         "Open, move above your approach pose (above the region itself when it was selected in the wrist "
-        "camera), descend to the pose or to contact above it, close, check measured opening, and test "
-        "lift by 3-5 cm. Stops on failed evidence or measured checks; does not carry automatically. "
-        "select binds object_target first, in the same call.",
+        "camera), descend to the pose or to contact above it, or with tilt_deg come in leaning along the "
+        "hand's own axis, close, check measured opening, and test lift by 3-5 cm. Stops on failed evidence "
+        "or measured checks; does not carry automatically. select binds object_target first, in the same call.",
         dict(
             object_target=TEXT,
             select=SELECTION,
@@ -339,6 +418,14 @@ SCHEMAS = [
             yaw_deg=dict(
                 type="number",
                 description="Turn of the finger axis about the vertical: 0 along world y, 90 along world x.",
+            ),
+            tilt_deg=dict(
+                type="number",
+                description="Lean of the hand from upright, 0 to 60; it then comes in along its own axis.",
+            ),
+            toward=dict(
+                type="object",
+                description="{x, y}: the level point the fingertips of a leaning hand point toward.",
             ),
             approach=TARGETS,
             lift=TARGETS,
@@ -463,6 +550,11 @@ class WorldTools:
 
         def move(goal):
             targets = dict(x=float(goal[0]), y=float(goal[1]), **hand)
+            state = self.driver.observation.state["eef_state"]
+            if approach_axis(state)[2] > -UPRIGHT:
+                # The last look is taken from over the region, straight down: a hand that a grasp or a
+                # carry left leaning stands up on its way there.
+                targets.update(leaning(state, None, 0))
             command = self._move(targets, stage, expected=OPEN_MM if hand else None)
             moved = self.driver.execute(dict(command, rest=False))
             if moved.data.get("arm") == "not_approaching" and not short:
@@ -483,11 +575,16 @@ class WorldTools:
             return found
         data = found.data
         self.located[name] = [data[k] for k in "xyz"]
+        view = wrist_view(self.driver.observation.state["eef_state"])
+        (pixel,), (depth,) = view.project(self.located[name])
+        if "pixel" in data and depth > 0:
+            # Which way the image the policy sees next lies in the world, for an offset toward something in it.
+            here, right, down = view.unproject([pixel, pixel + [1, 0], pixel + [0, 1]], [depth] * 3)[:, :2]
+            for side, step in (("image_right", right - here), ("image_down", down - here)):
+                data[side] = [round(float(v), 2) for v in step / np.linalg.norm(step)]
         extent = data.pop("extent_m", None)
         if extent:
             data["extent_mm"] = [round(1000 * side) for side in extent]
-            view = wrist_view(self.driver.observation.state["eef_state"])
-            depth = float(view.project(self.located[name])[1][0])
             shape = footprint(view, region().get("dominant_region") or {}, depth)
             if shape:
                 data.update(across_mm=round(1000 * shape["across_m"]), along_mm=round(1000 * shape["along_m"]))
@@ -513,9 +610,28 @@ class WorldTools:
         feedback = procedures.feedback(outcome)
         return self._result(dict(feedback, **facts), dict(procedure_brief(feedback, bound), **facts))
 
+    def _execute(self, command):
+        """Run one of the tools' own commands. A finger axis that has to swing more than SWING_DEG first
+        turns halfway, upright, in a move of its own, round the side WRIST_MIDDLE is on: rot6d columns
+        interpolated across a half turn pass through zero, and the arm then turns either way round, into a
+        joint's stop as often as not."""
+        targets = command.get("targets") or {}
+        if all(k in targets for k in ROTATION[:3]):
+            now = np.asarray(self.driver.observation.state["eef_state"][3:6], dtype=float)
+            goal = np.array([targets[k] for k in ROTATION[:3]], dtype=float)
+            if float(now @ goal) < math.cos(math.radians(SWING_DEG)):
+                between = np.array([now[0] + goal[0], now[1] + goal[1], 0.0])
+                if np.linalg.norm(between) < 0.2:  # opposite axes: a quarter turn from both
+                    between = np.array([-goal[1], goal[0], 0.0])
+                between = between / np.linalg.norm(between) * (1 if between @ WRIST_MIDDLE >= 0 else -1)
+                halfway = self.driver.execute(self._move(upright(between), command.get("stage", "turn")))
+                if not halfway.ok:
+                    return halfway
+        return self.driver.execute(command)
+
     def _approach(self, command, facts):
         """Execute a stage, noting how far short of its pose an approach that met contact ended."""
-        outcome = self.driver.execute(command)
+        outcome = self._execute(command)
         if "short_m" in outcome.data:
             # Where the approach ended says what it met: the object, the surface or something else.
             facts.update(approach_ended_short_m=outcome.data["short_m"])
@@ -543,6 +659,42 @@ class WorldTools:
             raise ValueError("travel_z must be a height in metres")
         return travel
 
+    def _lean(self, command, tilt, toward, offset, found):
+        """A grasp approach with the hand leaning: it turns where it is, goes to a point STANDOFF_M back
+        along its own axis and from there straight along that axis to the grasp point. Returns the command
+        for those last two legs, or the Outcome of a lean that has no direction or a turn that failed."""
+        point = command["targets"]
+        # With no point to lean toward, the fingertips point from the grasp point back to the region's centre.
+        level = [toward[k] - point[k] for k in "xy"] if toward else [-offset[0], -offset[1]]
+        if math.hypot(*level) < 0.01:
+            return Outcome(
+                "refused",
+                command["kind"],
+                "the point to lean toward is less than 1 cm from the grasp point, which gives the lean no direction",
+                hint="name a toward further along the way the fingertips should point; later stages did not run",
+            )
+        if outward(level):
+            return Outcome(
+                "refused",
+                command["kind"],
+                "the wrist cannot lean the fingertips away from the robot's base, toward +x",
+                hint="lean toward +y, -y or -x, or grasp upright; later stages did not run",
+            )
+        turn = leaning(self.driver.observation.state["eef_state"], level, tilt)
+        axis = approach_axis([0.0, 0.0, 0.0, *(turn[k] for k in ROTATION)])
+        found.update(
+            leaning=dict(tilt_deg=tilt, toward=[round(float(v), 2) for v in axis[:2] / np.linalg.norm(axis[:2])])
+        )
+        # The hand turns where it is, its fingers first and then its lean. Turned in one move, or while it
+        # travels, the raised arm swings several centimetres, which reads as a hand held back.
+        for part in (upright([turn["r00"], turn["r10"]]), turn):
+            # The arm sways for a second after a turn; the legs that follow wait for it to rest.
+            there = self._execute(dict(self._move(dict(part, gripper=0), "grasp_lean", expected=OPEN_MM), rest=False))
+            if not there.ok:
+                return there
+        back = np.array([point[k] for k in "xyz"]) - STANDOFF_M * axis
+        return dict(command, targets=dict(point, **turn), via=dict(zip("xyz", map(float, back), strict=True)))
+
     def _push(self, args):
         """Fingers closed, to start through free space, then straight to end or to where contact stops the hand."""
         start, end = self._point(args["start"], "start"), self._point(args["end"], "end")
@@ -553,15 +705,22 @@ class WorldTools:
         tilt = args.get("tilt_deg", LEAN_DEG)
         if type(tilt) not in (float, int) or not 0 <= tilt <= 60:
             raise ValueError("tilt_deg is between 0 and 60")
-        # Only a mostly level line leans the hand: a steep one has no direction to lean back from.
+        # Only a mostly level line turns the hand across it, and leans it unless the line points where
+        # the wrist cannot lean. A steep one has no direction to lean back from, and stands a hand
+        # upright that an earlier grasp left leaning.
         level = math.hypot(line[0], line[1]) >= abs(line[2])
-        turn = leaning(self.driver.observation.state["eef_state"], line, tilt) if level else {}
+        state = self.driver.observation.state["eef_state"]
+        if level:
+            tilt = 0 if outward(line) else tilt
+            turn = leaning(state, line, tilt)
+        else:
+            turn = {} if approach_axis(state)[2] <= -UPRIGHT else leaning(state, None, 0)
         stages = [
             self._move({"gripper": 1}, "push_close"),
             dict(self._move({**end, **turn}, "push"), travel_z=self._travel(args), via=start),
         ]
         for command in stages:
-            outcome = self.driver.execute(command)
+            outcome = self._execute(command)
             if not outcome.ok:
                 break
         short = outcome.data.get("short_m")
@@ -574,7 +733,7 @@ class WorldTools:
             unit = line / length
             along = float(np.clip((state[:3] - [start[k] for k in "xyz"]) @ unit, 0.0, BACK_OFF_M))
             retreat.update(zip("xyz", map(float, state[:3] - unit * along), strict=True))
-            if turn and tilt:
+            if level and tilt:
                 retreat.update(leaning(state, None, 0))
         left = self.driver.execute(self._move(retreat, "push_back_off")) if retreat else outcome
         if not outcome.ok:
@@ -686,16 +845,34 @@ class WorldTools:
                 if (
                     not isinstance(offset, list)
                     or len(offset) != 2
-                    or any(type(v) not in (float, int) or not math.isfinite(v) or abs(v) > 0.1 for v in offset)
+                    or any(type(v) not in (float, int) or not math.isfinite(v) or abs(v) > 0.2 for v in offset)
                 ):
-                    raise ValueError("offset is [dx, dy] in metres, each within 0.1")
+                    raise ValueError("offset is [dx, dy] in metres, each within 0.2")
                 if any(offset) and not wrist:
                     raise ValueError("offset is measured from a region selected in the wrist camera")
                 approach = dict(args["approach"], gripper=0)
                 if (yaw := args.get("yaw_deg")) is not None:
                     if type(yaw) not in (float, int) or not -90 <= yaw <= 90:
                         raise ValueError("yaw_deg is between -90 and 90")
-                    approach.update(turned(yaw))
+                    approach.update(turned(self.driver.observation.state["eef_state"], yaw))
+                tilt, toward = args.get("tilt_deg", 0), args.get("toward")
+                if type(tilt) not in (float, int) or not 0 <= tilt <= MAX_LEAN_DEG:
+                    raise ValueError(f"tilt_deg is between 0 and {MAX_LEAN_DEG}")
+                if toward is not None and (
+                    not isinstance(toward, dict)
+                    or toward.keys() != {"x", "y"}
+                    or any(type(v) not in (float, int) or not math.isfinite(v) for v in toward.values())
+                ):
+                    raise ValueError("toward is a level point: x and y in metres")
+                if tilt and yaw is not None:
+                    raise ValueError("a leaning hand's finger axis lies across its lean: give tilt_deg or yaw_deg")
+                if tilt and toward is None and not any(offset):
+                    raise ValueError(
+                        "tilt_deg needs toward, the point the fingertips lean toward, or an offset from a wrist "
+                        "region, whose centre they then lean toward"
+                    )
+                if toward is not None and not tilt:
+                    raise ValueError("toward is where tilt_deg leans the hand: give both or neither")
                 if "select" in args:
                     self._select(name, args["select"])
 
@@ -707,16 +884,23 @@ class WorldTools:
                         if isinstance(centred, Outcome):
                             ran.append(False)
                             return centred
-                        found.update(centred={k: v for k, v in centred.items() if k != "pixel"})
+                        # The image that follows a grasp is not the one these three describe.
+                        unseen = ("pixel", "image_right", "image_down")
+                        found.update(centred={k: v for k, v in centred.items() if k not in unseen})
                         over = dict(x=centred["x"] + offset[0], y=centred["y"] + offset[1])
                         fit = centred.get("fit_yaw_deg")
                         fits = fit is not None and centred["across_mm"] <= FIT_MM
-                        if yaw is None and not any(offset) and fits and name in self.outlined:
+                        if yaw is None and not tilt and not any(offset) and fits and name in self.outlined:
                             # Fingers across the narrow side close on it squarely instead of turning it first.
                             # A point may select only part of an object, whose narrow side is not the object's.
-                            over.update(turned(fit))
+                            over.update(turned(self.driver.observation.state["eef_state"], fit))
                             found.update(fingers_turned_to_yaw_deg=fit)
                         command = dict(command, targets=dict(command["targets"], **over))
+                    if command.get("stage") == "grasp_approach" and tilt:
+                        command = self._lean(command, tilt, toward, offset, found)
+                        if isinstance(command, Outcome):
+                            ran.append(False)
+                            return command
                     outcome = self._approach(command, found)
                     ran.append(outcome.ok)
                     return outcome
