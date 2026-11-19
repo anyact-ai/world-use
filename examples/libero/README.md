@@ -111,7 +111,15 @@ earlier tools is recorded at commit `02a3ba1`.
   own 50 demonstrations of that task take the mug by its handle, with the hand leaning 33 to 70 degrees.
   `grasp` now leans the hand with `tilt_deg`. In scripted trials on the two development states, with
   simulator truth standing in for the model's estimates, the tools then put the mug in the oven upright and
-  pushed the door shut, and the benchmark's check passed. No model has been evaluated with it.
+  pushed the door shut, and the benchmark's check passed.
+- **The leaning grasp has only a development check.** At `8762948`, with the world-use arm alone and one
+  run per case ([development-check.jsonl](development-check.jsonl)), GPT-6.2 Sol took the mug by its handle
+  at the first attempt on both development states of the microwave task, lost it from that pinch while
+  feeling for the oven's opening, and solved neither. Over the 20 development cases it solved 13, as at
+  `ee263a4`: two gained and two lost. Two of its episodes were stopped at 41 calls by a spending cap set
+  too low and run again, and the second runs are the ones counted. GPT-6.2 Astra, which has no evaluation
+  published here, solved both microwave cases, in 11 and 12 calls, and 5 of the 6 mug cases it was given.
+  The held-out states have not been run with these tools.
 - **This tree is newer than `ee263a4`.** Since the evaluation, `grasp` takes `tilt_deg` and `toward`, and
   offsets up to 20 cm; `locate` says which way its image lies in the world; an upright hand's fingers are
   turned the way that keeps the wrist joint off its stop, so a `yaw_deg` of 90 now puts them along -x; a
