@@ -1072,6 +1072,23 @@ def test_move_to_turns_in_place_and_says_when_it_cannot(k):
         assert k.run({"do": "move_to", **bad}).status == "refused"
 
 
+@pytest.mark.parametrize("roll", [2.2, 3.0])
+def test_move_to_turns_the_jaws_the_other_way_round_when_the_nearer_way_meets_a_stop(roll):
+    """Jaws opening left and right sit half a wrist turn apart; the nearer is past the roll joint's stop."""
+    k = make_kernel(q=np.r_[Q_REST[:5], roll])
+    assert k.run({"do": "line", "forward": 0.08, "up": 0.14}).ok
+    out = k.run({"do": "move_to", "jaws": "left"})
+    assert out.ok and "the other way round" in out.message and _pointing(k)[1] == "left and right"
+    assert abs(k.state.q[5]) < 0.1
+
+
+def test_move_to_keeps_the_nearer_jaws_while_they_leave_the_wrist_room():
+    k = make_kernel(q=np.r_[Q_REST[:5], 2.2])
+    assert k.run({"do": "line", "forward": 0.08, "up": 0.14}).ok
+    out = k.run({"do": "move_to", "jaws": [0, np.cos(0.4), np.sin(0.4)]})
+    assert out.ok and "other way" not in out.message and k.state.q[5] == pytest.approx(2.74, abs=0.05)
+
+
 def test_a_check_says_where_the_gripper_ends_pointing(idle):
     L = float(idle.world.from_base("work", idle.chain.fk(idle.state.q)[:3, 3])[1])
     report = check({"do": "move_to", "to": [0.22, L, 0.10], "point": "down"}, idle)

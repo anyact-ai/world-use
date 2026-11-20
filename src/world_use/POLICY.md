@@ -62,7 +62,7 @@ parameters. A list runs in order and ends at the first step that does not end "d
 |---|---|---|
 | line | `{"do": "line", "forward": 0.05, "up": 0.02}` | straight tool line, at most one segment long (card) |
 | lines | `{"do": "lines", "legs": [[0.05, 0, 0], [0, 0.03, 0]], "blend": 0.02}` | several legs as one smooth motion |
-| move_to | `{"do": "move_to", "to": [0.20, 0, 0.10], "point": "down"}` | absolute position; `point` (down, forward, ... or `[f, l, u]`) turns the gripper and `jaws` sets which way it opens; near the base it may end `within_deg` (5) off |
+| move_to | `{"do": "move_to", "to": [0.20, 0, 0.10], "point": "down"}` | absolute position; `point` (down, forward, ... or `[f, l, u]`) turns the gripper and `jaws` sets which way it opens, either way round, the other way when the nearer one would end near a joint's stop; near the base it may end `within_deg` (5) off |
 | joints | `{"do": "joints", "delta_deg": {"6": -90}}` | joints numbered from 1; or `target_deg` |
 | touchdown | `{"do": "touchdown", "max": 0.06}` | slow move down that stops on contact; no contact is a surprise |
 | guarded | `{"do": "guarded", "forward": 0.03, "dtau": 0.6}` | the same in any direction; `"expect_contact": false` to probe |
