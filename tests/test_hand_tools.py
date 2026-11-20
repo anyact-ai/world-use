@@ -1,4 +1,5 @@
 """The tool set's sequences, on a fake arm that moves exactly where it is told unless told it meets contact."""
+import dataclasses
 from types import SimpleNamespace
 
 import numpy as np
@@ -8,6 +9,8 @@ from conftest import serving
 from world_use.behaviors import Outcome
 from world_use.bodies.mujoco_scene import mj
 from world_use.hand_tools import DOWN, DaemonArm, Hand, HandTools, region_evidence
+from world_use.tracking import Tracking
+from world_use.vision import Observation
 
 HAND = Hand(opening_mm=78, open_mm=(70, 85), fit_mm=70, arrive_m=0.012, hand_camera=None,
             fixed_camera=None, in_view_m=0.3, hover="15-25 cm")
@@ -304,20 +307,95 @@ def mug(spec):
                       friction=[1.0, 0.005, 0.0001], condim=4)
 
 
-def test_on_the_twin_a_leaning_hand_takes_a_mug_by_its_handle_and_the_mug_swings_in_the_pinch(tmp_path, rehearser):
-    """The handle faces the base, so the hand comes at it from outside, leaning 45 degrees away from the base."""
+def test_on_the_twin_a_leaning_hand_carries_a_mug_by_its_handle_in_under_a_roof(tmp_path, rehearser):
+    """The handle faces the base, so the hand comes at it from outside, leaning 45 degrees away from the base, and
+    carries the mug ahead of its fingertips into a box whose opening faces the base."""
     stand = dict(name="stand", kind="surface", center=[0.30, 0.0, STAND / 2], size=[0.14, 0.14, STAND], frame="base")
-    with serving(tmp_path, dict(box=[stand]), rehearser=rehearser, scenery=mug) as (daemon, client):
+    floor = dict(name="floor", kind="surface", center=[0.42, 0.0, STAND / 2], size=[0.16, 0.16, STAND], frame="base")
+    top = STAND + 0.12
+    walls = [dict(name="roof", center=[0.42, 0.0, top + 0.005], size=[0.16, 0.16, 0.01]),
+             dict(name="back", center=[0.505, 0.0, STAND + 0.06], size=[0.01, 0.16, 0.12]),
+             dict(name="left", center=[0.42, 0.085, STAND + 0.06], size=[0.16, 0.01, 0.12]),
+             dict(name="right", center=[0.42, -0.085, STAND + 0.06], size=[0.16, 0.01, 0.12])]
+    # The simulator has the walls and roof; the kernel keeps out of them.
+    boxes = [stand, floor, *(dict(w, kind="surface", frame="base", known=False) for w in walls),
+             *(dict(w, name=w["name"] + "_out", kind="keep_out", frame="base") for w in walls)]
+    with serving(tmp_path, dict(box=boxes), rehearser=rehearser, scenery=mug) as (daemon, client):
         assert client.run({"do": "line", "up": 0.08}, wait=60)["status"] == "done"
         hand = HandTools(DaemonArm(client, REBOT), REBOT, Tracks())
+
+        def mug_pose():
+            with daemon.k.body.lock:
+                found = daemon.k.body.data.body("mug")
+                return found.xpos.copy(), np.degrees(np.arccos(np.clip(found.xmat[8], -1, 1)))
+
         lean = np.array([np.sqrt(0.5), 0, -np.sqrt(0.5)])
         grip = np.array([0.235, 0, STAND + 0.045]) + 0.015 * lean        # the handle between the finger pads
         record, text = hand.call("grasp", dict(object_target="mug", approach=xyz(grip), tilt_deg=45,
                                                lift=dict(z=float(grip[2]) + 0.04), toward=dict(x=0.30, y=0.0),
                                                expect_grip_mm=[6, 20]))
         assert record["status"] == "done" and record["leaning"] == dict(tilt_deg=45, toward=[1.0, 0.0]), text
-        with daemon.k.body.lock:
-            mug_now = daemon.k.body.data.body("mug")
-            rose, tilt = mug_now.xpos[2] - STAND, np.degrees(np.arccos(np.clip(mug_now.xmat[8], -1, 1)))
+        at, tilt = mug_pose()
         # Off its stand and held, but turned in the fingers, whose opening still reads the handle's thickness.
-        assert rose > 0.01 and 10 < tilt < 45 and 8 <= client.status()["gripper"]["aperture_mm"] <= 16
+        assert at[2] - STAND > 0.01 and 10 < tilt < 45 and 8 <= client.status()["gripper"]["aperture_mm"] <= 16
+
+        here = np.array(client.status()["tool"]["base"])
+        release = np.array([0.42 - 0.065, 0.0, here[2] - 0.035])          # the mug's centre over the box's middle
+        record, text = hand.call("place", dict(object_target="mug", move=xyz(release), via=xyz(release - [0.12, 0, 0]),
+                                               withdraw=xyz(release - [0.10, 0, 0]), expect_grip_mm=[6, 20]))
+        (decision,) = (a["outcome"] for a in record["assessments"])
+        assert decision["kind"] == "placement_decision", text
+        record, text = hand.call("release_placement", dict(checkpoint=decision["data"]["checkpoint"], note="in"))
+        assert record["status"] == "done", text
+        at, tilt = mug_pose()
+        assert 0.36 < at[0] < 0.48 and abs(at[1]) < 0.05 and at[2] == pytest.approx(STAND, abs=0.01) and tilt < 5
+        assert client.status()["tool"]["base"][0] < 0.30                    # the hand is back out of the box
+
+
+class Orange:
+    """A tracker that follows the twin's orange block by its colour: a stand-in for EdgeTAM with the same calls."""
+    ready = True
+
+    def select(self, target, frame, **prompt):
+        return self.update(target, frame)
+
+    def update(self, target, frame):
+        rgb = np.asarray(frame.image).astype(float)
+        mask = (rgb[..., 0] > 150) & (rgb[..., 0] > 1.6 * rgb[..., 2]) & (rgb[..., 1] < 0.75 * rgb[..., 0])
+        ys, xs = np.nonzero(mask)
+        if len(xs) < 20:
+            return Observation(frame.camera, frame.id, frame.timestamp, None, None, None, 30)
+        box = (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+        return Observation(frame.camera, frame.id, frame.timestamp, box, (float(xs.mean()), float(ys.mean())), mask, 30)
+
+    def forget(self, target):
+        pass
+
+    def close(self):
+        pass
+
+
+@pytest.mark.rendering
+def test_on_the_twin_locate_places_the_block_through_a_camera_on_the_hand_and_a_grasp_takes_it_there(tmp_path,
+                                                                                                    rehearser):
+    camera = dict(name="hand", mount="tool", eye=[0.05, 0, 0.04], look_at=[0.05, 0, -1], up=[-1, 0, 0], fov_deg=75,
+                  size=[320, 240])
+    with serving(tmp_path, dict(box=[TRAY, BLOCK], camera=[camera]), rehearser=rehearser) as (daemon, client):
+        assert client.run({"do": "line", "up": 0.08}, wait=60)["status"] == "done"
+        seeing = dataclasses.replace(REBOT, hand_camera="hand")
+        hand = HandTools(DaemonArm(client, seeing), seeing, Tracking(client, Orange()))
+        frame = client.frame("hand")
+        box = Orange().update("block", frame).bbox
+        record, text = hand.call("locate", dict(target="block", select=dict(camera="hand", box=list(box))))
+        assert record["status"] == "done", text
+        centre = daemon.k.world.boxes["block"].pose[:3, 3]
+        located = np.array([record["located"][k] for k in "xyz"])
+        assert np.linalg.norm(located[:2] - centre[:2]) < 0.015     # the top face's centre, over the block's
+        # Centred over the region again, then 2 cm further out, so the block sits between the finger pads.
+        out = np.array([centre[0], centre[1], 0.0]) / np.hypot(*centre[:2])
+        grip = np.array([*located[:2], centre[2] + 0.02]) + 0.02 * out
+        record, text = hand.call("grasp", dict(object_target="block", approach=dict(z=float(grip[2])), tilt_deg=90,
+                                               offset=[float(v) for v in 0.02 * out[:2]],
+                                               lift=dict(z=float(grip[2]) + 0.04), toward=xyz((grip + 0.2 * out)[:2]),
+                                               expect_grip_mm=[35, 45]))
+        assert record["status"] == "done", text
