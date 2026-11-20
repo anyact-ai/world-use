@@ -220,8 +220,8 @@ class SimBody:
             self.dq_cmd[:] = 0
             mj.mj_forward(self.model, self.data)
 
-    def render(self, view):
-        return self._capture(view, depth=False)[0]
+    def render(self, view, *, mounted=False):
+        return self._capture(view, depth=False, mounted=mounted)[0]
 
     def capture(self, view, *, mounted=False):
         """RGB, optical-z depth and the tool pose from one physics snapshot, without advancing the scene.

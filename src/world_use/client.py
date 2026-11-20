@@ -48,7 +48,7 @@ class Client:
         return self._call("GET", "/card")["card"]
 
     def capabilities(self) -> dict:
-        """The card's text, plus its cameras: which are calibrated and which give depth."""
+        """The card's text, plus its cameras: which are calibrated, which give depth and which are on the hand."""
         return self._call("GET", "/card")
 
     def run(self, spec, wait: float = 0.0, check: bool = True, *, requires: list[dict] | None = None) -> dict:
