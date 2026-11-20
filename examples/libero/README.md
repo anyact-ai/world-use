@@ -5,7 +5,9 @@ published [LLM_LIBERO](https://github.com/IRVLUTD/LLM_LIBERO) simulator and agen
 an initial state, is run as a matched pair: once with the upstream agent's tools alone and once with World
 Use tools added. Over 50 pairs, 30 of them on held-out initial states, the model solved 15 episodes alone
 and 30 with world-use, and made 74% fewer model calls (815 against 3,095). The evaluation ran at commit
-`ee263a4`; [paid-results.jsonl](paid-results.jsonl) has every episode.
+`ee263a4`; [paid-results.jsonl](paid-results.jsonl) has every episode. GPT-6.2 Astra, run on the same
+cases after `grasp` learned to lean the hand, [solved 19 alone and 43 with
+world-use](#gpt-62-astra-before-and-after-the-leaning-grasp).
 
 ## Protocol
 
@@ -99,8 +101,11 @@ earlier tools is recorded at commit `02a3ba1`.
 ### GPT-6.2 Astra, before and after the leaning grasp
 
 A second model, GPT-6.2 Astra, was run on the same 50 cases under the same protocol twice: with the tools
-of `ee263a4`, and with those of `d440a16`, where `grasp` can lean the hand (see [Limits](#limits) and
-[How the tools work](#how-the-tools-work)).
+of `ee263a4`, and with those of `d440a16`, where `grasp` can lean the hand (see
+[How the tools work](#how-the-tools-work)). Both reuse the held-out states of Sol's evaluation. The mug
+task was chosen for the change because no episode of it had succeeded, on those states or the development
+ones; the change itself was built from the development states and LIBERO's public demonstrations, and no
+held-out episode's record was read.
 
 | tools | cases | pairs | solved alone | solved with world-use | calls alone / WU | est. USD alone / WU | steps alone / WU |
 |---|---|---|---|---|---|---|---|
@@ -118,16 +123,14 @@ of `ee263a4`, and with those of `d440a16`, where `grasp` can lean the hand (see 
   gained and six lost.
 - At `d440a16` both arms solved 16 pairs, only world-use 27, only the model alone 3 and neither 4. The
   median episode took 28 calls alone and 13.5 with world-use.
-- The held-out states are the same in both evaluations, so the second reuses them. Between the two the
-  tools were changed from the development states and LIBERO's public demonstrations only, and no held-out
-  episode was read.
 
 [astra-results.jsonl](astra-results.jsonl) has the rows of both. Astra's runs used the tree with `MODEL`
 and `RATES` in `budget.py` set for that model: $8 a million input tokens, $0.40 cached, $10 for a cache
-write and $40 for output. In each evaluation three pairs were killed when the machine restarted and were
-run again; the second runs are the ones counted, and where the file has two rows for one arm of a case, as
-it does twice at `ee263a4`, the later is. The evaluations cost an estimated $95.61 and $107.10 with those
-attempts, and the spending guard charged $177.24 and $192.59.
+write and $40 for output. In each evaluation three pairs were cut off when the machine restarted and were
+run again whole, and the rerun is the one counted. The file has no rows for the arms that were cut off,
+and at `ee263a4` it has two for the arm alone of two cases, which had finished before the restart. With
+the cut-off attempts the evaluations cost an estimated $95.61 and $107.10, and the spending guard charged
+$177.24 and $192.59.
 
 ## Limits
 
@@ -139,34 +142,38 @@ attempts, and the spending guard charged $177.24 and $192.59.
 - **The model judges the outcome.** No tool checks what a selected region is, how an object rests or
   whether the task is done; the model decides that from the images. Most world-use failures came from
   that judgement.
-- **The evaluated tools grasped only from above.** A mug held by its rim does not go under an oven's
-  roof: in a scripted trial on a development state the hand met the frame with the mug half in. LIBERO's
-  own 50 demonstrations of that task take the mug by its handle, with the hand leaning 33 to 70 degrees.
-  `grasp` now leans the hand with `tilt_deg`. In scripted trials on the two development states, with
-  simulator truth standing in for the model's estimates, the tools then put the mug in the oven upright and
-  pushed the door shut, and the benchmark's check passed.
-- **The leaning grasp is evaluated with one model.** GPT-6.2 Astra's evaluation at `d440a16` is under
-  [Results](#gpt-62-astra-before-and-after-the-leaning-grasp). GPT-6.2 Sol, whose results above are for
-  `ee263a4`, has only a development check. At `8762948`, with the world-use arm alone and one
-  run per case ([development-check.jsonl](development-check.jsonl)), it took the mug by its handle
-  at the first attempt on both development states of the microwave task, lost it from that pinch while
-  feeling for the oven's opening, and solved neither. Replayed with simulator truth, the mug had turned 35
-  degrees in the fingers when it met the open door, and their opening read 18.3 mm as it had after the
-  grasp, which `DOCS` now warns of. Over the 20 development cases it solved 13, as at
-  `ee263a4`: two gained and two lost. Two of its episodes were stopped at 41 calls by a spending cap set
-  too low and run again, and the second runs are the ones counted. In the same check Astra solved both
-  microwave cases, in 11 and 12 calls, and 5 of the 6 mug cases it was given. Sol has not been run on the
-  held-out states with these tools.
-- **This tree is newer than `ee263a4`.** Since the evaluation, `grasp` takes `tilt_deg` and `toward`, and
-  offsets up to 20 cm; `locate` says which way its image lies in the world; an upright hand's fingers are
-  turned the way that keeps the wrist joint off its stop, so a `yaw_deg` of 90 now puts them along -x; a
-  push leans the hand only on a line more level than steep, stays upright toward +x and backs off along its
-  line also after failing on the way; a hand has to make no progress for half a second, not a quarter,
-  before it counts as held back, since it sways for longer than that after it has been turned; a wrist
-  search that cannot place its region says so instead of sending the arm out of bounds; `place` checks
-  `object_target` before the hand moves; and `DOCS` gives the height error on flat things as 1.5 cm
-  instead of 3 and says a push backs off up to 10 cm. To rerun the evaluated version, fetch it with
-  `git fetch origin pull/23/head` and check out `ee263a4`.
+- **Sol's results are for tools that grasped only from above.** A mug held by its rim does not go under
+  an oven's roof, and LIBERO's 50 demonstrations of that task take it by its handle with the hand leaning
+  33 to 70 degrees. `grasp` now leans the hand with `tilt_deg`, and Sol has not been evaluated with it. In
+  a check of the world-use arm on the 20 development cases at `8762948`
+  ([development-check.jsonl](development-check.jsonl)) Sol solved 13, as at `ee263a4`, and neither
+  microwave case; Astra, given the six mug cases, solved five, both microwave cases among them. Two of
+  Sol's episodes were stopped at 41 calls by a spending cap set too low and one of Astra's by a dropped
+  connection; they were run again, and the second runs are the ones counted.
+- **A handle pinch does not resist turning.** In both of its microwave cases Sol took the mug by its
+  handle at the first attempt and lost it while feeling for the oven's opening. In a replay of one with
+  simulator truth, the mug had turned 35 degrees in the fingers when it met the open door and their opening
+  still read 18.3 mm, so nothing the tools measure showed it. `DOCS` tells the model to look at how the
+  object hangs.
+- **This tree is newer than both evaluated ones.** Since `d440a16` only wording has changed: `DOCS` says
+  that the 4 cm at which the fingers closed on a mug's body was an offset, how far round toward +x a lean
+  may point, and that the arm reached 60 degrees only toward -y; a refused lean says the same; and a
+  grasp reports `leaning` only once the hand has turned. Since `ee263a4`, Sol's evaluation:
+  - `grasp` takes `tilt_deg`, `toward` and offsets up to 20 cm, and `locate` says which way its image
+    lies in the world;
+  - an upright hand's fingers turn the way that keeps the wrist joint off its stop, so a `yaw_deg` of 90
+    now puts them along -x;
+  - a push leans the hand only on a line more level than steep, stays upright toward +x, and backs off
+    along its line also after failing on the way;
+  - a hand counts as held back after 0.45 s without progress instead of 0.2 s, since one that has just
+    been rotated sways and makes none for about a quarter of a second;
+  - a wrist search that cannot place its region says so instead of sending the arm out of bounds, and
+    `place` checks `object_target` before the hand moves;
+  - `DOCS` gives the height error on flat things as 1.5 cm instead of 3 and says a push backs off up to
+    10 cm.
+
+  To rerun an evaluated version, check out `ee263a4` after `git fetch origin pull/23/head`, or `d440a16`
+  after `git fetch origin pull/25/head`.
 
 ## How the tools work
 
@@ -191,12 +198,13 @@ on this simulated arm.
 - **Leaning grasps.** With `tilt_deg` the hand turns where it is, its fingers first and then its lean,
   goes to a point 10 cm back along its own axis and comes in along that axis. It leans toward a point the
   model names or, given an offset from a wrist region, toward the region's centre, which is how it comes at
-  a handle from outside. The hand keeps the side its camera is on underneath, and a lean toward +x, away
-  from the robot's base, is refused: the wrist does not bend that way.
+  a handle from outside. The hand keeps the side its camera is on underneath, which fixes its finger axis.
+  A lean that points more than 10 degrees round from the y axis toward +x, away from the robot's base, is
+  refused: the wrist does not bend toward +x, and of the directions between only one was measured.
 - **The wrist's range.** Fingers along a direction and along its opposite close on the same thing, half a
-  turn of the wrist joint apart. An upright hand takes the one nearer its present finger axis unless that
-  is more than 110 degrees from the middle of the joint's range, and a turn of more than 120 degrees is
-  made in two moves, since one move across a half turn can run the joint into its stop.
+  turn of the wrist joint apart. For an upright grasp or push the tools take the one nearer the present
+  finger axis unless that is more than 110 degrees from the middle of the joint's range, and a turn of more
+  than 120 degrees is made in two moves, since one move across a half turn can run the joint into its stop.
 - **Front-camera check.** A region selected in the front camera is compared before a grasp's approach
   and after its test lift, and across a placement whose hand travel is vertical to within 2 cm. If it
   stayed where it was while the hand moved, the tool returns a `surprise` and `place` withholds its
@@ -213,13 +221,17 @@ with simulator ground truth, which no policy sees.
 - [`region-evidence.jsonl`](region-evidence.jsonl): the lifts behind the thresholds that tell a region
   left behind from one that rose with the hand.
 - [`lean-evidence.jsonl`](lean-evidence.jsonl): the trials behind the leaning grasp, on development
-  states. How the 50 demonstrations of the mug-into-microwave task hold the mug; the wrist joint's angle
-  in 15 upright and 37 leaning poses, behind the finger directions the tools choose and the refusal to lean
-  toward +x; 12 grasps of that mug's handle with `tilt_deg` 45, of which the 11 with offsets of 5 to 8 cm
-  and grip heights of 5.5 to 8.5 cm lifted it and the one 4 cm from the region's centre closed on its body;
-  6 of two other mugs and a moka pot by their handles, in both directions the wrist leans sideways, all
-  lifted; 4 upright rim grasps under the new finger rule; and the mug put in the oven upright and the door
-  pushed shut on both states, in 609 and 603 of the 900 steps.
+  states.
+  - How the 50 demonstrations of the mug-into-microwave task hold the mug.
+  - The wrist joint's angle in 15 upright and 37 leaning poses, behind the finger directions the tools
+    choose and the refusal to lean toward +x.
+  - 12 grasps of that mug's handle with `tilt_deg` 45: the 11 with offsets of 5 to 8 cm and grip heights of
+    5.5 to 8.5 cm lifted it, and the one 4 cm from the region's centre closed on its body.
+  - 6 grasps of two other mugs and a moka pot by their handles, in both directions the wrist leans
+    sideways, all lifted, and 4 upright rim grasps under the new finger rule.
+  - The mug put in the oven upright and the door pushed shut on both states, in 609 and 603 of the 900
+    steps, where the benchmark's check passed.
+  - The replay in which a mug turned in a handle pinch.
 
 ## Rebuild the runtime
 
