@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **Leaning grasp in the LIBERO example.** `grasp` takes `tilt_deg` and `toward`, so the hand can take a mug
+  by its handle and carry it in under a roof. GPT-6.2 Astra solves 43 of 50 LIBERO-10 episodes with these
+  tools and 19 alone; with the earlier tools it solved 35 and 18. See the
+  [results](examples/libero/README.md#gpt-62-astra-before-and-after-the-leaning-grasp).
+
 ## 0.3.0
 
 ### Highlights

@@ -76,6 +76,19 @@ class Scripted(AzureBudget):
                     u, v = view.project([at["x"], at["y"], 0.51])[0][0]
                     return dict(camera="wrist", point=[float(u), float(v)])
 
+                def lean():
+                    # A leaning grasp of nothing, 10 cm above where the hand is.
+                    x, y, z = map(float, self.driver.observation.state["eef_state"][:3])
+                    at = dict(x=x, y=y, z=z + 0.1)
+                    return "grasp", dict(
+                        object_target="fixture_object",
+                        approach=at,
+                        lift={**at, "z": at["z"] + 0.04},
+                        tilt_deg=45,
+                        toward=dict(x=x, y=y + 0.2),
+                        expect_grip_mm=[5, 70],
+                    )
+
                 def push():
                     # A level line in free air, 10 cm above where the hand is.
                     x, y, z = map(float, self.driver.observation.state["eef_state"][:3])
@@ -125,6 +138,9 @@ class Scripted(AzureBudget):
                             expect_grip_mm=[50, 75],
                         ),
                     ),
+                    ("move_to", dict(targets={"gripper": 0.0})),
+                    ("move_to", dict(targets={"z": 0.62})),
+                    lean,
                     ("move_to", dict(targets={"gripper": 0.0})),
                     push,
                     ("give_up", dict(reason="Offline procedure checks complete.", hindsight="none")),
@@ -265,7 +281,7 @@ def main():
             json.loads(line) for line in (args.output / "world_use/execution/world-use.jsonl").read_text().splitlines()
         ]
         assert all(o["valid"] for o in outcomes[:2])
-        empty, wrong, held, centred = (o for o in outcomes if o.get("procedure") == "grasp")
+        empty, wrong, held, centred, leant = (o for o in outcomes if o.get("procedure") == "grasp")
         # An empty hand is reported at rest, fully closed, before the settling bound and before any lift.
         closed = empty["last_command"]["outcome"]["data"]
         assert empty["status"] == "surprise" and empty["stages"][-1]["stage"] == "close"
@@ -304,6 +320,15 @@ def main():
         assert max(placed.values()) < 0.015 and located["looks"] >= 2
         assert centred["status"] == "done" and [s["status"] for s in centred["stages"]] == ["done"] * 5
         assert 50 <= centred["observations"]["after"]["aperture_mm"] <= 75
+        # A leaning grasp turns the hand where it is and comes in along its own axis to the point asked for.
+        assert leant["status"] == "surprise" and [s["status"] for s in leant["stages"]] == ["done", "surprise"]
+        assert leant["leaning"] == dict(tilt_deg=45, toward=[0.0, 1.0])
+        came_in = [s for s in actual_steps if s["source"] == "grasp_approach"][-1]
+        ended = np.array(leant["observations"]["after"]["eef_state"])
+        assert np.linalg.norm(ended[:3] - came_in["requested"][:3]) < 0.012
+        assert np.cross(ended[3:6], ended[6:9]) == pytest.approx([0, 0.5**0.5, -(0.5**0.5)], abs=0.1)
+        turning = np.array([s["requested"][:3] for s in actual_steps if s["source"] == "grasp_lean"])
+        assert len(turning) and np.ptp(turning, axis=0).max() < 0.005
         # A push with nothing in its way runs its whole line, leaning, and comes back along it upright.
         (pushed,) = (o for o in outcomes if "pushed" in o)
         assert pushed["status"] == "done"

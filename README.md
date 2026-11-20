@@ -29,6 +29,9 @@ Alone, the model picks hand poses from camera images. With world-use it also get
 wrist-camera positions without depth, and grasp, place and push tools that report position error, contact
 and grip. [Setup, per-task results and limits](examples/libero/README.md)
 
+GPT-6.2 Astra, on the same cases and with a `grasp` that can lean the hand to take a mug by its handle,
+solves [43 of 50 with world-use vs 19 alone](examples/libero/README.md#gpt-62-astra-before-and-after-the-leaning-grasp).
+
 ## Demos
 
 Selected simulation runs. The kitchen demos were developed with scene knowledge and human feedback.

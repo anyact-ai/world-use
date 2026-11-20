@@ -5,7 +5,9 @@ published [LLM_LIBERO](https://github.com/IRVLUTD/LLM_LIBERO) simulator and agen
 an initial state, is run as a matched pair: once with the upstream agent's tools alone and once with World
 Use tools added. Over 50 pairs, 30 of them on held-out initial states, the model solved 15 episodes alone
 and 30 with world-use, and made 74% fewer model calls (815 against 3,095). The evaluation ran at commit
-`ee263a4`; [paid-results.jsonl](paid-results.jsonl) has every episode.
+`ee263a4`; [paid-results.jsonl](paid-results.jsonl) has every episode. GPT-6.2 Astra, run on the same
+cases after `grasp` learned to lean the hand, [solved 19 alone and 43 with
+world-use](#gpt-62-astra-before-and-after-the-leaning-grasp).
 
 ## Protocol
 
@@ -34,7 +36,8 @@ this arm acts as upstream's does and is told nothing else.
 - `select_target` and `observe_targets`: the model marks a region in either camera with a point or a
   box, and EdgeTAM follows it.
 - `locate`: moves the hand over a region selected in the wrist camera and returns its position and size.
-- `grasp`: open, centre over the region, descend, close and test-lift, in one call.
+- `grasp`: open, centre over the region, descend or come in leaning along the hand's own axis, close and
+  test-lift, in one call.
 - `place` and `release_placement`: rise, carry, approach from above or from a point the model names, and
   stop before release. The release needs a one-use checkpoint, void after any motion or reselection.
 - `push`: closed fingers along a straight line until its end or until contact stops them, for a drawer,
@@ -42,8 +45,8 @@ this arm acts as upstream's does and is told nothing else.
 
 The model chooses the regions, heights, expected finger opening and where to put things; the tools move
 the arm and report measurements. [`DOCS` in `world_tools.py`](world_tools.py) is everything the model is
-told about them. It names no task, object or coordinate, but it does give the wrist camera's mount and
-the hand's dimensions, which the raw arm is not told.
+told about them. It names no task, object or coordinate, but it does give the wrist camera's mount, the
+hand's dimensions and which way the wrist can lean, which the raw arm is not told.
 
 ## Results
 
@@ -95,6 +98,40 @@ request before each, cost an estimated $73.54. The campaign's spending guard, wh
 at a conservative rate, charged $101.19; its ledger is not committed. An evaluation of GPT-6.1 Sol with
 earlier tools is recorded at commit `02a3ba1`.
 
+### GPT-6.2 Astra, before and after the leaning grasp
+
+A second model, GPT-6.2 Astra, was run on the same 50 cases under the same protocol twice: with the tools
+of `ee263a4`, and with those of `d440a16`, where `grasp` can lean the hand (see
+[How the tools work](#how-the-tools-work)). Both reuse the held-out states of Sol's evaluation. The mug
+task was chosen for the change because no episode of it had succeeded, on those states or the development
+ones; the change itself was built from the development states and LIBERO's public demonstrations, and no
+held-out episode's record was read.
+
+| tools | cases | pairs | solved alone | solved with world-use | calls alone / WU | est. USD alone / WU | steps alone / WU |
+|---|---|---|---|---|---|---|---|
+| `ee263a4` | development | 20 | 5 | 15 | 524 / 307 | 21.16 / 10.86 | 6,711 / 11,704 |
+| `ee263a4` | held-out | 30 | 13 | 20 | 961 / 451 | 43.71 / 14.90 | 11,724 / 16,525 |
+| `ee263a4` | all | 50 | 18 | 35 | 1,485 / 758 | 64.87 / 25.77 | 18,435 / 28,229 |
+| `d440a16` | development | 20 | 10 | 16 | 710 / 295 | 37.93 / 10.37 | 8,765 / 11,951 |
+| `d440a16` | held-out | 30 | 9 | 27 | 951 / 409 | 43.05 / 13.03 | 11,587 / 16,639 |
+| `d440a16` | all | 50 | 19 | 43 | 1,661 / 704 | 80.98 / 23.40 | 20,352 / 28,590 |
+
+- With world-use the mug went into the microwave in 4 of 5 cases at `d440a16`, the three held-out ones
+  among them, and in none at `ee263a4`. Alone it went in in none, either time.
+- On the other nine tasks world-use solved 35 of 45 and then 39. That difference is within what one run
+  per case shows by chance: the arm alone, whose tools did not change, went from 18 to 19 with seven cases
+  gained and six lost.
+- At `d440a16` both arms solved 16 pairs, only world-use 27, only the model alone 3 and neither 4. The
+  median episode took 28 calls alone and 13.5 with world-use.
+
+[astra-results.jsonl](astra-results.jsonl) has the rows of both. Astra's runs used the tree with `MODEL`
+and `RATES` in `budget.py` set for that model: $8 a million input tokens, $0.40 cached, $10 for a cache
+write and $40 for output. In each evaluation three pairs were cut off when the machine restarted and were
+run again whole, and the rerun is the one counted. The file has no rows for the arms that were cut off,
+and at `ee263a4` it has two for the arm alone of two cases, which had finished before the restart. With
+the cut-off attempts the evaluations cost an estimated $95.61 and $107.10, and the spending guard charged
+$177.24 and $192.59.
+
 ## Limits
 
 - **One run per case.** Two world-use runs of the development cases, with tools that differed only in how
@@ -105,15 +142,38 @@ earlier tools is recorded at commit `02a3ba1`.
 - **The model judges the outcome.** No tool checks what a selected region is, how an object rests or
   whether the task is done; the model decides that from the images. Most world-use failures came from
   that judgement.
-- **Grasps come from above.** Only a push leans the hand, and a rim offset takes mugs, bowls and pots. A
-  mug held that way does not go under an oven's roof. In a scripted trial on a development state the hand
-  met the frame with the mug half in; with the hand leaning 50 degrees, given as raw rotation targets, the
-  mug went 3 cm further and fell back out when released.
-- **This tree is newer than `ee263a4`.** Since the evaluation, a push leans the hand only on a line more
-  level than steep and backs off along its line also after failing on the way; `place` checks
-  `object_target` before the hand moves; and `DOCS` gives the height error on flat things as 1.5 cm
-  instead of 3 and says a push backs off up to 10 cm. To rerun the evaluated version, fetch it with
-  `git fetch origin pull/23/head` and check out `ee263a4`.
+- **Sol's results are for tools that grasped only from above.** A mug held by its rim does not go under
+  an oven's roof, and LIBERO's 50 demonstrations of that task take it by its handle with the hand leaning
+  33 to 70 degrees. `grasp` now leans the hand with `tilt_deg`, and Sol has not been evaluated with it. In
+  a check of the world-use arm on the 20 development cases at `8762948`
+  ([development-check.jsonl](development-check.jsonl)) Sol solved 13, as at `ee263a4`, and neither
+  microwave case; Astra, given the six mug cases, solved five, both microwave cases among them. Two of
+  Sol's episodes were stopped at 41 calls by a spending cap set too low and one of Astra's by a dropped
+  connection; they were run again, and the second runs are the ones counted.
+- **A handle pinch does not resist turning.** In both of its microwave cases Sol took the mug by its
+  handle at the first attempt and lost it while feeling for the oven's opening. In a replay of one with
+  simulator truth, the mug had turned 35 degrees in the fingers when it met the open door and their opening
+  still read 18.3 mm, so nothing the tools measure showed it. `DOCS` tells the model to look at how the
+  object hangs.
+- **This tree is newer than both evaluated ones.** Since `d440a16` only wording has changed: `DOCS` says
+  that the 4 cm at which the fingers closed on a mug's body was an offset, how far round toward +x a lean
+  may point, and that the arm reached 60 degrees only toward -y; a refused lean says the same; and a
+  grasp reports `leaning` only once the hand has turned. Since `ee263a4`, Sol's evaluation:
+  - `grasp` takes `tilt_deg`, `toward` and offsets up to 20 cm, and `locate` says which way its image
+    lies in the world;
+  - an upright hand's fingers turn the way that keeps the wrist joint off its stop, so a `yaw_deg` of 90
+    now puts them along -x;
+  - a push leans the hand only on a line more level than steep, stays upright toward +x, and backs off
+    along its line also after failing on the way;
+  - a hand counts as held back after 0.45 s without progress instead of 0.2 s, since one that has just
+    been rotated sways and makes none for about a quarter of a second;
+  - a wrist search that cannot place its region says so instead of sending the arm out of bounds, and
+    `place` checks `object_target` before the hand moves;
+  - `DOCS` gives the height error on flat things as 1.5 cm instead of 3 and says a push backs off up to
+    10 cm.
+
+  To rerun an evaluated version, check out `ee263a4` after `git fetch origin pull/23/head`, or `d440a16`
+  after `git fetch origin pull/25/head`.
 
 ## How the tools work
 
@@ -135,6 +195,16 @@ on this simulated arm.
 - **Fingers across the narrow side.** For a region the model outlined with a box in the wrist camera,
   clearly longer than wide and at most 70 mm across, a grasp given no yaw and no offset turns the fingers
   across it.
+- **Leaning grasps.** With `tilt_deg` the hand turns where it is, its fingers first and then its lean,
+  goes to a point 10 cm back along its own axis and comes in along that axis. It leans toward a point the
+  model names or, given an offset from a wrist region, toward the region's centre, which is how it comes at
+  a handle from outside. The hand keeps the side its camera is on underneath, which fixes its finger axis.
+  A lean that points more than 10 degrees round from the y axis toward +x, away from the robot's base, is
+  refused: the wrist does not bend toward +x, and of the directions between only one was measured.
+- **The wrist's range.** Fingers along a direction and along its opposite close on the same thing, half a
+  turn of the wrist joint apart. For an upright grasp or push the tools take the one nearer the present
+  finger axis unless that is more than 110 degrees from the middle of the joint's range, and a turn of more
+  than 120 degrees is made in two moves, since one move across a half turn can run the joint into its stop.
 - **Front-camera check.** A region selected in the front camera is compared before a grasp's approach
   and after its test lift, and across a placement whose hand travel is vertical to within 2 cm. If it
   stayed where it was while the hand moved, the tool returns a `surprise` and `place` withholds its
@@ -142,7 +212,7 @@ on this simulated arm.
 - **Short results.** The model gets the measurements that decide its next step; the full record of every
   stage goes to disk.
 
-Two files hold the scripted simulator trials behind numbers in the code and in `DOCS`. They are scored
+Three files hold the scripted simulator trials behind numbers in the code and in `DOCS`. They are scored
 with simulator ground truth, which no policy sees.
 
 - [`centring-evidence.jsonl`](centring-evidence.jsonl): 20 grasps of wrist selections on development
@@ -150,6 +220,18 @@ with simulator ground truth, which no policy sees.
   of their true centres; z read 0.6 to 5.8 cm low on cans and 0.3 to 1.4 cm low on boxes; 18 were lifted.
 - [`region-evidence.jsonl`](region-evidence.jsonl): the lifts behind the thresholds that tell a region
   left behind from one that rose with the hand.
+- [`lean-evidence.jsonl`](lean-evidence.jsonl): the trials behind the leaning grasp, on development
+  states.
+  - How the 50 demonstrations of the mug-into-microwave task hold the mug.
+  - The wrist joint's angle in 15 upright and 37 leaning poses, behind the finger directions the tools
+    choose and the refusal to lean toward +x.
+  - 12 grasps of that mug's handle with `tilt_deg` 45: the 11 with offsets of 5 to 8 cm and grip heights of
+    5.5 to 8.5 cm lifted it, and the one 4 cm from the region's centre closed on its body.
+  - 6 grasps of two other mugs and a moka pot by their handles, in both directions the wrist leans
+    sideways, all lifted, and 4 upright rim grasps under the new finger rule.
+  - The mug put in the oven upright and the door pushed shut on both states, in 609 and 603 of the 900
+    steps, where the benchmark's check passed.
+  - The replay in which a mug turned in a handle pinch.
 
 ## Rebuild the runtime
 
@@ -234,8 +316,9 @@ that failed or was made for other runner sources, another world-use tree or anot
   lift with the hand reported fully closed; a reversed move reports the offset of its last applied
   command; a selected region is flagged when another object is lifted and passes when its own object is;
   from hovers 5 cm off, `locate` and a wrist-selected `grasp` each place a can within 1.5 cm of its
-  fixture position, and that grasp holds it; a push through free air runs its whole line with the hand
-  leaning and comes back upright.
+  fixture position, and that grasp holds it; a grasp with `tilt_deg` turns the hand where it is and ends
+  at its point leaning 45 degrees the way it was told; a push through free air runs its whole line with
+  the hand leaning and comes back upright.
 
 The pixel and pose fixtures of the scripted policy exist only in `validate.py`.
 
