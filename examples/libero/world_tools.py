@@ -82,7 +82,9 @@ from 10 cm back to the approach x, y, z or to contact short of it, which takes a
 more than an upright grasp. Its body stays behind and above the grip, on the side it came from,
 and it keeps the lean afterwards: what it holds is ahead of the fingertips and goes in under a
 roof first, where a place with via takes it. The wrist leans toward +y, -y or -x, where the
-robot's base is, and not toward +x. yaw_deg does not go with tilt_deg. The result's leaning
+robot's base is, and no further round toward +x than 10 degrees from +y or -y. In recorded
+trials it reached 45 degrees each of those ways and 60 only toward -y. yaw_deg does not go with
+tilt_deg. The result's leaning
 gives tilt_deg and toward, the level unit direction the fingertips point.
 To take an object by its handle, lean the hand. Locate the whole object in the wrist camera,
 then give grasp an offset from the region's centre to the middle of the handle's top, outside
@@ -92,8 +94,8 @@ pinches it across its thickness and carries the object upright ahead of it. That
 not resist turning: if what it holds meets anything on the way, it turns in the fingers with
 no change in their opening, so look at how it hangs before going on. Use tilt_deg 45
 and an approach z at the handle's top, 3-4 cm below a mug's rim: in recorded trials a mug's
-handle held for offsets of 5 to 8 cm and grip heights 5.5 to 8.5 cm above the table, and at 4
-cm the fingers closed on its body. Without an offset, name toward yourself.
+handle held for offsets of 5 to 8 cm and grip heights 5.5 to 8.5 cm above the table, and with
+an offset of 4 cm the fingers closed on its body. Without an offset, name toward yourself.
 A leaning hand's wrist camera looks along the lean, not down; locate and a wrist-selected grasp
 stand the hand upright again on their first move.
 place rises straight up to travel_z when the hand is below it, moves level to above your release
@@ -117,8 +119,9 @@ push closes the fingers and moves the fingertips in a straight line from start t
 drawer or a door or to slide something along a surface. For a line that runs more level than
 up or down the hand turns its finger axis across it and leans 30 degrees back from it, so the
 fingertips lead and the hand body stays behind them, clear of what is above the thing pushed;
-tilt_deg sets another lean, from 0 for an upright hand to 60. A push toward +x stays upright,
-since the wrist does not lean that way. It goes to start through free
+tilt_deg sets another lean, from 0 for an upright hand to 60. A push whose line points further
+round toward +x than 10 degrees from +y or -y stays upright, since the wrist does not lean that
+way. It goes to start through free
 space, rising to travel_z first when you give one, so put start a few centimetres clear of what
 you push, on the side you push from, with the fingertips at the height of its middle. The line
 ends at end or where contact stops the hand: pushed says which, with travelled_mm and short_mm.
@@ -165,15 +168,17 @@ CLOSE_STEPS = 120
 LEAN_DEG = 30  # a pushing hand leans this far back, which puts its body behind its fingertips
 MAX_LEAN_DEG = 60
 STANDOFF_M = 0.1  # a leaning hand comes in along its own axis from this far back
-UPRIGHT = 0.995  # the approach axis is this close to straight down, about 6 degrees, in an upright hand
+UPRIGHT_COS = 0.995  # a hand whose approach axis is within about 6 degrees of straight down is upright
 # Fingers along a direction and along its opposite close on the same thing, half a turn of the wrist
 # joint apart, and that joint turns 166 degrees each way. For an upright hand it was measured near the
 # middle of its range with the finger axis 20 to 70 degrees from world y toward -x, and 8 degrees from its
 # stop with the axis along +x at the table's left side.
-WRIST_MIDDLE = (-math.sin(math.radians(45)), math.cos(math.radians(45)), 0.0)
-WRIST_DEG = 110  # an upright hand's finger axis stays within this turn of WRIST_MIDDLE
+FINGERS_MIDDLE = (-math.sin(math.radians(45)), math.cos(math.radians(45)), 0.0)
+FINGERS_DEG = 110  # fingers() keeps the finger axis it chooses within this turn of FINGERS_MIDDLE
 # The wrist cannot bend the fingertips away from the robot's base, toward +x. Leaning 25 degrees that way
-# over the middle of the table, the hand rested 14 mm off its pose; 45 degrees was out of reach.
+# over the middle of the table, the hand rested 14 mm off its pose; 45 degrees was out of reach. Between
+# +x and the y axis one lean was measured, halfway round toward +y, which the arm reached; until more
+# are, a lean stays within 10 degrees of the y axis on that side.
 OUTWARD = 0.17  # the x part of a level unit direction beyond which a lean points away from the base
 SWING_DEG = 120  # a finger axis turning further than this turns halfway first
 BACK_OFF_M = 0.1  # a push leaves what it pushed by this much, room for the leaning hand to stand up again
@@ -186,15 +191,15 @@ ROTATION = ("r00", "r10", "r20", "r01", "r11", "r21")  # the finger axis, tool x
 
 def fingers(eef_state, along):
     """An upright hand's finger axis along a level direction or along its opposite: the one nearer its
-    present finger axis, or nearer WRIST_MIDDLE when both are a quarter turn away, and in either case the
-    other one if that is more than WRIST_DEG from WRIST_MIDDLE. Chosen by nearness alone, turn after turn
+    present finger axis, or nearer FINGERS_MIDDLE when both are a quarter turn away, and in either case the
+    other one if that is more than FINGERS_DEG from FINGERS_MIDDLE. Chosen by nearness alone, turn after turn
     adds up to the wrist joint's stop; chosen with no regard to the present axis, the hand turns half round
     where it need not move."""
     axis = np.array([along[0], along[1], 0.0]) / math.hypot(along[0], along[1])
     near = float(axis @ np.asarray(eef_state[3:6], dtype=float))
-    if (axis @ WRIST_MIDDLE if abs(near) < 0.1 else near) < 0:
+    if (axis @ FINGERS_MIDDLE if abs(near) < 0.1 else near) < 0:
         axis = -axis
-    return axis if axis @ WRIST_MIDDLE >= math.cos(math.radians(WRIST_DEG)) else -axis
+    return axis if axis @ FINGERS_MIDDLE >= math.cos(math.radians(FINGERS_DEG)) else -axis
 
 
 def upright(axis):
@@ -209,22 +214,23 @@ def turned(eef_state, yaw_deg):
     return upright(fingers(eef_state, [math.sin(turn), math.cos(turn)]))
 
 
-def leaning(eef_state, toward, tilt_deg):
+def leaning(eef_state, direction, tilt_deg):
     """Pose targets for a leaning hand: its approach axis, tool z, turned tilt_deg from straight down toward
     a level direction, and its finger axis level and across that direction. With no direction the hand is
     set upright on the finger axis it has.
 
-    A leaning hand keeps tool y, the side its camera is on, underneath. That way round the wrist joint
-    stayed within 1.9 rad of the middle of its range for every lean the arm reached. The other way round
-    it ran into its stop leaning toward -y, and at the height a grasp turns at the hand rested 13 mm off
-    its pose, outside ARM_TOLERANCE. The caller keeps the lean from pointing outward.
+    A leaning hand keeps tool y, the side its camera is on, underneath, which fixes its finger axis: it
+    is not one fingers() chooses. That way round the wrist joint stayed within 1.9 rad of the middle of
+    its range for every lean the arm reached. The other way round it ran into its stop leaning toward -y,
+    and leaning toward +y at the height a grasp turns at it rested 13 mm off its pose, outside
+    ARM_TOLERANCE. The caller keeps the lean from pointing outward.
     """
     a, b = np.asarray(eef_state[3:6], dtype=float), np.asarray(eef_state[6:9], dtype=float)
     down = np.array([0.0, 0.0, -1.0])
-    if toward is None:
+    if direction is None:
         rotation = aim(np.column_stack([a, b, np.cross(a, b)]), [0, 0, 1], [1, 0, 0], down)
     else:
-        level, tilt = np.array([toward[0], toward[1], 0.0]) / math.hypot(toward[0], toward[1]), math.radians(tilt_deg)
+        level, tilt = np.array([*direction[:2], 0.0]) / math.hypot(*direction[:2]), math.radians(tilt_deg)
         across = np.array([level[1], -level[0], 0.0])
         if not tilt:
             across = fingers(eef_state, across)
@@ -563,7 +569,7 @@ class WorldTools:
                     hint="hover 15-25 cm above the object with all of it in the wrist image and select it "
                     "there again; later stages did not run",
                 )
-            if approach_axis(state)[2] > -UPRIGHT:
+            if approach_axis(state)[2] > -UPRIGHT_COS:
                 # The last look is taken from over the region, straight down: a hand that a grasp or a
                 # carry left leaning stands up on its way there.
                 targets.update(leaning(state, None, 0))
@@ -624,9 +630,9 @@ class WorldTools:
 
     def _execute(self, command):
         """Run one of the tools' own commands. A finger axis that has to swing more than SWING_DEG first
-        turns halfway, upright, in a move of its own, round the side WRIST_MIDDLE is on: rot6d columns
-        interpolated across a half turn pass through zero, and the arm then turns either way round, into a
-        joint's stop as often as not."""
+        turns halfway, upright, where the hand is and before any leg of the command, round the side
+        FINGERS_MIDDLE is on: rot6d columns interpolated across a half turn pass through zero, and the arm
+        then turns either way round, into a joint's stop as often as not."""
         targets = command.get("targets") or {}
         if all(k in targets for k in ROTATION[:3]):
             now = np.asarray(self.driver.observation.state["eef_state"][3:6], dtype=float)
@@ -635,8 +641,8 @@ class WorldTools:
                 between = np.array([now[0] + goal[0], now[1] + goal[1], 0.0])
                 if np.linalg.norm(between) < 0.2:  # opposite axes: a quarter turn from both
                     between = np.array([-goal[1], goal[0], 0.0])
-                between = between / np.linalg.norm(between) * (1 if between @ WRIST_MIDDLE >= 0 else -1)
-                halfway = self.driver.execute(self._move(upright(between), command.get("stage", "turn")))
+                between = between / np.linalg.norm(between) * (1 if between @ FINGERS_MIDDLE >= 0 else -1)
+                halfway = self.driver.execute(self._move(upright(between), command["stage"]))
                 if not halfway.ok:
                     return halfway
         return self.driver.execute(command)
@@ -678,25 +684,23 @@ class WorldTools:
         point = command["targets"]
         # With no point to lean toward, the fingertips point from the grasp point back to the region's centre.
         level = [toward[k] - point[k] for k in "xy"] if toward else [-offset[0], -offset[1]]
-        if math.hypot(*level) < 0.01:
+        length = math.hypot(*level)
+        if length < 0.01:
             return Outcome(
                 "refused",
                 command["kind"],
-                "the point to lean toward is less than 1 cm from the grasp point, which gives the lean no direction",
+                "the lean has no direction: toward, or the region's centre, is less than 1 cm from the grasp point",
                 hint="name a toward further along the way the fingertips should point; later stages did not run",
             )
         if outward(level):
             return Outcome(
                 "refused",
                 command["kind"],
-                "the wrist cannot lean the fingertips away from the robot's base, toward +x",
+                "the wrist cannot lean the fingertips away from the robot's base: "
+                "this lean points more than 10 degrees round from +y or -y toward +x",
                 hint="lean toward +y, -y or -x, or grasp upright; later stages did not run",
             )
         turn = leaning(self.driver.observation.state["eef_state"], level, tilt)
-        axis = approach_axis([0.0, 0.0, 0.0, *(turn[k] for k in ROTATION)])
-        found.update(
-            leaning=dict(tilt_deg=tilt, toward=[round(float(v), 2) for v in axis[:2] / np.linalg.norm(axis[:2])])
-        )
         # The hand turns where it is, its fingers first and then its lean. Turned in one move, or while it
         # travels, the raised arm swings several centimetres, which reads as a hand held back.
         for part in (upright([turn["r00"], turn["r10"]]), turn):
@@ -704,7 +708,9 @@ class WorldTools:
             there = self._execute(dict(self._move(dict(part, gripper=0), "grasp_lean", expected=OPEN_MM), rest=False))
             if not there.ok:
                 return there
-        back = np.array([point[k] for k in "xyz"]) - STANDOFF_M * axis
+        found.update(leaning=dict(tilt_deg=tilt, toward=[round(float(v) / length, 2) for v in level]))
+        pose = [*(point[k] for k in "xyz"), *(turn[k] for k in ROTATION)]
+        back = np.array(pose[:3]) - STANDOFF_M * approach_axis(pose)
         return dict(command, targets=dict(point, **turn), via=dict(zip("xyz", map(float, back), strict=True)))
 
     def _push(self, args):
@@ -715,8 +721,8 @@ class WorldTools:
         if length < 0.01:
             raise ValueError("the start and end of a push are at least 1 cm apart")
         tilt = args.get("tilt_deg", LEAN_DEG)
-        if type(tilt) not in (float, int) or not 0 <= tilt <= 60:
-            raise ValueError("tilt_deg is between 0 and 60")
+        if type(tilt) not in (float, int) or not 0 <= tilt <= MAX_LEAN_DEG:
+            raise ValueError(f"tilt_deg is between 0 and {MAX_LEAN_DEG}")
         # Only a mostly level line turns the hand across it, and leans it unless the line points where
         # the wrist cannot lean. A steep one has no direction to lean back from, and stands a hand
         # upright that an earlier grasp left leaning.
@@ -726,7 +732,7 @@ class WorldTools:
             tilt = 0 if outward(line) else tilt
             turn = leaning(state, line, tilt)
         else:
-            turn = {} if approach_axis(state)[2] <= -UPRIGHT else leaning(state, None, 0)
+            turn = {} if approach_axis(state)[2] <= -UPRIGHT_COS else leaning(state, None, 0)
         stages = [
             self._move({"gripper": 1}, "push_close"),
             dict(self._move({**end, **turn}, "push"), travel_z=self._travel(args), via=start),

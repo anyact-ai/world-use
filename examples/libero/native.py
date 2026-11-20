@@ -38,8 +38,8 @@ STABLE_S = 2 / HZ  # three consecutive samples
 # move can be drifting away from its command for a few steps, which settling waits out. A descent
 # that may end on contact starts from a hand at rest above the pose, so half that lead is enough.
 LEAD_M, CONTACT_LEAD_M, PROGRESS_M = 0.03, 0.015, 0.001
-# A swinging hand also makes no progress while it turns round, for about five steps after the hand has
-# been turned. A stall is one that lasts longer.
+# A swinging hand also makes no progress while its swing reverses, which takes about five steps when the
+# hand has just been rotated. A stall is one that lasts longer.
 STALL_STEPS = 10
 RELIEF_STEPS = 12
 

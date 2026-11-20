@@ -327,7 +327,8 @@ def main():
         ended = np.array(leant["observations"]["after"]["eef_state"])
         assert np.linalg.norm(ended[:3] - came_in["requested"][:3]) < 0.012
         assert np.cross(ended[3:6], ended[6:9]) == pytest.approx([0, 0.5**0.5, -(0.5**0.5)], abs=0.1)
-        assert any(s["source"] == "grasp_lean" for s in actual_steps)
+        turning = np.array([s["requested"][:3] for s in actual_steps if s["source"] == "grasp_lean"])
+        assert len(turning) and np.ptp(turning, axis=0).max() < 0.005
         # A push with nothing in its way runs its whole line, leaning, and comes back along it upright.
         (pushed,) = (o for o in outcomes if "pushed" in o)
         assert pushed["status"] == "done"
