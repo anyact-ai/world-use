@@ -115,7 +115,9 @@ earlier tools is recorded at commit `02a3ba1`.
 - **The leaning grasp has only a development check.** At `8762948`, with the world-use arm alone and one
   run per case ([development-check.jsonl](development-check.jsonl)), GPT-6.2 Sol took the mug by its handle
   at the first attempt on both development states of the microwave task, lost it from that pinch while
-  feeling for the oven's opening, and solved neither. Over the 20 development cases it solved 13, as at
+  feeling for the oven's opening, and solved neither. Replayed with simulator truth, the mug had turned 35
+  degrees in the fingers when it met the open door, and their opening read 18.3 mm as it had after the
+  grasp, which `DOCS` now warns of. Over the 20 development cases it solved 13, as at
   `ee263a4`: two gained and two lost. Two of its episodes were stopped at 41 calls by a spending cap set
   too low and run again, and the second runs are the ones counted. GPT-6.2 Astra, which has no evaluation
   published here, solved both microwave cases, in 11 and 12 calls, and 5 of the 6 mug cases it was given.

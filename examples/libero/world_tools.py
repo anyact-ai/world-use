@@ -88,7 +88,9 @@ To take an object by its handle, lean the hand. Locate the whole object in the w
 then give grasp an offset from the region's centre to the middle of the handle's top, outside
 the body's wall: about half the region's along_mm toward the handle. With an offset and no
 toward the hand leans toward the region's centre, so it comes at the handle from outside,
-pinches it across its thickness and carries the object upright ahead of it. Use tilt_deg 45
+pinches it across its thickness and carries the object upright ahead of it. That pinch does
+not resist turning: if what it holds meets anything on the way, it turns in the fingers with
+no change in their opening, so look at how it hangs before going on. Use tilt_deg 45
 and an approach z at the handle's top, 3-4 cm below a mug's rim: in recorded trials a mug's
 handle held for offsets of 5 to 8 cm and grip heights 5.5 to 8.5 cm above the table, and at 4
 cm the fingers closed on its body. Without an offset, name toward yourself.
