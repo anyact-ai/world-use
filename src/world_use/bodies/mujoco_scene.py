@@ -97,7 +97,7 @@ def _rebot_fingers(spec, urdf):
                           friction=[1.0, 0.005, 0.0001], condim=4)
 
 
-def build(manifest, world, timestep):
+def build(manifest, world, timestep, scenery=None):
     """The scene and the gripper joints SimBody drives: two opposed prismatic fingers, one jaw joint, or none.
 
     Joint friction is what holds the robot while its torque is off: gearbox friction, or brakes on an arm without a
@@ -158,6 +158,8 @@ def build(manifest, world, timestep):
                             rgba=[0.19, 0.23, 0.28, 1], group=2)
     spec.worldbody.add_light(pos=[0.5, -0.5, 1.8], dir=[-0.2, 0.2, -1], diffuse=[0.8, 0.8, 0.8])
     spec.worldbody.add_light(pos=[-0.5, 0.8, 1.2], dir=[0.4, -0.4, -1], diffuse=[0.4, 0.4, 0.4], castshadow=False)
+    if scenery is not None:
+        scenery(spec)
     model = spec.compile()
     if fingers:
         data = mj.MjData(model)
