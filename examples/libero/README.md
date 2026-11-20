@@ -96,6 +96,39 @@ request before each, cost an estimated $73.54. The campaign's spending guard, wh
 at a conservative rate, charged $101.19; its ledger is not committed. An evaluation of GPT-6.1 Sol with
 earlier tools is recorded at commit `02a3ba1`.
 
+### GPT-6.2 Astra, before and after the leaning grasp
+
+A second model, GPT-6.2 Astra, was run on the same 50 cases under the same protocol twice: with the tools
+of `ee263a4`, and with those of `d440a16`, where `grasp` can lean the hand (see [Limits](#limits) and
+[How the tools work](#how-the-tools-work)).
+
+| tools | cases | pairs | solved alone | solved with world-use | calls alone / WU | est. USD alone / WU | steps alone / WU |
+|---|---|---|---|---|---|---|---|
+| `ee263a4` | development | 20 | 5 | 15 | 524 / 307 | 21.16 / 10.86 | 6,711 / 11,704 |
+| `ee263a4` | held-out | 30 | 13 | 20 | 961 / 451 | 43.71 / 14.90 | 11,724 / 16,525 |
+| `ee263a4` | all | 50 | 18 | 35 | 1,485 / 758 | 64.87 / 25.77 | 18,435 / 28,229 |
+| `d440a16` | development | 20 | 10 | 16 | 710 / 295 | 37.93 / 10.37 | 8,765 / 11,951 |
+| `d440a16` | held-out | 30 | 9 | 27 | 951 / 409 | 43.05 / 13.03 | 11,587 / 16,639 |
+| `d440a16` | all | 50 | 19 | 43 | 1,661 / 704 | 80.98 / 23.40 | 20,352 / 28,590 |
+
+- With world-use the mug went into the microwave in 4 of 5 cases at `d440a16`, the three held-out ones
+  among them, and in none at `ee263a4`. Alone it went in in none, either time.
+- On the other nine tasks world-use solved 35 of 45 and then 39. That difference is within what one run
+  per case shows by chance: the arm alone, whose tools did not change, went from 18 to 19 with seven cases
+  gained and six lost.
+- At `d440a16` both arms solved 16 pairs, only world-use 27, only the model alone 3 and neither 4. The
+  median episode took 28 calls alone and 13.5 with world-use.
+- The held-out states are the same in both evaluations, so the second reuses them. Between the two the
+  tools were changed from the development states and LIBERO's public demonstrations only, and no held-out
+  episode was read.
+
+[astra-results.jsonl](astra-results.jsonl) has the rows of both. Astra's runs used the tree with `MODEL`
+and `RATES` in `budget.py` set for that model: $8 a million input tokens, $0.40 cached, $10 for a cache
+write and $40 for output. In each evaluation three pairs were killed when the machine restarted and were
+run again; the second runs are the ones counted, and where the file has two rows for one arm of a case, as
+it does twice at `ee263a4`, the later is. The evaluations cost an estimated $95.61 and $107.10 with those
+attempts, and the spending guard charged $177.24 and $192.59.
+
 ## Limits
 
 - **One run per case.** Two world-use runs of the development cases, with tools that differed only in how
@@ -112,16 +145,18 @@ earlier tools is recorded at commit `02a3ba1`.
   `grasp` now leans the hand with `tilt_deg`. In scripted trials on the two development states, with
   simulator truth standing in for the model's estimates, the tools then put the mug in the oven upright and
   pushed the door shut, and the benchmark's check passed.
-- **The leaning grasp has only a development check.** At `8762948`, with the world-use arm alone and one
-  run per case ([development-check.jsonl](development-check.jsonl)), GPT-6.2 Sol took the mug by its handle
+- **The leaning grasp is evaluated with one model.** GPT-6.2 Astra's evaluation at `d440a16` is under
+  [Results](#gpt-62-astra-before-and-after-the-leaning-grasp). GPT-6.2 Sol, whose results above are for
+  `ee263a4`, has only a development check. At `8762948`, with the world-use arm alone and one
+  run per case ([development-check.jsonl](development-check.jsonl)), it took the mug by its handle
   at the first attempt on both development states of the microwave task, lost it from that pinch while
   feeling for the oven's opening, and solved neither. Replayed with simulator truth, the mug had turned 35
   degrees in the fingers when it met the open door, and their opening read 18.3 mm as it had after the
   grasp, which `DOCS` now warns of. Over the 20 development cases it solved 13, as at
   `ee263a4`: two gained and two lost. Two of its episodes were stopped at 41 calls by a spending cap set
-  too low and run again, and the second runs are the ones counted. GPT-6.2 Astra, which has no evaluation
-  published here, solved both microwave cases, in 11 and 12 calls, and 5 of the 6 mug cases it was given.
-  The held-out states have not been run with these tools.
+  too low and run again, and the second runs are the ones counted. In the same check Astra solved both
+  microwave cases, in 11 and 12 calls, and 5 of the 6 mug cases it was given. Sol has not been run on the
+  held-out states with these tools.
 - **This tree is newer than `ee263a4`.** Since the evaluation, `grasp` takes `tilt_deg` and `toward`, and
   offsets up to 20 cm; `locate` says which way its image lies in the world; an upright hand's fingers are
   turned the way that keeps the wrist joint off its stop, so a `yaw_deg` of 90 now puts them along -x; a
