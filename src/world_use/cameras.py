@@ -49,6 +49,7 @@ class CameraConfig(Request):
     up: Vector | None = None
     facing: Vector | None = None
     frame: Name = "work"
+    mount: Literal["tool"] | None = None
     fov_deg: Annotated[Number, Field(gt=0, lt=180)] | None = None
     size: Annotated[list[Annotated[int, Field(gt=0)]], Field(min_length=2, max_length=2)] | None = None
     yaw_deg: Number = 0.0
@@ -72,6 +73,12 @@ class CameraConfig(Request):
                 raise ValueError("equirect look_at needs eye and facing; otherwise use yaw_deg and pitch_deg")
             if self.look_at is not None and self.model_fields_set & {"yaw_deg", "pitch_deg"}:
                 raise ValueError("aim with look_at or yaw_deg/pitch_deg, not both")
+        elif self.mount is not None:
+            if sources:
+                raise ValueError("only a simulated camera can be mounted: a real frame's time cannot be "
+                                 "paired with the tool pose")
+            if self.eye is None or self.look_at is None or self.up is None or "frame" in self.model_fields_set:
+                raise ValueError("a mounted camera gives eye, look_at and up in the tool frame, and no frame")
         else:
             if self.facing is not None or self.model_fields_set & {"yaw_deg", "pitch_deg"}:
                 raise ValueError("facing, yaw_deg and pitch_deg require projection = equirect")
@@ -244,9 +251,14 @@ class View:
 
 
 def view_from_config(cfg: dict, world, size=(800, 600)) -> View | None:
-    """A calibration from a workcell camera entry: eye/look_at/fov_deg in the work frame, if given."""
+    """A calibration from a workcell camera entry: eye/look_at/fov_deg in the work frame, if given, or for a camera
+    mounted on the tool, in the tool frame."""
     if "eye" not in cfg or "look_at" not in cfg:
         return None
+    if cfg.get("mount") == "tool":
+        return View.look_at(np.asarray(cfg["eye"], float), np.asarray(cfg["look_at"], float),
+                            float(cfg.get("fov_deg", 55.0)), tuple(cfg.get("size", size)),
+                            np.asarray(cfg["up"], float))
     frame = cfg.get("frame", "work")
     up = world.frame(frame).T[:3, :3] @ np.asarray(cfg.get("up", [0.0, 0.0, 1.0]), float)
     return View.look_at(world.to_base(frame, cfg["eye"]), world.to_base(frame, cfg["look_at"]),
@@ -372,22 +384,27 @@ class FileCamera(Camera):
 
 class SimCamera(Camera):
     """Renders the simulator's scene (its truth) through `lens`. Its `view` starts as the lens, and is what the
-    kernel believes: a calibration replaces the view, never the lens."""
+    kernel believes: a calibration replaces the view, never the lens.
 
-    def __init__(self, name: str, lens: View, body):
+    A mounted camera's lens and view are in the tool frame. Each frame is rendered from, and carries, the tool
+    pose of the physics state it shows, with its view in the base frame for that pose."""
+
+    def __init__(self, name: str, lens: View, body, *, mounted: bool = False):
         super().__init__(name, lens)
-        self.lens, self.body = lens, body
+        self.lens, self.body, self.mounted = lens, body, mounted
 
     def snap(self, k) -> Image.Image:
-        return self.body.render(self.lens)
+        return self.body.render(self.lens, mounted=self.mounted)
 
     def capture(self, k, *, depth=False) -> Frame:
         view, revision = self._calibration
-        if not depth:
+        if not depth and not self.mounted:
             return super().capture(k)
-        image, distance, tool, timestamp = self.body.capture(self.lens)
-        return Frame(image, self.name, timestamp=timestamp, view=view, depth=distance, calibration=revision,
-                     tool=tool)
+        image, distance, tool, timestamp = self.body.capture(self.lens, mounted=self.mounted)
+        if self.mounted and view is not None:
+            view = view.on(tool)
+        return Frame(image, self.name, timestamp=timestamp, view=view, depth=distance if depth else None,
+                     calibration=revision, tool=tool)
 
 
 def equirect_dirs(u, v) -> np.ndarray:

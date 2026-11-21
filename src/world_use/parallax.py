@@ -88,6 +88,14 @@ def footprint(view: View, region: dict, depth_m: float) -> dict | None:
     return dict(across_m=width, along_m=float(np.linalg.norm(along)), across=(across / width).tolist())
 
 
+def image_directions(view: View, pixel, depth_m: float) -> tuple[np.ndarray, np.ndarray]:
+    """The level base-frame unit directions that right and down in this view's image point along, at a pixel
+    seen at depth_m: an offset toward something seen there is its distance times these."""
+    pixel = np.asarray(pixel, float)
+    here, right, down = view.unproject([pixel, pixel + [1, 0], pixel + [0, 1]], [depth_m] * 3)[:, :2]
+    return (right - here) / np.linalg.norm(right - here), (down - here) / np.linalg.norm(down - here)
+
+
 def locate(move: Callable[[np.ndarray], Outcome], look: Callable[[], Look], *, arrive_m: float,
            assumed_z: float | None = None, known=None) -> Outcome:
     """Move the hand level until it is over a region its camera tracks, and report where the region is.

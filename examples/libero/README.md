@@ -177,9 +177,13 @@ $177.24 and $192.59.
 
 ## How the tools work
 
-`native.py` drives this embodiment's absolute-pose commands and `world_tools.py` holds the tools. The
-wrist mount, the hand's dimensions, the arrival tolerance and the motion thresholds in them were measured
-on this simulated arm.
+The tools are the library's [hand tools](../../docs/hand-tools.md). `world_tools.py` gives them this arm: its
+schemas and `DOCS`, its wrist camera and an executor over `native.py`, which drives the embodiment's
+absolute-pose commands. The wrist mount, the hand's dimensions, the arrival tolerance and the motion
+thresholds in them were measured on this simulated arm, and so were its finger and lean rules below. LIBERO
+reports no joint positions, so they could not be computed instead: on the 50 recorded wrist poses, inverse
+kinematics on robosuite's Panda, seeded with the controller's resting posture, found 16 of the 19 poses the
+arm failed to reach reachable, since the controller fails on its way to a pose rather than at it.
 
 - **Positions from the wrist camera.** `locate` and a grasp of a wrist selection move the hand level and
   place the region in world coordinates from looks at least 3 cm apart, each showing the whole region,
@@ -232,6 +236,8 @@ with simulator ground truth, which no policy sees.
   - The mug put in the oven upright and the door pushed shut on both states, in 609 and 603 of the 900
     steps, where the benchmark's check passed.
   - The replay in which a mug turned in a handle pinch.
+  - Inverse kinematics on a Panda chain for 50 of those wrist poses, which predicted the wrist angle within
+    0.15 rad on 25 of the 31 that arrived and found 16 of the 19 that did not arrive reachable.
 
 ## Rebuild the runtime
 

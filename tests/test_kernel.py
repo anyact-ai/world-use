@@ -9,7 +9,7 @@ import pytest
 from conftest import Q_REST, make_kernel, supported_object, table_below
 
 from world_use import Kernel, RealClock, Refused, VirtualClock, World, bodies, check, views
-from world_use.behaviors import Behavior, ContactSense
+from world_use.behaviors import ROOM_RAD, Behavior, ContactSense
 from world_use.bodies.sim import SimBody
 from world_use.body import JointState, Rest
 from world_use.config import load_robot
@@ -1070,6 +1070,37 @@ def test_move_to_turns_in_place_and_says_when_it_cannot(k):
     assert out.status == "refused" and "cannot turn to point straight down here" in out.message, out.message
     for bad in ({"point": "sideways"}, {"point": "down", "jaws": "up"}):
         assert k.run({"do": "move_to", **bad}).status == "refused"
+
+
+@pytest.mark.parametrize("roll", [2.2, 3.0])
+def test_move_to_turns_the_jaws_the_other_way_round_when_the_nearer_way_meets_a_stop(roll):
+    """Jaws opening left and right sit half a wrist turn apart; the nearer is past the roll joint's stop."""
+    k = make_kernel(q=np.r_[Q_REST[:5], roll])
+    assert k.run({"do": "line", "forward": 0.08, "up": 0.14}).ok
+    out = k.run({"do": "move_to", "jaws": "left"})
+    assert out.ok and "the other way round" in out.message and _pointing(k)[1] == "left and right"
+    assert abs(k.state.q[5]) < 0.1
+
+
+def test_move_to_keeps_the_nearer_jaws_while_they_leave_the_wrist_room():
+    k = make_kernel(q=np.r_[Q_REST[:5], 2.2])
+    assert k.run({"do": "line", "forward": 0.08, "up": 0.14}).ok
+    out = k.run({"do": "move_to", "jaws": [0, np.cos(0.4), np.sin(0.4)]})
+    assert out.ok and "other way" not in out.message and k.state.q[5] == pytest.approx(2.74, abs=0.05)
+
+
+@pytest.mark.parametrize("move", [[0.03, 0.0, 0.0], None])
+def test_move_to_keeps_the_jaws_it_has_when_turning_them_round_frees_no_stop(move):
+    """The base ends near its stop either way round, so the wrist keeps its turn, with room to spare."""
+    k = make_kernel(q=np.r_[2.65, Q_REST[1:5], 1.9])
+    assert k.run({"do": "line", "forward": 0.08, "up": 0.14}).ok and k.run({"do": "line", "up": 0.02}).ok
+    T = k.chain.fk(k.state.q)
+    step = {"do": "move_to", "frame": "base", "jaws": (T[:3, :3] @ k.manifest.gripper.opens_along).tolist()}
+    if move is not None:
+        step["to"] = (T[:3, 3] + move).tolist()
+    out = k.run(step)
+    assert out.ok and "other way" not in out.message and k.state.q[5] == pytest.approx(1.9, abs=0.05)
+    assert k.envelope.stop_room(k.state.q, k.state.q)[0] < ROOM_RAD
 
 
 def test_a_check_says_where_the_gripper_ends_pointing(idle):

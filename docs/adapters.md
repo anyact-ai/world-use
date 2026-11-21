@@ -322,7 +322,8 @@ afterwards. The [LIBERO runner](../examples/libero/native.py) uses these checks 
 
 ## Grasp and place procedures
 
-`world_use.procedures` runs a grasp or a placement as a fixed series of commands, observing between them. It
+`world_use.procedures` runs a grasp or a placement as a fixed series of commands, observing between them. The
+[hand tools](hand-tools.md) build their grasp and place on it. It
 runs in your procedure's process and sends nothing to the robot itself: each command is a dictionary passed
 unchanged to your `execute(command)`, which validates it, runs it through the normal control path (for example
 `Client.run` or the MCP `run` tool) and returns its result as an `Outcome`. `observe()` returns a fresh

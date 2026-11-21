@@ -152,6 +152,7 @@ Go home and switch torque off afterwards. The [perception example](examples/perc
 | Guide | Use it to |
 | --- | --- |
 | [LIBERO-10](examples/libero) | Reproduce the benchmark comparison or run another model on it. |
+| [Hand tools](docs/hand-tools.md) | Give your own agent loop the grasp, place and push tools from the LIBERO results. |
 | [Perception](docs/perception.md) | Measure from camera pixels, locate objects with a wrist camera and align landmarks. |
 | [Tracking](examples/tracking) | Download EdgeTAM and choose the device it runs on. |
 | [Records and replay](docs/records.md) | Inspect runs, references and named evaluations together in Rerun. |

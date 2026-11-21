@@ -60,14 +60,14 @@ def rehearser():
 
 
 @contextmanager
-def serving(tmp_path, cell=None, rehearser=None, clock=None):
+def serving(tmp_path, cell=None, rehearser=None, clock=None, **sim):
     """A daemon as `wu up` makes it from a workcell, with torque on. Unless the workcell names another body, a
     simulated reBot at its measured rest: the simulator's truth and the kernel's model apart.
     Leaving stops its threads and closes its kernel and server, whatever state the arm is in."""
     cell = cell or {}
     name = cell.get("body", "sim")
     truth = World() if name == "sim" else None
-    body = make_body(name, cell) if truth is None else bodies.make("sim", truth, q=Q_REST, gripper=1.0)
+    body = make_body(name, cell) if truth is None else bodies.make("sim", truth, q=Q_REST, gripper=1.0, **sim)
     k = Kernel(body, World(), clock, run_dir=tmp_path / "run")
     k.connect()
     apply_workcell(cell, k, truth)

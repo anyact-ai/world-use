@@ -71,6 +71,11 @@ def status(k) -> dict:
              tool=dict(base=np.round(tool[:3, 3], 4).tolist(),
                        **{name: np.round(k.world.from_base(name, tool[:3, 3]), 4).tolist()
                           for name in k.world.frames if name != "base"}))
+    if k.manifest.gripper is not None:
+        # Base-frame unit directions the fingers point along and open along.
+        g = k.manifest.gripper
+        d["tool_axes"] = dict(approach=np.round(tool[:3, :3] @ np.asarray(g.approach, float), 4).tolist(),
+                                 opens=np.round(tool[:3, :3] @ np.asarray(g.opens_along, float), 4).tolist())
     if st.tau is not None:
         d["torque_nm"] = np.round(np.asarray(st.tau), 2).tolist()
     if st.temp is not None:
@@ -103,6 +108,9 @@ def status(k) -> dict:
         d["facts"] = {key: (f.value if f.stale is None else f"{f.value} (STALE: {f.stale})")
                       for key, f in k.world.facts.items()}
     d["events"] = k.events.seq
+    # Counts control changes from any client: jobs, torque on and off, stops, resets. Events and encoder noise
+    # leave it alone, so an unchanged count means nothing has commanded the arm since.
+    d["control_revision"] = k.control_revision
     return d
 
 

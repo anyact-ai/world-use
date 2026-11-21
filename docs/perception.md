@@ -240,7 +240,9 @@ that covers only part of an object gives that part's narrow side.
 
 In the simulator, `body.capture(mount, mounted=True)` renders such a camera from its mount in the tool frame and
 returns the image, depth, tool pose and timestamp of one physics state; `mount.on(tool)` is the view to look
-with. [`tests/test_parallax.py`](../tests/test_parallax.py) locates a block this way to within a centimetre and
+with. A workcell camera can be one: `mount = "tool"` with `eye`, `look_at` and `up` in the tool frame. Each of
+its frames carries the tool pose and base-frame view of the state it shows, and `calibrate` refuses it: its
+mount is its calibration. The [hand tools](hand-tools.md) look through it to locate and grasp. [`tests/test_parallax.py`](../tests/test_parallax.py) locates a block this way to within a centimetre and
 picks it up there, with the kernel told nothing about the block. The [LIBERO runner](../examples/libero) uses the
 same functions for a simulated Panda's wrist camera.
 
@@ -261,7 +263,8 @@ measured.
   correspondence and grasp selection are up to the task.
 - Calibration accuracy limits every measurement. `requires` checks age, calibration and withdrawal; it cannot
   notice a scene change that nobody observed.
-- Workcell cameras are fixed; a camera on the hand is built in Python. The kitchen examples' custom
+- Only a simulated workcell camera can be mounted on the tool: a physical frame's time cannot yet be paired with
+  the tool pose. The kitchen examples' custom
   [wrist camera](../examples/robocasa-lunchbox/sensor_views.py) captures RGB-D, camera pose and tool pose from
   the same simulation state; its calibration identity covers the mount and intrinsics, and each frame carries
   the current camera transform. There is no calibration procedure for a physical wrist camera, and a position

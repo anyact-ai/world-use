@@ -221,6 +221,10 @@ thermal fitting needs corresponding measurements. No new hardware operation is p
   Named task phases group observations, computations and calls in the same trace. Inspection expands one
   phase's artifacts and known job outcomes; incomplete calls show an unknown outcome.
 
+The [hand tools](docs/hand-tools.md) run measured grasps, placements and pushes for an agent in the caller's
+process, through an executor: on a daemon robot each command is one job the kernel checks like any plan, so
+sequencing stays off the control thread and limits stay in the kernel.
+
 Perception, grasp proposals and planning are separate from the `Body` I/O contract. Add a provider boundary
 when a task needs another implementation, using explicit frames, units, observation provenance and failure
 results. Isolate heavyweight dependencies in an optional process or service and keep the CPU setup working.
