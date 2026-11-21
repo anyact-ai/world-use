@@ -251,17 +251,17 @@ class Daemon:
                               "a pixel grid every 100 px (x across, y down, from the top left); nothing else drawn"
                               + ("" if grid else ", because this camera is being calibrated"))
         report = self.rehearser.check(spec, k) if spec is not None else None
-        img = cam.picture(k)
+        if getattr(cam, "mounted", False):
+            frame = cam.capture(k)                        # the view of a camera on the hand moves with it
+            img, view = frame.image, frame.view
+        else:
+            img, view = cam.picture(k), cam.view
         tool = k.world.from_base("work", k.chain.fk(k.state.q)[:3, 3])
         drawn = ("magenta cross = tool point; green outlines = the boxes the kernel knows; F/L/U = work axes"
                  + ("; blue = the plan's tool path" if report is not None else "")
                  + ("; MuJoCo simulation" if isinstance(cam, cameras.SimCamera) else "")) \
             if cam.view is not None else "no calibration for this camera, so nothing is drawn on it"
         caption = f"{name} | t+{k.clock.now() - k.t0:.0f}s | tool F{tool[0]:+.3f} L{tool[1]:+.3f} U{tool[2]:+.3f}"
-        view = cam.view
-        if getattr(cam, "mounted", False):
-            frame = cam.capture(k)                        # the view of a camera on the hand moves with it
-            img, view = frame.image, frame.view
         img = cameras.overlay(img, view, k, None if report is None else report.tool_path, caption)
         out = self._save(k, name, cam, img, drawn)
         if report is not None:

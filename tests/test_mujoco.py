@@ -191,6 +191,7 @@ def test_a_workcell_camera_mounted_on_the_tool_moves_with_it_and_is_not_calibrat
 @pytest.mark.parametrize("entry,message", [
     (dict(MOUNTED, path="hand.png", eye=None, look_at=None), "only a simulated camera"),
     ({k: v for k, v in MOUNTED.items() if k != "up"}, "eye, look_at and up in the tool frame"),
+    ({k: v for k, v in MOUNTED.items() if k != "look_at"}, "eye, look_at and up in the tool frame"),
     (dict(MOUNTED, frame="base"), "and no frame"),
 ])
 def test_a_mounted_camera_entry_needs_a_simulated_camera_and_its_pose_in_the_tool_frame(entry, message):

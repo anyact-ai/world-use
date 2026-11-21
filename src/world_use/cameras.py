@@ -77,7 +77,7 @@ class CameraConfig(Request):
             if sources:
                 raise ValueError("only a simulated camera can be mounted: a real frame's time cannot be "
                                  "paired with the tool pose")
-            if self.eye is None or self.up is None or "frame" in self.model_fields_set:
+            if self.eye is None or self.look_at is None or self.up is None or "frame" in self.model_fields_set:
                 raise ValueError("a mounted camera gives eye, look_at and up in the tool frame, and no frame")
         else:
             if self.facing is not None or self.model_fields_set & {"yaw_deg", "pitch_deg"}:
