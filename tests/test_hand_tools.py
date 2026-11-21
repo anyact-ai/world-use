@@ -1,5 +1,6 @@
 """The tool set's sequences, on a fake arm that moves exactly where it is told unless told it meets contact."""
 import dataclasses
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -8,7 +9,7 @@ from conftest import serving
 
 from world_use.behaviors import Outcome
 from world_use.bodies.mujoco_scene import mj
-from world_use.hand_tools import DOWN, DaemonArm, Hand, HandTools, region_evidence
+from world_use.hand_tools import DOWN, DaemonArm, Hand, HandTools, region_evidence, tilted
 from world_use.tracking import Tracking
 from world_use.vision import Observation
 
@@ -18,13 +19,17 @@ HAND = Hand(opening_mm=78, open_mm=(70, 85), fit_mm=70, arrive_m=0.012, hand_cam
 
 class Arm:
     """An executor whose hand goes where it is told; with `short`, a line that may end on contact stops that far
-    short of its pose."""
+    short of its pose; with `lost`, its controller stops answering at that stage."""
 
-    def __init__(self, short=None, refusal=None):
+    failures = (ConnectionError,)
+
+    def __init__(self, short=None, refusal=None, lost=None):
         self.at, self.axis, self.aperture = np.array([0.3, 0.0, 0.3]), DOWN.copy(), 80.0
-        self.commands, self.short, self.refusal, self.steps = [], short, refusal, 0
+        self.commands, self.short, self.refusal, self.steps, self.lost = [], short, refusal, 0, lost
 
     def execute(self, command):
+        if self.lost is not None and command.get("stage") == self.lost:
+            raise ConnectionError("the controller stopped answering")
         if command["kind"] == "confirm_state":
             same = command["fingerprint"] == self.fingerprint()
             return Outcome("done" if same else "refused", "confirm_state", "inspected state comparison")
@@ -90,21 +95,21 @@ class Arm:
 
 class Tracks:
     def __init__(self):
-        self.targets, self.lost = {}, {}
+        self.targets, self.lost, self.seen = {}, {}, None
 
     def select(self, frame, target, point=None, box=None, space="image"):
         self.targets[target] = dict(camera="front")
         return dict(target=target, valid=True, camera="front", frame=frame)
 
     def observe(self, names):
-        return [dict(target=name, valid=True, camera="front") for name in names]
+        return [dict(target=name, valid=True, camera="front", seen=self.seen) for name in names]
 
     def close(self):
         pass
 
 
-def tools(arm):
-    return HandTools(arm, HAND, Tracks())
+def tools(arm, hand=HAND):
+    return HandTools(arm, hand, Tracks())
 
 
 def moves(arm):
@@ -139,6 +144,13 @@ def test_a_lean_the_arm_cannot_make_is_refused_before_the_hand_turns():
     assert moves(arm) == []
 
 
+def test_an_arm_lost_during_a_call_ends_it_stopped_after_what_ran():
+    arm = Arm(lost="grasp_close")
+    record, text = tools(arm).call("grasp", GRASP)
+    assert record["status"] == "stopped" and "the controller stopped answering" in text
+    assert [c["stage"] for c in moves(arm)] == ["grasp_approach"]
+
+
 @pytest.mark.parametrize("arguments,message", [
     (dict(tilt_deg=45), "tilt_deg needs toward"),
     (dict(toward=dict(x=0.3, y=0.2)), "toward is where tilt_deg leans"),
@@ -154,13 +166,16 @@ def test_grasp_arguments_are_refused_before_any_motion(arguments, message):
     assert arm.commands == []
 
 
-def test_a_push_leans_back_meets_contact_and_backs_off_along_its_line_to_its_start():
+@pytest.mark.parametrize("max_lean_deg,lean_deg", [(60, 30), (20, 20)])
+def test_a_push_leans_back_meets_contact_and_backs_off_along_its_line_to_its_start(max_lean_deg, lean_deg):
     arm = Arm(short=0.05)
     start, end = dict(x=0.3, y=-0.05, z=0.1), dict(x=0.3, y=0.1, z=0.1)
-    record, _ = tools(arm).call("push", dict(start=start, end=end))
+    hand = tools(arm, dataclasses.replace(HAND, max_lean_deg=max_lean_deg))
+    record, _ = hand.call("push", dict(start=start, end=end))
     close, line, back = moves(arm)
     assert close["targets"] == {"gripper": 1} and line["via"] == start
-    assert np.array(line["targets"]["point"]) == pytest.approx([0, np.sin(np.pi / 6), -np.cos(np.pi / 6)])
+    lean = np.radians(lean_deg)
+    assert np.array(line["targets"]["point"]) == pytest.approx([0, np.sin(lean), -np.cos(lean)])
     assert record["pushed"] == dict(ended="stopped_on_contact", travelled_mm=100, short_mm=50)
     # Back along the line, never past where it began, standing up as it goes.
     assert [back["targets"][k] for k in "xyz"] == pytest.approx([0.3, -0.05, 0.1])
@@ -264,16 +279,62 @@ def test_on_the_twin_a_side_grasp_is_a_lean_of_90_degrees_that_comes_in_along_th
     assert status["tool"]["base"][2] == pytest.approx(grip[2] + 0.04, abs=0.01)
 
 
-def test_on_the_twin_a_lean_the_arm_cannot_reach_is_refused_before_it_moves(twin):
+@pytest.mark.parametrize("toward,reason", [
+    ([-0.2, 0.0], "the gripper cannot turn"),           # fingertips toward the base: out of the reBot's reach
+    ([0.15, -0.15], "turning needs U+0.267 or higher"),  # off to the side of the way out: j1 turns low down
+])
+def test_on_the_twin_a_lean_the_arm_cannot_make_is_refused_with_its_reason_before_it_moves(twin, toward, reason):
     daemon, client, hand = twin
     centre, _ = radial(daemon)
-    toward = radial(daemon, -0.2)[1]                    # fingertips toward the base: out of the reBot's reach
+    toward = centre[:2] + toward
     before = client.status()["joints_deg"]
     record, text = hand.call("grasp", dict(object_target="block", approach=xyz(centre), tilt_deg=45,
                                            lift=dict(z=float(centre[2]) + 0.04), toward=xyz(toward[:2]),
                                            expect_grip_mm=[35, 45]))
-    assert record["status"] == "refused" and "cannot lean that way" in text
+    assert record["status"] == "refused" and "cannot lean that way" in text and reason in text
     assert client.status()["joints_deg"] == pytest.approx(before, abs=0.05)
+
+
+def test_on_the_twin_a_move_longer_than_one_segment_goes_in_pieces(twin):
+    _, client, hand = twin
+    goal = np.array(client.status()["tool"]["base"]) + [0.05, 0.27, 0]       # the reBot's segment is 25 cm
+    moved = hand.arm.execute(dict(kind="move", targets=xyz(goal), stage="carry", settle="move"))
+    assert moved.ok and moved.data["arm"] == "arrived", moved.message
+    assert client.status()["tool"]["base"] == pytest.approx(goal.tolist(), abs=0.01)
+
+
+def test_on_the_twin_the_same_lean_twice_turns_once(twin):
+    daemon, _, hand = twin
+    approach, across = tilted(radial(daemon, 0.2)[1] - radial(daemon)[0], 45)
+    turn = dict(kind="move", targets=dict(point=approach.tolist(), jaws=across.tolist()), stage="grasp_lean",
+                settle="pass", in_place=True)
+    for _ in range(2):
+        turned = hand.arm.execute(turn)
+        assert turned.ok, turned.message
+
+
+def test_on_the_twin_a_release_checkpoint_outlasts_reading_noise_but_not_another_client_s_job(twin):
+    daemon, client, hand = twin
+    before = hand.arm.fingerprint()
+    body, read = daemon.k.body, daemon.k.body.read
+    # A held arm's encoders read a count either side of where it stands: nothing commanded that.
+    body.read = lambda: dataclasses.replace(st := read(), q=st.q + [0, 0, 1e-3, 0, 0, 0])
+    joints = client.status()["joints_deg"]
+    while client.status()["joints_deg"] == joints:
+        time.sleep(0.01)
+    assert hand.arm.fingerprint() == before
+    assert client.run({"do": "line", "up": 0.01}, wait=30)["status"] == "done"
+    assert hand.arm.fingerprint() != before
+
+
+def test_on_the_twin_observe_shows_a_change_made_while_the_arm_stood_still(twin):
+    _, _, hand = twin
+    hand.tracking.targets["block"] = dict(camera="front")
+    hand.tracking.seen = "moved"                        # someone moved the block, and the tracker saw it
+    _, before = hand.call("observe_targets", {})
+    hand.tracking.seen = "moved back"
+    _, after = hand.call("observe_targets", {})
+    assert "moved back" in after and "moved back" not in before
 
 
 def test_on_the_twin_a_push_in_free_air_runs_its_line_and_backs_off_to_its_start(twin):

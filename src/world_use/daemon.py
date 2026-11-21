@@ -112,6 +112,7 @@ class Daemon:
             card += (f"\ncollision bounds: {len(k.manifest.tool_boxes)} declared tool/finger boxes and the estimated "
                      "held-object box; self-collision and undeclared geometry are not checked.")
             return 200, dict(card=card, session=self.session, rehearsal_coverage=coverage,
+                             max_segment_m=k.manifest.max_segment_m,
                              cameras={name: dict(depth=isinstance(cam, cameras.SimCamera),
                                                  calibrated=cam.view is not None,
                                                  mounted=getattr(cam, "mounted", False))

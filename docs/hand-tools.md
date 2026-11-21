@@ -56,10 +56,13 @@ what that arm can reach. The [`Executor`](../src/world_use/hand_tools.py) protoc
 describe the commands.
 
 - `DaemonArm(client, hand)` runs each command as one job on a robot the daemon runs, rehearsed before it is
-  admitted. Positions are in the robot's base frame. `move_to` chooses which way round the jaws go, the one
-  that keeps the wrist off its stops, and a lean is refused when its rehearsal is. An approach that may end
-  on contact is a `guarded` move, so it needs joint torque sensing; without it the approach is a plain move.
-  Between jobs the arm holds where it is, as it does between any two agent calls.
+  admitted. Positions are in the robot's base frame, and moves go in straight legs no longer than the robot's
+  `max_segment_m`. `move_to` chooses which way round the jaws go, the one that keeps the wrist off its stops,
+  and a lean is refused when its rehearsal is. An approach that may end on contact is a `guarded` move over
+  its last segment, so it needs joint torque sensing; without it the approach is a plain move. Between jobs
+  the arm holds where it is, as it does between any two agent calls. A release checkpoint is void once
+  anything commands the arm, from any client, and every observation is taken afresh. A daemon that fails
+  during a call ends it `stopped`, after whatever ran before.
 - The [LIBERO executor](../examples/libero/world_tools.py) drives the published LIBERO arm's absolute-pose
   commands. Its finger and lean rules were measured on that arm, because LIBERO reports no joint positions.
 

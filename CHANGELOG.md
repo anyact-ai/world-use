@@ -12,8 +12,9 @@
 - **Jaws the other way round.** `move_to` turns the jaws half round the other way when the nearer way is out of
   reach, or would end a joint near its stop that the other way keeps clear.
 - **A simulated camera on the tool.** A workcell camera with `mount = "tool"` moves with the hand.
-- `status` reports `tool_axes`, which way the fingers point and open. A simulated body takes `scenery`, MuJoCo
-  bodies of the caller's own.
+- `status` reports `tool_axes`, which way the fingers point and open, and `control_revision`, a count of what
+  has commanded the arm. The card gives `max_segment_m`. A simulated body takes `scenery`, MuJoCo bodies of the
+  caller's own.
 
 ## 0.3.0
 
