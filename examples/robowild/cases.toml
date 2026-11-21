@@ -21,3 +21,9 @@ held_out = ["02-10", "04-03", "06-02", "09-01", "10-03", "12-02", "13-02", "16-0
             "33-01", "35-03"]
 long = ["04-02", "06-02", "06-06", "16-03", "23-02", "23-03", "25-02", "29-03", "30-06", "30-09", "32-01", "33-01",
         "35-03", "37-01"]
+
+# USD per million tokens, for model_proxy.py's spending cap: estimates from published prices, not billing.
+[rates."gpt-6.2-astra"]
+input = 8.0
+cached_input = 0.4
+output = 40.0

@@ -5,12 +5,15 @@ each task's own call budget. "alone" is the harness's react backend; "world-use"
 hand tools added. Run it in RoboWild's environment (source activate_robowild.sh) on a Linux machine with an NVIDIA
 RTX-class GPU:
 
-    python run.py --arm world-use --split development --model MODEL --base-url URL --api-key-env NAME \\
+    python run.py --arm world-use --split development --model MODEL --credentials creds.json --budget-usd 50 \\
         --agent-python /path/to/agent-venv/bin/python --output results/development \\
         --authorization "the approval of this paid run, verbatim"
 
-Model calls cost money: such a run refuses to start without --authorization, which it records with the run. With
---scripted PLAN.json instead of a model, scripted_model.py plays the plan's tool calls, at no cost, to check a setup.
+creds.json is {"base_url": the model's Responses base URL, "key": its API key}; it is deleted once read, and the key
+then lives only in model_proxy.py, which the agents call with a placeholder key and which stops the run's spending
+at --budget-usd. Model calls cost money: such a run refuses to start without --authorization, which it records with
+the run. With --scripted PLAN.json instead of a model, scripted_model.py plays the plan's tool calls, at no cost, to
+check a setup.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import os
 import socket
 import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -41,14 +45,31 @@ def agent(args) -> dict:
     return dict(backend="command", command=command)
 
 
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def wait_for(port: int, process: subprocess.Popen):
+    for _ in range(100):
+        if process.poll() is not None:
+            sys.exit("the local model endpoint did not start")
+        with socket.socket() as probe:
+            if probe.connect_ex(("127.0.0.1", port)) == 0:
+                return
+        time.sleep(0.1)
+    sys.exit("the local model endpoint did not start")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--arm", choices=ARMS, required=True)
     parser.add_argument("--split", choices=("development", "held_out"), required=True)
     parser.add_argument("--tasks", help="a comma-separated subset of the split")
     parser.add_argument("--model")
-    parser.add_argument("--base-url")
-    parser.add_argument("--api-key-env")
+    parser.add_argument("--credentials", type=Path, help="JSON {base_url, key}; deleted once read")
+    parser.add_argument("--budget-usd", type=float, help="the most this arm's model calls may cost")
     parser.add_argument("--reasoning-effort")
     parser.add_argument("--scripted", type=Path, help="a plan of tool calls to play instead of a model")
     parser.add_argument("--authorization", help="the approval of a paid run in the approver's own words")
@@ -61,18 +82,11 @@ def main():
     args = parser.parse_args()
     if args.arm == "world-use" and args.agent_python is None:
         parser.error("--agent-python is required for the world-use arm")
-    server = None
-    if args.scripted:
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", 0))
-            port = probe.getsockname()[1]
-        server = subprocess.Popen([sys.executable, str(HERE / "scripted_model.py"), str(port), str(args.scripted)])
-        os.environ["SCRIPTED_KEY"] = "unused"
-        args.model, args.base_url, args.api_key_env = "scripted", f"http://127.0.0.1:{port}/v1", "SCRIPTED_KEY"
-        args.authorization = "a scripted check: no model is called"
-    elif not (args.model and args.base_url and args.api_key_env and args.authorization):
-        parser.error("a model run needs --model, --base-url, --api-key-env and --authorization")
     cases = tomllib.loads((HERE / "cases.toml").read_text())
+    if not args.scripted and not (args.model and args.credentials and args.budget_usd and args.authorization):
+        parser.error("a model run needs --model, --credentials, --budget-usd and --authorization")
+    if not args.scripted and args.model not in cases["rates"]:
+        parser.error(f"cases.toml has no rates for {args.model}")
     tasks = cases["tasks"][args.split]
     if args.tasks:
         chosen = args.tasks.split(",")
@@ -81,14 +95,30 @@ def main():
         tasks = chosen
     out = args.output / args.arm
     out.mkdir(parents=True, exist_ok=False)
+    port = free_port()
+    if args.scripted:
+        server = subprocess.Popen([sys.executable, str(HERE / "scripted_model.py"), str(port), str(args.scripted)])
+        args.model, args.authorization = "scripted", "a scripted check: no model is called"
+    else:
+        credentials = json.loads(args.credentials.read_text())
+        args.credentials.unlink()
+        server = subprocess.Popen([sys.executable, str(HERE / "model_proxy.py"), str(port), str(out / "ledger.jsonl"),
+                                   str(args.budget_usd), json.dumps(cases["rates"][args.model])],
+                                  env=dict(os.environ, MODEL_UPSTREAM=credentials["base_url"],
+                                           MODEL_KEY=credentials["key"]))
+        del credentials
+    wait_for(port, server)
+    os.environ["MODEL_PLACEHOLDER_KEY"] = "local"
+    args.base_url, args.api_key_env = f"http://127.0.0.1:{port}/v1", "MODEL_PLACEHOLDER_KEY"
     agent_file = out / "agent.json"
     agent_file.write_text(json.dumps(agent(args), indent=2) + "\n")
     (out / "run.json").write_text(json.dumps(dict(
         authorization=args.authorization, arm=args.arm, split=args.split, tasks=tasks, model=args.model,
-        reasoning_effort=args.reasoning_effort, robowild_commit=cases["robowild_commit"],
+        reasoning_effort=args.reasoning_effort, budget_usd=args.budget_usd, robowild_commit=cases["robowild_commit"],
         harness_commit=cases["harness_commit"],
-        world_use_commit=subprocess.run(["git", "-C", str(HERE), "rev-parse", "--short", "HEAD"],
-                                        capture_output=True, text=True).stdout.strip()), indent=2) + "\n")
+        world_use_commit=os.environ.get("WORLD_USE_COMMIT") or subprocess.run(
+            ["git", "-C", str(HERE), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip(),
+    ), indent=2) + "\n")
     try:
         for budget in ("short", "long"):
             ids = [t for t in tasks if (t in cases["tasks"]["long"]) == (budget == "long")]
@@ -109,8 +139,7 @@ def main():
             if subprocess.run(command).returncode:
                 sys.exit(f"the {budget} tasks' evaluation failed; resume it with robowild-harness eval --resume")
     finally:
-        if server is not None:
-            server.terminate()
+        server.terminate()
 
 
 if __name__ == "__main__":

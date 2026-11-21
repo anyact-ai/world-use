@@ -76,21 +76,25 @@ A plan is a list of tool calls, such as `[{"name": "done", "arguments": {}}]`; a
 the release checkpoint the call before it issued. Then each arm, on each split:
 
 ```bash
-python run.py --arm alone --split development --model MODEL --base-url URL --api-key-env NAME --robowild RoboWild --output results/development --authorization "..."
+python run.py --arm alone --split development --model MODEL --credentials creds.json --budget-usd 50 --robowild RoboWild --output results/development --authorization "..."
 ```
 
 ```bash
-python run.py --arm world-use --split development --model MODEL --base-url URL --api-key-env NAME --agent-python agent/bin/python --robowild RoboWild --output results/development --authorization "..."
+python run.py --arm world-use --split development --model MODEL --credentials creds.json --budget-usd 50 --agent-python agent/bin/python --robowild RoboWild --output results/development --authorization "..."
 ```
 
-`--authorization` records the approval of the paid run with it. Each arm's `short` and `long` directories hold the
+`creds.json` holds `{"base_url": ..., "key": ...}` for the model's Responses endpoint; `run.py` deletes it once
+read and starts [model_proxy.py](model_proxy.py), which alone holds the key, forwards the agents' requests and stops
+the arm's spending at `--budget-usd` (prices per model in `cases.toml`). `--authorization` records the approval of
+the paid run with it. Each arm's `short` and `long` directories hold the
 harness's `report.json`, `summary.md` and every run's videos and records; the world-use agent's own records
 (`world-use.jsonl`, `moves.jsonl`) are beside each run's command logs.
 
 ## Checks
 
 ```bash
-uv run pytest examples/robowild/test_arm.py
+uv run pytest examples/robowild/test_arm.py examples/robowild/test_model_proxy.py
 ```
 
-They run the hand tools through `RoboWildArm` on a fake mobile Franka whose results follow the harness's schemas.
+They run the hand tools through `RoboWildArm` on a fake mobile Franka whose results follow the harness's schemas,
+and the model proxy against a stand-in endpoint.
