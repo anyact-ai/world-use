@@ -3,10 +3,12 @@ model: each request gets the next call, and once the list is spent it answers in
 
     python scripted_model.py PORT PLAN.json      PLAN.json: [{"name": ..., "arguments": {...}}, ...]
 
-Every request's tool names and latest tool result are appended to requests.jsonl beside PLAN.json.
+An argument "$checkpoint" becomes the release checkpoint the latest tool result issued. Every request's tool names
+and latest tool result are appended to requests.jsonl beside PLAN.json.
 """
 
 import json
+import re
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -30,8 +32,12 @@ def serve(port: int, plan_path: Path):
                 output = [dict(type="message", role="assistant",
                                content=[dict(type="output_text", text="The scripted plan is over.")])]
             else:
+                arguments = json.dumps(plan[index]["arguments"])
+                issued = re.search(r'"checkpoint":"([0-9a-f]{32})"', outputs[-1]["output"] if outputs else "")
+                if issued:
+                    arguments = arguments.replace('"$checkpoint"', json.dumps(issued[1]))
                 output = [dict(type="function_call", call_id=f"call_{index}", name=plan[index]["name"],
-                               arguments=json.dumps(plan[index]["arguments"]))]
+                               arguments=arguments)]
             reply = json.dumps(dict(id=f"resp_{index}", model="scripted", output=output,
                                     usage=dict(input_tokens=0, output_tokens=0, total_tokens=0))).encode()
             self.send_response(200)
