@@ -255,7 +255,8 @@ def _direction(value) -> np.ndarray:
     return v / np.linalg.norm(v)
 
 
-# A move whose nearer grip ends a joint closer than this to its stop (20 deg) also tries the other way round.
+# The other way round is taken when the nearer grip leaves a joint that the two grips turn differently closer than
+# this to its stop (20 deg) and the other way leaves it more room.
 ROOM_RAD = 0.35
 
 
@@ -265,8 +266,8 @@ class MoveTo(PathBehavior):
     to          [forward, left, up] metres in the frame (default: work); leave it out to turn in place
     point       which way the gripper should end up pointing: down, up, forward, back, left, right, or [f, l, u]
     jaws        which way its jaws should open, the same way (default: as near to now as pointing allows);
-                either way round, and the other way when the nearer one is out of reach or ends near a
-                joint's stop
+                either way round: the other way when the nearer one is out of reach, or would end a joint near
+                its stop that the other way keeps clear
     within_deg  how far from point it may end so the wrist and base can stay still below the turn height
                 (default 5: near its base a real arm can seldom point exactly down without turning them)
     frame, duration, speed  as for line
@@ -314,12 +315,14 @@ class MoveTo(PathBehavior):
 
         exact, failed, turn = exact_path(R)
         self.reversed = False
-        if exact is None or turn is not None or k.envelope.stop_room(exact[-1], k.cmd.q).min() < ROOM_RAD:
+        # A hand already where it is asked to be has no nearer way to improve on.
+        blocked = turn is not None or (failed is not None and failed.rule != "zero_length")
+        if blocked or (exact is not None and k.envelope.stop_room(exact[-1], k.cmd.q).min() < ROOM_RAD):
             # Jaws opening along the same line the other way round close on the same thing, half a turn of the
             # wrist away: take that grip when the nearer one is out of reach or ends close to a joint's stop.
             other = exact_path(R @ geometry.axis_angle(g.approach, np.pi))
             if other[0] is not None and other[2] is None and (
-                    exact is None or turn is not None or self._roomier(k, other[0][-1], exact[-1])):
+                    blocked or self._frees_a_stop(k, other[0][-1], exact[-1])):
                 (exact, failed, turn), self.reversed = other, True
         if exact is not None and turn is None:
             self.aimed = (want, False)
@@ -338,12 +341,15 @@ class MoveTo(PathBehavior):
         raise failed
 
     @staticmethod
-    def _roomier(k, q, than):
-        """Whether q leaves the joints that differ from `than` further from their stops."""
+    def _frees_a_stop(k, q, than):
+        """Whether q, the other way round, leaves more room than `than` does to a joint that `than` ends within
+        ROOM_RAD of its stop. Only the joints the two grips turn differently count: one that both leave near its
+        stop, such as a base at the end of its range, is no reason to turn the wrist half round."""
         differ = np.abs(np.asarray(q) - than) > 0.1
         if not differ.any():
             return False
-        return k.envelope.stop_room(q, k.cmd.q)[differ].min() > k.envelope.stop_room(than, k.cmd.q)[differ].min()
+        nearer = k.envelope.stop_room(than, k.cmd.q)[differ].min()
+        return nearer < ROOM_RAD and k.envelope.stop_room(q, k.cmd.q)[differ].min() > nearer
 
     def _tilt(self, k, T0, target, want, jaws, timing, words):
         """Point as near to `want` as the pitch joints alone can, with the joints the turn-clearance rule guards
