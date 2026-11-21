@@ -1,0 +1,256 @@
+"""The hand tools' executor for RoboWild's mobile Franka, through the harness's Robot API.
+
+Positions are in the current robot_base frame (+X forward, +Y left, +Z up), the frame of move_robot goals and of
+robot_state. It moves with the base: a policy that drives the base sees its targets move with it. The tool frame
+is panda_tcp, 0.107 m past the hand along its approach axis, +Z, with the fingers opening along +Y.
+
+The harness runs the simulator frozen between calls (`--mode independent`), so the state in the latest result
+is the state now: reading it costs no Robot API call. Every move is one move_robot call, which counts toward the
+task's call budget like any of the policy's own calls.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from pathlib import Path
+
+import numpy as np
+
+from world_use import geometry
+from world_use.behaviors import Outcome
+from world_use.hand_tools import Hand
+
+ARM = "left"  # the mobile Franka's one arm, as move_robot names it
+APPROACH, OPENS = (0.0, 0.0, 1.0), (0.0, 1.0, 0.0)  # in panda_tcp
+TRACKED_M = 0.02  # move_robot's own tracking limit; a command's last leg must end this near its goal
+# A leg on the way, which the next leg's absolute goal corrects, may end this far off: a free move with a large turn
+# of the wrist ended 2.4 cm off in the simulator, with nothing in the way.
+TRANSIT_M = 0.05
+GRIP_SLACK_MM = 1.0  # finger readings settle within this of the opening they stop at
+
+# The Panda's fingers each travel 0-40 mm; the opening is their sum.
+HAND = Hand(opening_mm=80, open_mm=(70, 80), fit_mm=70, arrive_m=TRACKED_M, hand_camera=None, fixed_camera=None,
+            in_view_m=0.3, hover="15-25 cm")
+
+
+def quaternion(R) -> list[float]:
+    """wxyz of a rotation matrix."""
+    R = np.asarray(R, float)
+    w = math.sqrt(max(0.0, 1 + R[0, 0] + R[1, 1] + R[2, 2])) / 2
+    x = math.copysign(math.sqrt(max(0.0, 1 + R[0, 0] - R[1, 1] - R[2, 2])) / 2, R[2, 1] - R[1, 2])
+    y = math.copysign(math.sqrt(max(0.0, 1 - R[0, 0] + R[1, 1] - R[2, 2])) / 2, R[0, 2] - R[2, 0])
+    z = math.copysign(math.sqrt(max(0.0, 1 - R[0, 0] - R[1, 1] + R[2, 2])) / 2, R[1, 0] - R[0, 1])
+    return [w, x, y, z]
+
+
+def rotation(q) -> np.ndarray:
+    w, x, y, z = np.asarray(q, float) / np.linalg.norm(q)
+    return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+                     [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+                     [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]])
+
+
+class NoTracking:
+    """This pilot tracks no regions: the policy gives positions, from get_camera_point_3d."""
+
+    targets: dict = {}
+    lost: dict = {}
+
+    def select(self, *args, **kwargs):
+        raise ValueError("this robot's tools track no regions")
+
+    def observe(self, names):
+        return []
+
+    def close(self):
+        pass
+
+
+class RoboWildArm:
+    """An Executor over the Robot API client. `scene` is the latest published scene_state; `absorb` takes each
+    later result, whoever made the call."""
+
+    def __init__(self, robot, scene: dict, *, failures=(), record_dir: Path | None = None):
+        self.robot, self.scene = robot, scene
+        # The client's error type. A rejected move becomes a refusal; one whose execution is unknown ends the call.
+        self.failures = failures
+        self.record_dir = record_dir
+
+    # -- state ------------------------------------------------------------------------------------------
+    def absorb(self, result) -> None:
+        """Keep the newest state a call returned."""
+        if not isinstance(result, dict):
+            return
+        scene = result.get("scene_state")
+        if isinstance(scene, dict) and "robot_state" in scene:
+            self.scene = scene
+        elif isinstance(result.get("robot_state"), dict):
+            self.scene = dict(self.scene, robot_state=result["robot_state"])
+
+    @property
+    def hand(self) -> dict:
+        return self.scene["robot_state"]["arms"][ARM]
+
+    def opening_mm(self) -> float:
+        return 1000 * float(sum(self.hand["gripper_positions"]))
+
+    def measure(self):
+        return dict(tool=[float(v) for v in self.hand["eef_position"]], aperture_mm=round(self.opening_mm(), 1),
+                    observation=self.scene.get("sequence"))
+
+    def position(self, observation):
+        return np.asarray(observation["tool"], float)
+
+    def pose(self):
+        R = rotation(self.hand["eef_quaternion_wxyz"])
+        return np.asarray(self.hand["eef_position"], float), R @ APPROACH
+
+    def orientation(self, point, jaws=None):
+        R = geometry.aim(rotation(self.hand["eef_quaternion_wxyz"]), APPROACH, OPENS, point, jaws)
+        return dict(quaternion_wxyz=quaternion(R)), R @ OPENS
+
+    def lean_refusal(self, direction, tilt_deg, path):
+        # This profile has no planning call to rehearse with: a lean the arm cannot make fails at its first
+        # move with the planner's reason, before the hand turns.
+        return None
+
+    def hand_look(self, frame=None):
+        return None
+
+    def cameras(self):
+        return [image["name"] for image in self.scene.get("images", [])]
+
+    def frame(self, camera):
+        raise ValueError("this robot's tools track no regions")
+
+    def validate_pose(self, targets):
+        if not isinstance(targets, dict) or not targets or not targets.keys() <= {"x", "y", "z"}:
+            raise ValueError("a pose is x, y and z in metres, in robot_base")
+        if any(type(v) not in (float, int) or not math.isfinite(v) for v in targets.values()):
+            raise ValueError("a pose is x, y and z in metres, in robot_base")
+
+    def fingerprint(self):
+        return json.dumps(self.measure())
+
+    def record(self, name, row):
+        if self.record_dir is not None:
+            self.record_dir.mkdir(parents=True, exist_ok=True)
+            with (self.record_dir / name).open("a") as stream:
+                stream.write(json.dumps(row, default=str) + "\n")
+
+    def key(self):
+        return self.scene.get("sequence")  # each call that changes the world publishes a new scene; none else does
+
+    # -- commands -----------------------------------------------------------------------------------------
+    def execute(self, command):
+        kind = command["kind"]
+        if kind == "confirm_state":
+            same = command["fingerprint"] == self.fingerprint()
+            return Outcome("done" if same else "refused", kind, "inspected state comparison", self.measure())
+        if kind == "check_grip":
+            return self._opening(command["expect_mm"], Outcome("done", kind, "measured opening", self.measure()))
+        outcome = Outcome("done", kind, "nothing to do: the hand is already there", dict(self.measure(),
+                                                                                           arm="arrived"))
+        legs = self._legs(command)
+        for index, (goal, contact) in enumerate(legs):
+            outcome = self._leg(goal, kind, contact, transit=index < len(legs) - 1)
+            if not outcome.ok:
+                return outcome
+            if command.get("monitor_mm"):
+                outcome = self._opening(command["monitor_mm"], outcome, "the grip changed during the move")
+                if not outcome.ok:
+                    return outcome
+        gripper = command["targets"].get("gripper")
+        if gripper is not None and command.get("expect_mm"):
+            return self._opening(command["expect_mm"], outcome)
+        return outcome
+
+    def _legs(self, command):
+        """(move_robot arm goal, whether it may end on contact) for each leg of a move."""
+        targets = dict(command["targets"])
+        here = np.asarray(self.hand["eef_position"], float)
+        goal = np.array([targets.get(k, v) for k, v in zip("xyz", here, strict=True)], float)
+        if command.get("rise_m") is not None:
+            goal[2] = here[2] + command["rise_m"]
+        turn = {k: targets[k] for k in ("quaternion_wxyz",) if k in targets}
+        gripper = {"gripper": float(targets["gripper"])} if "gripper" in targets else {}
+
+        def leg(to=None, **extra):
+            return dict(target=ARM, **({} if to is None else dict(position=[float(v) for v in to])), **extra)
+
+        legs = []
+        travel = command.get("travel_z")
+        if travel is not None and travel - here[2] > HAND.arrive_m:
+            here = np.array([here[0], here[1], travel])
+            legs.append((leg(here), False))
+        via = command.get("via")
+        if via is not None:
+            start = np.array([via.get("x", goal[0]), via.get("y", goal[1]), via.get("z", here[2])], float)
+            # Level to above start, turning and opening on the way (the gripper acts on arrival), then straight
+            # down to start and along the line to the goal, which may end on contact.
+            legs.append((leg([start[0], start[1], here[2]], **turn, **gripper), False))
+            if abs(start[2] - here[2]) > 1e-4:
+                legs.append((leg(start), False))
+            if np.linalg.norm(goal - start) > 1e-4:
+                legs.append((leg(goal), True))
+        elif np.linalg.norm(goal - here) > 1e-4 or turn:
+            legs.append((leg(goal if np.linalg.norm(goal - here) > 1e-4 else None, **turn, **gripper), False))
+        elif gripper:
+            legs.append((leg(**gripper), False))  # the fingers open or close where the hand is
+        return legs
+
+    def _leg(self, goal, kind, contact, transit=False):
+        """One move_robot call, judged against its goal."""
+        try:
+            result = self.robot.move_robot(goals=[goal])
+        except self.failures as error:
+            code = getattr(error, "code", "")
+            if code in ("connection_closed", "internal_error"):  # whether it moved is unknown: stop the call
+                raise
+            self.absorb(getattr(error, "details", None) or {})
+            status = "stopped" if code.endswith("budget_exceeded") else "refused"
+            return Outcome(status, kind, str(error), self.measure())
+        self.absorb(result)
+        data = self.measure()
+        self.record("moves.jsonl", dict(goal=goal, contact=contact, moved=result.get("moved"),
+                                        status=result.get("execution_status"), failure=result.get("failure"),
+                                        goals=(result.get("move") or {}).get("goals"), at=data))
+        if not result.get("moved"):
+            failure = result.get("failure") or {}
+            return Outcome("refused", kind, f"{failure.get('category', 'not moved')}: {failure.get('message', '')}",
+                           data, hint="nothing moved; choose a pose the arm can reach")
+        if result.get("execution_status") != "completed":
+            stop = result.get("safety_stop") or {}
+            return Outcome("stopped", kind, f"the move ended {result.get('execution_status')}: "
+                           f"{stop.get('message', '')}".rstrip(": "), data)
+        reached = (result.get("move") or {}).get("goals", [{}])[0]
+        if "position" not in goal or reached.get("tracked", True):
+            data["arm"] = "arrived"
+            return Outcome("done", kind, "done; inspect the measured result", data)
+        target = np.asarray(goal["position"], float)
+        at = np.asarray(data["tool"], float)
+        if contact:
+            line = target - np.asarray(reached.get("start_position", at), float)
+            unit = line / max(float(np.linalg.norm(line)), 1e-9)
+            short = float((target - at) @ unit)
+            # A hand blocked on its way is pushed aside and tilted a little as the controller keeps driving: the
+            # fingertips on a counter 5.7 cm above the goal ended 2.2 cm aside and 0.12 rad turned.
+            if short > TRACKED_M and short >= float(np.linalg.norm((target - at) - short * unit)):
+                data.update(arm="stopped_on_contact", short_m=round(short, 4))
+                return Outcome("done", kind, "the approach met contact short of the requested pose", data)
+        elif transit and float(np.linalg.norm(target - at)) <= TRANSIT_M:
+            data["arm"] = "arrived"
+            return Outcome("done", kind, "on the way", data)
+        data["arm"] = "not_approaching"
+        return Outcome("surprise", kind, f"the hand ended {100 * float(np.linalg.norm(target - at)):.1f} cm from "
+                       "its goal", data, goal["position"], data["tool"],
+                       "something blocks the way or the pose is at the edge of reach; look before going on")
+
+    def _opening(self, expect, outcome, message="the gripper stopped outside the expected opening"):
+        observed = round(self.opening_mm(), 1)
+        if expect[0] - GRIP_SLACK_MM <= observed <= expect[1] + GRIP_SLACK_MM:
+            return outcome
+        gripper = "reached_end" if observed < expect[0] else "stopped_apart"
+        return Outcome("surprise", outcome.kind, message, dict(outcome.data, aperture_mm=observed, gripper=gripper),
+                       list(expect), observed, "inspect the cameras; the opening does not show what is held")

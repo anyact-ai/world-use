@@ -1,0 +1,117 @@
+"""Run one arm of the pilot on a split of cases.toml, through robowild-harness eval.
+
+Both arms use the same model, the react_move_points Robot API profile, frozen simulation, seed 0, one round and
+each task's own call budget. "alone" is the harness's react backend; "world-use" is agent.py, the same loop with the
+hand tools added. Run it in RoboWild's environment (source activate_robowild.sh) on a Linux machine with an NVIDIA
+RTX-class GPU:
+
+    python run.py --arm world-use --split development --model MODEL --base-url URL --api-key-env NAME \\
+        --agent-python /path/to/agent-venv/bin/python --output results/development \\
+        --authorization "the approval of this paid run, verbatim"
+
+Model calls cost money: such a run refuses to start without --authorization, which it records with the run. With
+--scripted PLAN.json instead of a model, scripted_model.py plays the plan's tool calls, at no cost, to check a setup.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import socket
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+ARMS = ("alone", "world-use")
+
+
+def agent(args) -> dict:
+    common = dict(model=args.model, base_url=args.base_url, api_key_env=args.api_key_env)
+    if args.reasoning_effort:
+        common["reasoning_effort"] = args.reasoning_effort
+    if args.arm == "alone":
+        return dict(backend="react", **common)
+    command = [str(args.agent_python), str(HERE / "agent.py"), "--model", args.model, "--base-url", args.base_url,
+               "--api-key-env", args.api_key_env]
+    if args.reasoning_effort:
+        command += ["--reasoning-effort", args.reasoning_effort]
+    return dict(backend="command", command=command)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--arm", choices=ARMS, required=True)
+    parser.add_argument("--split", choices=("development", "held_out"), required=True)
+    parser.add_argument("--tasks", help="a comma-separated subset of the split")
+    parser.add_argument("--model")
+    parser.add_argument("--base-url")
+    parser.add_argument("--api-key-env")
+    parser.add_argument("--reasoning-effort")
+    parser.add_argument("--scripted", type=Path, help="a plan of tool calls to play instead of a model")
+    parser.add_argument("--authorization", help="the approval of a paid run in the approver's own words")
+    parser.add_argument("--agent-python", type=Path, help="the world-use arm's interpreter (see README.md)")
+    parser.add_argument("--worker-python", type=Path,
+                        help="the harness's agent-side interpreter, when the simulator's cannot be copied")
+    parser.add_argument("--robowild", type=Path, default=Path(os.environ.get("ROBOWILD_CHECKOUT", "RoboWild")))
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--agent-timeout", type=float, default=3600)
+    args = parser.parse_args()
+    if args.arm == "world-use" and args.agent_python is None:
+        parser.error("--agent-python is required for the world-use arm")
+    server = None
+    if args.scripted:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        server = subprocess.Popen([sys.executable, str(HERE / "scripted_model.py"), str(port), str(args.scripted)])
+        os.environ["SCRIPTED_KEY"] = "unused"
+        args.model, args.base_url, args.api_key_env = "scripted", f"http://127.0.0.1:{port}/v1", "SCRIPTED_KEY"
+        args.authorization = "a scripted check: no model is called"
+    elif not (args.model and args.base_url and args.api_key_env and args.authorization):
+        parser.error("a model run needs --model, --base-url, --api-key-env and --authorization")
+    cases = tomllib.loads((HERE / "cases.toml").read_text())
+    tasks = cases["tasks"][args.split]
+    if args.tasks:
+        chosen = args.tasks.split(",")
+        if not set(chosen) <= set(tasks):
+            parser.error(f"--tasks must come from the {args.split} split")
+        tasks = chosen
+    out = args.output / args.arm
+    out.mkdir(parents=True, exist_ok=False)
+    agent_file = out / "agent.json"
+    agent_file.write_text(json.dumps(agent(args), indent=2) + "\n")
+    (out / "run.json").write_text(json.dumps(dict(
+        authorization=args.authorization, arm=args.arm, split=args.split, tasks=tasks, model=args.model,
+        reasoning_effort=args.reasoning_effort, robowild_commit=cases["robowild_commit"],
+        harness_commit=cases["harness_commit"],
+        world_use_commit=subprocess.run(["git", "-C", str(HERE), "rev-parse", "--short", "HEAD"],
+                                        capture_output=True, text=True).stdout.strip()), indent=2) + "\n")
+    try:
+        for budget in ("short", "long"):
+            ids = [t for t in tasks if (t in cases["tasks"]["long"]) == (budget == "long")]
+            if not ids:
+                continue
+            options = dict(robot_type=cases["robot_type"], control_mode="joint_position",
+                           assets_dir=os.environ["ASSETS_DIR"], curobo_source=os.environ["CUROBO_SOURCE"],
+                           call_limit=cases["call_limit"][budget])
+            command = ["robowild-harness", "eval", "--environment", "robowild",
+                       "--environment-checkout", str(args.robowild), "--tasks", ",".join(ids),
+                       "--agent", str(agent_file), "--output", str(out / budget),
+                       "--assignment-options", json.dumps(options), "--tool-profile", "react_move_points",
+                       "--mode", "independent", "--seed", "0", "--rounds", "1", "--gpus", "1", "--envs-per-gpu", "1",
+                       "--agent-timeout", str(args.agent_timeout)]
+            if args.worker_python:
+                command += ["--worker-python", str(args.worker_python)]
+            print("+", " ".join(command), flush=True)
+            if subprocess.run(command).returncode:
+                sys.exit(f"the {budget} tasks' evaluation failed; resume it with robowild-harness eval --resume")
+    finally:
+        if server is not None:
+            server.terminate()
+
+
+if __name__ == "__main__":
+    main()

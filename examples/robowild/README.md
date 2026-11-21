@@ -1,0 +1,95 @@
+# RoboWild pilot
+
+[RoboWild](https://github.com/xlang-ai/RoboWild) tests frontier models as robot-use agents in 341 simulated tasks
+(Isaac Sim) on four mobile robots. This pilot runs world-use's [hand tools](../../docs/hand-tools.md) on a tenth of
+them: the 34 cross-embodiment tasks, on the mobile Franka, against the same model on its own.
+
+**Status:** the setup runs end to end on an NVIDIA L40S, with a scripted model; no model has been evaluated yet,
+so there are no results.
+
+## The comparison
+
+Both arms run through [RoboWild-Harness](https://github.com/xlang-ai/RoboWild-Harness) `eval` with the same model,
+the `react_move_points` Robot API profile (`move_robot`, `get_camera_point_3d`, `done`), frozen simulation, seed 0,
+one round, and each task's own call budget: 100 Robot API calls for a short task, 200 for a long one.
+
+- **alone** is the harness's `react` backend, unchanged.
+- **world-use** is [agent.py](agent.py), run as a `command` backend: the same `react` loop, with `grasp`, `place`,
+  `release_placement` and `push` added and their help appended to its instructions. They run through
+  [arm.py](arm.py), whose moves are `move_robot` calls on the same budget.
+
+[cases.toml](cases.toml) lists the tasks, their budgets and a development/held-out split (10 and 24 tasks, chosen
+by hash within short and long tasks). Development tasks may be inspected and replayed to build the tools; held-out
+tasks are not inspected for tuning.
+
+## What the tools do here, and what they do not
+
+- A grasp opens above its pose, comes straight down, closes, checks the measured finger opening and lifts 3-5 cm
+  with the opening monitored; a lean comes in along the hand's axis. A place carries, comes down to its pose,
+  and stops with a one-use checkpoint before opening. A push follows a line with the fingers closed.
+- An approach that stops short along its line, as on a counter or the object, reports how far short. The harness
+  reports no forces: this is judged from where the hand ended.
+- Positions come from the policy, in robot_base, with `get_camera_point_3d`. There is no region tracking, no
+  locating through the wrist camera and no lift or carry evidence from images yet.
+- A lean the arm cannot make fails at its first move with the planner's reason; this profile has no planning call
+  to check it before the hand turns.
+
+## Set up
+
+On Linux with an NVIDIA RTX-class GPU, install RoboWild with its
+[installer](https://github.com/xlang-ai/RoboWild#installation) (about 20 minutes and 18.5 GB of assets), then the
+agent's environment: Python 3.13 with world-use and the harness's agent code, without its simulator dependencies.
+
+```bash
+uv venv --python 3.13 agent
+```
+
+```bash
+uv pip install --python agent/bin/python -e /path/to/world-use
+```
+
+```bash
+uv pip install --python agent/bin/python --no-deps -e RoboWild/robowild-harness -e RoboWild/robowild-harness/packages/robot-sdk
+```
+
+```bash
+uv pip install --python agent/bin/python requests psutil transforms3d packaging pyyaml
+```
+
+Two things the installer leaves to the machine:
+
+- RoboWild looks for Isaac Lab beside its checkout: link `IsaacLab` there if the installer's workspace is elsewhere.
+- The harness copies its agent-side interpreter into each task workspace. Interpreters that find `libpython`
+  through a path baked in relative to themselves (Modal's, for one) fail there with exit status 127. Pass
+  `--worker-python` an environment on a copyable Python 3.12, such as uv's, with the harness installed.
+
+## Run
+
+In RoboWild's environment (`source activate_robowild.sh`), check the setup with a scripted plan first; it calls no
+model:
+
+```bash
+python run.py --arm world-use --split development --tasks 01-01 --scripted plan.json --agent-python agent/bin/python --robowild RoboWild --output results/check
+```
+
+A plan is a list of tool calls, such as `[{"name": "done", "arguments": {}}]`. Then each arm, on each split:
+
+```bash
+python run.py --arm alone --split development --model MODEL --base-url URL --api-key-env NAME --robowild RoboWild --output results/development --authorization "..."
+```
+
+```bash
+python run.py --arm world-use --split development --model MODEL --base-url URL --api-key-env NAME --agent-python agent/bin/python --robowild RoboWild --output results/development --authorization "..."
+```
+
+`--authorization` records the approval of the paid run with it. Each arm's `short` and `long` directories hold the
+harness's `report.json`, `summary.md` and every run's videos and records; the world-use agent's own records
+(`world-use.jsonl`, `moves.jsonl`) are beside each run's command logs.
+
+## Checks
+
+```bash
+uv run pytest examples/robowild/test_arm.py
+```
+
+They run the hand tools through `RoboWildArm` on a fake mobile Franka whose results follow the harness's schemas.

@@ -1,0 +1,23 @@
+# The pilot's tasks: RoboWild's 34 cross-embodiment tasks (cross_embodiment_tasks.csv), a tenth of its 341, run on
+# the mobile Franka. Each robot_api_call_limit comes from the task's config.yaml: 100 calls for a short task, 200 for
+# a long one; the harness does not apply it by itself.
+#
+# Development tasks may be inspected and replayed to build the tools. Held-out tasks are not inspected for tuning.
+# The split takes, in the order of sha256("world-use robowild pilot <id>"), the first 6 short and the first 4
+# long tasks.
+
+robowild_commit = "c947884"
+harness_commit = "1d899e3"
+robot_type = "franka_mobile"
+
+[call_limit]
+short = 100
+long = 200
+
+[tasks]
+development = ["01-01", "02-06", "04-02", "06-06", "09-06", "22-10", "23-03", "29-06", "36-01", "37-01"]
+held_out = ["02-10", "04-03", "06-02", "09-01", "10-03", "12-02", "13-02", "16-03", "18-02", "21-04", "22-03",
+            "23-02", "25-02", "26-02", "26-09", "27-02", "27-06", "29-03", "30-06", "30-09", "31-03", "32-01",
+            "33-01", "35-03"]
+long = ["04-02", "06-02", "06-06", "16-03", "23-02", "23-03", "25-02", "29-03", "30-06", "30-09", "32-01", "33-01",
+        "35-03", "37-01"]
