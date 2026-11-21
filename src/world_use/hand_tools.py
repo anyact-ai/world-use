@@ -31,6 +31,7 @@ import numpy as np
 from . import procedures
 from .behaviors import Outcome
 from .cameras import View
+from .client import DaemonError
 from .parallax import Look, footprint, image_directions, locate
 from .tracking import Tracking
 
@@ -74,10 +75,15 @@ class Executor(Protocol):
     measure() is the hand's measured state as observations carry it, and position() reads the tool point
     from one. pose() is the tool point and approach axis now. orientation() turns an approach axis, and
     optionally a sign-free finger axis, into the executor's target keys, and returns the finger axis it chose.
-    lean_refusal() says (message, hint) when the hand cannot lean so and pass through the given points in
-    order. hand_look() is the hand camera's view and the tool point when a frame (by id) was taken, or now;
-    None without a hand camera. key() changes whenever the world may have changed.
+    lean_refusal() says (message, hint) when the hand cannot lean so and follow path, the start and end of
+    its line. hand_look() is the hand camera's view and the tool point when a frame (by id) was taken, or now;
+    None without a hand camera. fingerprint() changes once anything may have commanded the arm, and noise in
+    its readings leaves it alone. key() is equal in two calls only when nothing in the world can have changed
+    between them, as in a paused simulator, and None when that cannot be known. failures are the exceptions
+    that mean the executor lost its arm during a call: the call then ends stopped, with what ran before.
     """
+
+    failures: tuple[type[Exception], ...]
 
     def execute(self, command: dict) -> Outcome: ...
     def measure(self) -> dict: ...
@@ -91,7 +97,7 @@ class Executor(Protocol):
     def validate_pose(self, targets: dict) -> None: ...
     def fingerprint(self) -> str: ...
     def record(self, name: str, row: dict) -> None: ...
-    def key(self) -> object: ...
+    def key(self) -> object | None: ...
 
 
 def tilted(direction, tilt_deg: float) -> tuple[np.ndarray, np.ndarray]:
@@ -345,6 +351,11 @@ class HandTools:
         self.located = {}  # where each target was last found; forgotten once it is reselected or taken
         self.outlined = set()  # targets selected with a box around them, whose region is the whole object
 
+    @property
+    def push_lean(self) -> float:
+        """How far a push leans the hand back unless told otherwise."""
+        return min(LEAN_DEG, self.hand.max_lean_deg)
+
     def schemas(self) -> list[dict]:
         """Each tool's name, description and JSON Schema parameters, for an agent loop to register."""
         return _schemas(self.hand.hand_camera)
@@ -371,7 +382,7 @@ class HandTools:
             "A pinch on a handle does not resist turning: look at how the object hangs before going on. A lean "
             "the arm cannot make is refused before it moves. place stops before opening with a one-use "
             "checkpoint; inspect the views, then call release_placement or correct the pose. push leans the hand "
-            f"{LEAN_DEG} degrees back from a level line so the fingertips lead, and backs off up to "
+            f"{self.push_lean:g} degrees back from a level line so the fingertips lead, and backs off up to "
             f"{100 * BACK_OFF_M:g} cm. Results: arm arrived, stopped_on_contact (short_m), not_approaching; gripper "
             "reached_end (nothing between the fingers), stopped_apart. A surprise is a measurement: correct its "
             "cause and try again."
@@ -380,8 +391,9 @@ class HandTools:
     def observe(self):
         names = list(self.tracking.targets) + list(self.tracking.lost)
         # Nothing moves between two looks with the same key, so the second is the first again.
-        key = (self.arm.key(), tuple(names))
-        if self.seen is None or self.seen[0] != key:
+        key = self.arm.key()
+        key = None if key is None else (key, tuple(names))
+        if key is None or self.seen is None or self.seen[0] != key:
             result = dict(self.arm.measure(), targets=self.tracking.observe(names) if names else [])
             self.arm.record("tracking.jsonl", result)
             self.seen = (key, result)
@@ -533,7 +545,7 @@ class HandTools:
         length = float(np.linalg.norm(line))
         if length < 0.01:
             raise ValueError("the start and end of a push are at least 1 cm apart")
-        tilt = args.get("tilt_deg", LEAN_DEG)
+        tilt = args.get("tilt_deg", self.push_lean)
         if type(tilt) not in (float, int) or not 0 <= tilt <= self.hand.max_lean_deg:
             raise ValueError(f"tilt_deg is between 0 and {self.hand.max_lean_deg:g}")
         # Only a mostly level line turns the hand across it, and leans it unless the line points where
@@ -607,6 +619,12 @@ class HandTools:
             record, told = self._call(name, args)
         except (KeyError, ValueError, TypeError) as exc:
             record = told = dict(status="refused", message=str(exc))
+        except self.arm.failures as exc:
+            record = told = dict(
+                status="stopped",
+                message=f"the arm's controller failed during this call: {exc}",
+                hint="what ran before the failure may have moved the arm: observe before going on",
+            )
         return record, json.dumps(brief(told), separators=(",", ":"))
 
     def _call(self, name, args):
@@ -851,21 +869,27 @@ class HandTools:
 
 
 FINISHED = ("done", "refused", "surprise", "stopped", "faulted", "cancelled")
+ALIGNED_COS = math.cos(math.radians(0.5))  # a hand within this of a turn's axes already points so
 
 
 class DaemonArm:
     """The tools' executor for a robot the world-use daemon runs, through its client. Positions are in the robot's
     base frame. Each command is one job, rehearsed before it is admitted; between jobs the arm holds where it is.
 
-    A line that may end on contact is a guarded move, which needs joint torque sensing: on an arm without it the
-    line is a plain move and contact is a surprise. The jaw sign and what the wrist can reach are the kernel's:
-    move_to chooses the sign, and a lean is refused when its rehearsal is.
+    Moves go in straight legs no longer than one of the robot's segments. A line that may end on contact is a guarded
+    move over its last segment, which needs joint torque sensing: on an arm without it the line is a plain move and
+    contact is a surprise. The jaw sign and what the wrist can reach are the kernel's: move_to chooses the sign, and
+    a lean is refused when its rehearsal is.
     """
+
+    failures = (DaemonError, OSError)
 
     def __init__(self, client, hand: Hand, *, record=None, wait_s: float = 120.0):
         self.client, self.hand, self.wait_s = client, hand, wait_s
         self.sink = record  # where rows are recorded, (name, row) -> None; none by default
         self.torque = "torque_nm" in client.status()
+        # Pieces a little shorter than the limit: the kernel measures each from where the last one ended.
+        self.leg_m = 0.95 * float(client.capabilities()["max_segment_m"])
 
     # -- what the tools read ----------------------------------------------------------------------------
     def measure(self):
@@ -886,21 +910,17 @@ class DaemonArm:
         return targets, None if jaws is None else np.asarray(jaws, float)
 
     def lean_refusal(self, direction, tilt_deg, path):
-        """A rehearsal of the lean as the tools make it: a turn where the hand is, level to above the first point,
-        down to it and on through the rest."""
+        """A rehearsal of the lean as the tools make it: a turn where the hand is, then the approach to path's start
+        and along its line."""
         approach, across = tilted(direction, tilt_deg)
-        turn = dict(point=approach.tolist(), jaws=across.tolist())
-        here, first = self.pose()[0], np.asarray(path[0], float)
-        points = [np.array([first[0], first[1], max(here[2], first[2])]), *(np.asarray(p, float) for p in path)]
-        steps = [dict(do="move_to", frame="base", **turn)]
-        for before, point in zip([here, *points], points, strict=False):
-            if np.linalg.norm(point - before) > 1e-4:
-                steps.append(dict(do="move_to", to=point.tolist(), frame="base", **turn))
-        report = self.client.check(steps)
+        here = self.pose()[0]
+        turn = self._turn(dict(point=approach.tolist(), jaws=across.tolist()))
+        report = self.client.check(turn + self._approach(here, path[0], path[-1], {})[0])
         if report.get("ok"):
             return None
-        problems = "; ".join(report.get("problems") or []) or report.get("text", "")
-        return f"the arm cannot lean that way at that point: {problems}", "lean another way or less, or grasp upright"
+        problems = list(dict.fromkeys(p["message"] for p in report.get("problems") or []))  # each said once
+        reason = "; ".join(problems) or (report.get("outcome") or {}).get("message") or report.get("text", "")
+        return f"the arm cannot lean that way at that point: {reason}", "lean another way or less, or grasp upright"
 
     def hand_look(self, frame=None):
         if self.hand.hand_camera is None:
@@ -921,15 +941,16 @@ class DaemonArm:
             raise ValueError("a pose is x, y and z in metres, in the robot's base frame")
 
     def fingerprint(self):
+        """The kernel's count of control changes, from this client or any other, with its power state."""
         s = self.client.status()
-        return json.dumps([s["joints_deg"], s.get("gripper"), s["events"]])
+        return json.dumps([s["control_revision"], s["enabled"], s["faulted"], s["power_uncertain"]])
 
     def record(self, name, row):
         if self.sink is not None:
             self.sink(name, row)
 
     def key(self):
-        return self.client.status()["events"]
+        return None  # the world goes on changing between jobs
 
     # -- commands -----------------------------------------------------------------------------------------
     def execute(self, command):
@@ -962,7 +983,7 @@ class DaemonArm:
         )
 
     def _steps(self, command):
-        """Plan steps for a move, and the contact line's length when its last step may end on contact."""
+        """Plan steps for a move, and the length of its guarded last step when that may end on contact."""
         targets, here = dict(command["targets"]), self.pose()[0]
         turn = {k: targets.pop(k) for k in ("point", "jaws") if k in targets}
         gripper = targets.pop("gripper", None)
@@ -977,60 +998,99 @@ class DaemonArm:
                 steps.append(dict(do="gripper", aperture_mm=0.0))
             else:
                 steps.append(dict(do="gripper", aperture_mm=float(self.hand.opening_mm), check_arrival=True))
-
-        def to(where, **extra):
-            return dict(do="move_to", to=[float(v) for v in where], frame="base", **extra)
-
         travel = command.get("travel_z")
         if travel is not None and travel - here[2] > self.hand.arrive_m:
-            here = np.array([here[0], here[1], travel])
-            steps.append(to(here))
+            above = np.array([here[0], here[1], travel])
+            steps += self._legs(here, [above], {})
+            here = above
         via, line = command.get("via"), None
-        if via is not None:
+        if via is None:
+            steps += self._legs(here, [goal], turn)
+        else:
             start = np.array([via.get("x", goal[0]), via.get("y", goal[1]), via.get("z", here[2])], float)
-            steps.append(to([start[0], start[1], here[2]], **turn))  # the hand turns on the level leg
-            if abs(start[2] - here[2]) > 1e-6:
-                steps.append(to(start))
-            d = goal - start
-            if self.torque and np.linalg.norm(d) > 1e-6:
-                line = float(np.linalg.norm(d))
-                words = dict(forward=d[0], left=d[1], up=d[2])
-                steps.append(
-                    dict(
-                        do="guarded",
-                        frame="base",
-                        expect_contact=False,
-                        **{k: float(v) for k, v in words.items() if abs(v) > 1e-9},
-                    )
-                )
-            else:
-                steps.append(to(goal))
-        elif np.linalg.norm(goal - here) > 1e-4:
-            steps.append(to(goal, **turn))
-        elif turn:
-            steps.append(dict(do="move_to", frame="base", **turn))  # where the hand is
+            approach, line = self._approach(here, start, goal, turn)
+            steps += approach
         if command.get("settle") == "move" and steps and steps[-1]["do"] == "move_to":
             steps.append(dict(do="settle"))
         return steps, line
 
+    def _approach(self, here, start, goal, turn):
+        """Steps level to above start, turning the hand on the way, straight to start, then along the line to goal,
+        which may end on contact; and that line's guarded length, None when it has none."""
+        steps = self._legs(here, [[start[0], start[1], here[2]], start], turn)
+        d = np.asarray(goal, float) - start
+        length = float(np.linalg.norm(d))
+        if not self.torque or length <= 1e-4:
+            return steps + self._legs(start, [goal], {}), None
+        guarded = min(length, self.leg_m)
+        before = start + d * (1 - guarded / length)
+        words = dict(forward=d[0], left=d[1], up=d[2])
+        steps += self._legs(start, [before], {})
+        steps.append(
+            dict(
+                do="guarded",
+                frame="base",
+                expect_contact=False,
+                **{k: float(v * guarded / length) for k, v in words.items() if abs(v) > 1e-9},
+            )
+        )
+        return steps, guarded
+
+    def _legs(self, here, points, turn):
+        """move_to steps from here through points, in pieces no longer than leg_m. The hand turns to `turn` on the
+        first leg, or where it is when that leg goes nowhere."""
+        steps, at = [], np.asarray(here, float)
+        for n, point in enumerate(points):
+            point = np.asarray(point, float)
+            length = float(np.linalg.norm(point - at))
+            pieces = math.ceil(length / self.leg_m) if length > 1e-4 else 0
+            steps += [dict(do="move_to", to=(at + (point - at) * i / pieces).tolist(), frame="base")
+                      for i in range(1, pieces + 1)]
+            if n == 0 and (turning := self._turn(turn)):
+                if steps:
+                    steps[0].update(turn)
+                else:
+                    steps += turning
+            at = point
+        return steps
+
+    def _turn(self, turn):
+        """A turn of the hand where it is, or no step when it already points along turn's point and, when given, its
+        jaws open along turn's jaws either way round: the kernel refuses a move that goes nowhere."""
+        if not turn:
+            return []
+        axes = self.client.status()["tool_axes"]  # rounded, so no longer quite unit length
+
+        def cos(a, b):
+            a, b = np.asarray(a, float), np.asarray(b, float)
+            return float(a @ b) / float(np.linalg.norm(a) * np.linalg.norm(b))
+
+        aligned = cos(axes["approach"], turn["point"]) >= ALIGNED_COS
+        if "jaws" in turn:
+            aligned = aligned and abs(cos(axes["opens"], turn["jaws"])) >= ALIGNED_COS
+        return [] if aligned else [dict(do="move_to", frame="base", **turn)]
+
     def _job(self, steps, kind, line=None, monitor=None):
+        if not steps:
+            data = dict(self.measure(), arm="arrived")
+            return Outcome("done", kind, "nothing to do: the hand is already there", data)
         spec: dict = dict(do="seq", steps=steps)
         if monitor:
             spec["expect_grip_mm"] = list(monitor)
-        from .client import DaemonError
-
         try:
             job = self.client.run(spec, wait=self.wait_s)
-            while job.get("id") is not None and job["status"] not in FINISHED:
-                job = self.client.job(job["id"], wait=self.wait_s)
         except DaemonError as e:
+            if e.code != 409:
+                raise
             return Outcome("refused", kind, str(e), self.measure())
+        while job.get("id") is not None and job["status"] not in FINISHED:
+            job = self.client.job(job["id"], wait=self.wait_s)
         outcome = job.get("outcome") or {}
         data = self.measure()
         if job["status"] != "done":
             message = outcome.get("message") or job.get("incident", "")
             return Outcome(
-                job["status"],
+                "stopped" if job["status"] == "cancelled" else job["status"],  # a queued job a stop ended
                 kind,
                 message,
                 data,

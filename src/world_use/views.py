@@ -108,6 +108,9 @@ def status(k) -> dict:
         d["facts"] = {key: (f.value if f.stale is None else f"{f.value} (STALE: {f.stale})")
                       for key, f in k.world.facts.items()}
     d["events"] = k.events.seq
+    # Counts control changes from any client: jobs, torque on and off, stops, resets. Events and encoder noise
+    # leave it alone, so an unchanged count means nothing has commanded the arm since.
+    d["control_revision"] = k.control_revision
     return d
 
 

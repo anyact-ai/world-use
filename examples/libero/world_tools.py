@@ -221,6 +221,8 @@ def wrist_view(eef_state):
 class Arm:
     """The tools' executor on LIBERO's arm: every command goes through the driver's counted steps."""
 
+    failures = ()  # the simulator runs in this process: its errors stop the episode
+
     def __init__(self, driver):
         self.driver = driver
         self.native = driver.tools

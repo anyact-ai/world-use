@@ -48,7 +48,8 @@ class Client:
         return self._call("GET", "/card")["card"]
 
     def capabilities(self) -> dict:
-        """The card's text, plus its cameras: which are calibrated, which give depth and which are on the hand."""
+        """The card's text, plus its cameras (which are calibrated, which give depth and which are on the hand) and
+        max_segment_m, the longest straight move one step may make."""
         return self._call("GET", "/card")
 
     def run(self, spec, wait: float = 0.0, check: bool = True, *, requires: list[dict] | None = None) -> dict:

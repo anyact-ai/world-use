@@ -9,11 +9,12 @@
   it in under a roof. GPT-6.2 Astra solves 43 of 50 LIBERO-10 episodes with these tools and 19 alone; with the
   earlier tools it solved 35 and 18. See the
   [results](examples/libero/README.md#gpt-62-astra-before-and-after-the-leaning-grasp).
-- **Jaws the other way round.** `move_to` turns the jaws half round the other way when the nearer way would end
-  a joint near its stop or out of reach.
+- **Jaws the other way round.** `move_to` turns the jaws half round the other way when the nearer way is out of
+  reach, or would end a joint near its stop that the other way keeps clear.
 - **A simulated camera on the tool.** A workcell camera with `mount = "tool"` moves with the hand.
-- `status` reports `tool_axes`, which way the fingers point and open. A simulated body takes `scenery`, MuJoCo
-  bodies of the caller's own.
+- `status` reports `tool_axes`, which way the fingers point and open, and `control_revision`, a count of what
+  has commanded the arm. The card gives `max_segment_m`. A simulated body takes `scenery`, MuJoCo bodies of the
+  caller's own.
 
 ## 0.3.0
 
