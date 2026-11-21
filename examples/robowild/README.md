@@ -72,7 +72,8 @@ model:
 python run.py --arm world-use --split development --tasks 01-01 --scripted plan.json --agent-python agent/bin/python --robowild RoboWild --output results/check
 ```
 
-A plan is a list of tool calls, such as `[{"name": "done", "arguments": {}}]`. Then each arm, on each split:
+A plan is a list of tool calls, such as `[{"name": "done", "arguments": {}}]`; an argument `"$checkpoint"` passes on
+the release checkpoint the call before it issued. Then each arm, on each split:
 
 ```bash
 python run.py --arm alone --split development --model MODEL --base-url URL --api-key-env NAME --robowild RoboWild --output results/development --authorization "..."
