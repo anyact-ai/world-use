@@ -210,7 +210,8 @@ class SimulationSession:
             self.client.record(context=dict(execution="live caller with declared source snapshot", **(context or {})))
             save_summary(self.output / "flight/external-scene.json", dict(path="..", format="mujoco-v1"))
             save_summary(self.output / "cameras.json",
-                         {name: cam.view.to_dict() for name, cam in cameras.items() if cam.view is not None})
+                         {name: cam.view.to_dict() for name, cam in cameras.items()
+                          if cam.view is not None and not getattr(cam, "mounted", False)})
         except BaseException:
             if self.daemon is not None:
                 self.daemon.shutdown()

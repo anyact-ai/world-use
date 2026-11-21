@@ -187,6 +187,11 @@ class Envelope:
         hi = np.maximum(self.m.upper - MARGIN, np.maximum(q_from, self.q_start))
         return lo, hi
 
+    def stop_room(self, q, q_from) -> np.ndarray:
+        """How far each joint of q is from the bounds a move from q_from plans within, rad."""
+        lo, hi = self.bounds(q_from)
+        return np.minimum(np.asarray(q, float) - lo, hi - np.asarray(q, float))
+
     def check_path(self, path, q_from, allow_contact=False, contact=None) -> dict:
         """Check the whole path against every limit before anything moves. Raises one Refused that names every
         limit it would break, with the numbers; in a rehearsal (a twin), records them and lets it run on, so one

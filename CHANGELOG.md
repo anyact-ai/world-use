@@ -2,10 +2,18 @@
 
 ## Unreleased
 
-- **Leaning grasp in the LIBERO example.** `grasp` takes `tilt_deg` and `toward`, so the hand can take a mug
-  by its handle and carry it in under a roof. GPT-6.2 Astra solves 43 of 50 LIBERO-10 episodes with these
-  tools and 19 alone; with the earlier tools it solved 35 and 18. See the
+- **Hand tools in the library.** `world_use.hand_tools` holds the locate, grasp, place and push tools that the
+  LIBERO-10 results come from, for any agent loop and any robot the daemon runs (`DaemonArm`); the LIBERO
+  example now uses them. See [hand tools](docs/hand-tools.md).
+- **Leaning grasp.** `grasp` takes `tilt_deg` and `toward`, so the hand can take a mug by its handle and carry
+  it in under a roof. GPT-6.2 Astra solves 43 of 50 LIBERO-10 episodes with these tools and 19 alone; with the
+  earlier tools it solved 35 and 18. See the
   [results](examples/libero/README.md#gpt-62-astra-before-and-after-the-leaning-grasp).
+- **Jaws the other way round.** `move_to` turns the jaws half round the other way when the nearer way would end
+  a joint near its stop or out of reach.
+- **A simulated camera on the tool.** A workcell camera with `mount = "tool"` moves with the hand.
+- `status` reports `tool_axes`, which way the fingers point and open. A simulated body takes `scenery`, MuJoCo
+  bodies of the caller's own.
 
 ## 0.3.0
 

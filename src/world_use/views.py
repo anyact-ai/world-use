@@ -71,6 +71,11 @@ def status(k) -> dict:
              tool=dict(base=np.round(tool[:3, 3], 4).tolist(),
                        **{name: np.round(k.world.from_base(name, tool[:3, 3]), 4).tolist()
                           for name in k.world.frames if name != "base"}))
+    if k.manifest.gripper is not None:
+        # Base-frame unit directions the fingers point along and open along.
+        g = k.manifest.gripper
+        d["tool_axes"] = dict(approach=np.round(tool[:3, :3] @ np.asarray(g.approach, float), 4).tolist(),
+                                 opens=np.round(tool[:3, :3] @ np.asarray(g.opens_along, float), 4).tolist())
     if st.tau is not None:
         d["torque_nm"] = np.round(np.asarray(st.tau), 2).tolist()
     if st.temp is not None:

@@ -5,11 +5,13 @@ from xml.etree import ElementTree as ET
 
 import numpy as np
 import pytest
+from conftest import serving
 
-from world_use import Kernel, VirtualClock, World, bodies, views
+from world_use import Kernel, VirtualClock, World, bodies, cameras, views
 from world_use.bodies.mujoco_scene import mj
 from world_use.bodies.rebot import MANIFEST
 from world_use.cameras import View
+from world_use.client import DaemonError
 from world_use.config import load_robot, load_workcell
 from world_use.examples.pick_place import pickup, setup
 
@@ -164,6 +166,36 @@ def test_a_camera_fixed_to_the_tool_sees_from_wherever_the_tool_is():
             k.body.render(View(view.T, -208.5, 208.5, 160, 120, 320, 240))
     finally:
         k.close()
+
+
+MOUNTED = dict(name="hand", mount="tool", eye=[0.05, 0, 0.04], look_at=[0.05, 0, -1], up=[-1, 0, 0], fov_deg=75,
+               size=[320, 240])
+
+
+@pytest.mark.rendering
+def test_a_workcell_camera_mounted_on_the_tool_moves_with_it_and_is_not_calibrated(tmp_path):
+    with serving(tmp_path, dict(camera=[MOUNTED])) as (_, client):
+        assert client.capabilities()["cameras"]["hand"]["mounted"]
+        frames = []
+        for rise in (0.0, 0.05):
+            assert client.run({"do": "line", "up": rise} if rise else {"do": "settle"}, wait=30)["status"] == "done"
+            frames.append(client.frame("hand"))        # an image-only frame carries its view and tool pose too
+        for frame in frames:
+            mount = cameras.view_from_config(MOUNTED, None)
+            np.testing.assert_allclose(frame.view.T, frame.tool @ mount.T, atol=1e-9)
+        assert frames[1].view.T[2, 3] - frames[0].view.T[2, 3] == pytest.approx(0.05, abs=5e-3)
+        with pytest.raises(DaemonError, match="mounted on the tool"):
+            client.calibrate("hand")
+
+
+@pytest.mark.parametrize("entry,message", [
+    (dict(MOUNTED, path="hand.png", eye=None, look_at=None), "only a simulated camera"),
+    ({k: v for k, v in MOUNTED.items() if k != "up"}, "eye, look_at and up in the tool frame"),
+    (dict(MOUNTED, frame="base"), "and no frame"),
+])
+def test_a_mounted_camera_entry_needs_a_simulated_camera_and_its_pose_in_the_tool_frame(entry, message):
+    with pytest.raises(ValueError, match=message):
+        cameras.CameraConfig.model_validate({k: v for k, v in entry.items() if v is not None})
 
 
 def test_an_incompatible_gripper_mapping_is_rejected():

@@ -113,7 +113,8 @@ class Daemon:
                      "held-object box; self-collision and undeclared geometry are not checked.")
             return 200, dict(card=card, session=self.session, rehearsal_coverage=coverage,
                              cameras={name: dict(depth=isinstance(cam, cameras.SimCamera),
-                                                 calibrated=cam.view is not None)
+                                                 calibrated=cam.view is not None,
+                                                 mounted=getattr(cam, "mounted", False))
                                       for name, cam in self.cameras.items()},
                              collision_coverage=dict(
                                  checked=["padded_link_segments", "tool_point_surfaces", "estimated_held_object_box"]
@@ -257,7 +258,11 @@ class Daemon:
                  + ("; MuJoCo simulation" if isinstance(cam, cameras.SimCamera) else "")) \
             if cam.view is not None else "no calibration for this camera, so nothing is drawn on it"
         caption = f"{name} | t+{k.clock.now() - k.t0:.0f}s | tool F{tool[0]:+.3f} L{tool[1]:+.3f} U{tool[2]:+.3f}"
-        img = cameras.overlay(img, cam.view, k, None if report is None else report.tool_path, caption)
+        view = cam.view
+        if getattr(cam, "mounted", False):
+            frame = cam.capture(k)                        # the view of a camera on the hand moves with it
+            img, view = frame.image, frame.view
+        img = cameras.overlay(img, view, k, None if report is None else report.tool_path, caption)
         out = self._save(k, name, cam, img, drawn)
         if report is not None:
             out.update(check=str(report), ok=report.ok)
@@ -307,6 +312,8 @@ class Daemon:
         cam = self.cameras.get(camera)
         if cam is None:
             raise Refused(f"no camera {camera!r}; cameras: {', '.join(self.cameras)}", "no_camera")
+        if getattr(cam, "mounted", False):
+            raise Refused(f"camera {camera!r} is mounted on the tool: its mount is its calibration", "mounted")
         w, h = cam.picture(k).size                       # fails early on a dead camera
         s = min(1.0, cameras.MAX_SIDE / max(w, h))        # the answers count pixels of the picture `wu look` saves
         size = (round(w * s), round(h * s))
@@ -522,7 +529,7 @@ def make_cameras(cell: dict, k: Kernel, body, truth: World | None) -> dict[str, 
         if "path" in c or "url" in c or "command" in c:
             cams[c["name"]] = cameras.from_config(c, k.world)
         elif truth is not None and (view := cameras.view_from_config(c, k.world)) is not None:
-            cams[c["name"]] = cameras.SimCamera(c["name"], view, body)
+            cams[c["name"]] = cameras.SimCamera(c["name"], view, body, mounted=c.get("mount") == "tool")
         else:
             raise ValueError(f"camera {c.get('name')!r} needs a path, a url or a command "
                              "(or, on a simulator, eye and look_at)")

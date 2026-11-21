@@ -23,8 +23,11 @@ class SimBody:
     simulated = True
 
     def __init__(self, manifest: Manifest, world: World | None = None, q=None, gripper=None, *,
-                 noise: float = 0.0, seed: int = 0, temp_c=None, ambient_c: float = 25.0):
+                 noise: float = 0.0, seed: int = 0, temp_c=None, ambient_c: float = 25.0, scenery=None):
+        """scenery(spec) adds the caller's own bodies to the MuJoCo spec each time the scene is built, for shapes
+        a world box cannot describe; they are simulation truth only, never in any World."""
         self.manifest = manifest
+        self.scenery = scenery
         self.chain = Chain(manifest.urdf, manifest.tool_link)
         self.world = world if world is not None else World()
         n = manifest.n
@@ -75,7 +78,7 @@ class SimBody:
         scene = self._signature()
         if self.model is not None and scene == self._scene:
             return
-        self.model, grip = build(self.manifest, self.world, self.dt / self.substeps)
+        self.model, grip = build(self.manifest, self.world, self.dt / self.substeps, self.scenery)
         self.data = mj.MjData(self.model)
         joints = [self.model.joint(j.name) for j in self.manifest.joints]
         self._q = np.array([int(j.qposadr[0]) for j in joints])
@@ -220,8 +223,8 @@ class SimBody:
             self.dq_cmd[:] = 0
             mj.mj_forward(self.model, self.data)
 
-    def render(self, view):
-        return self._capture(view, depth=False)[0]
+    def render(self, view, *, mounted=False):
+        return self._capture(view, depth=False, mounted=mounted)[0]
 
     def capture(self, view, *, mounted=False):
         """RGB, optical-z depth and the tool pose from one physics snapshot, without advancing the scene.

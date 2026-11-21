@@ -255,12 +255,18 @@ def _direction(value) -> np.ndarray:
     return v / np.linalg.norm(v)
 
 
+# A move whose nearer grip ends a joint closer than this to its stop (20 deg) also tries the other way round.
+ROOM_RAD = 0.35
+
+
 class MoveTo(PathBehavior):
     """Tool point to an absolute position in a straight line; with point, the gripper turns on the way.
 
     to          [forward, left, up] metres in the frame (default: work); leave it out to turn in place
     point       which way the gripper should end up pointing: down, up, forward, back, left, right, or [f, l, u]
-    jaws        which way its jaws should open, the same way (default: as near to now as pointing allows)
+    jaws        which way its jaws should open, the same way (default: as near to now as pointing allows);
+                either way round, and the other way when the nearer one is out of reach or ends near a
+                joint's stop
     within_deg  how far from point it may end so the wrist and base can stay still below the turn height
                 (default 5: near its base a real arm can seldom point exactly down without turning them)
     frame, duration, speed  as for line
@@ -293,17 +299,28 @@ class MoveTo(PathBehavior):
             R = geometry.aim(T0[:3, :3], g.approach, g.opens_along, want, jaws)
         except ValueError as e:
             raise Refused(str(e), "spec", "give jaws square to point") from None
-        T = np.eye(4)
-        T[:3, :3], T[:3, 3] = R, target
         words = heading(F.T @ want)
-        exact, failed, turn = None, None, None
-        try:
-            lo, hi = k.envelope.bounds(k.cmd.q)
-            exact, _, _ = motion.cartesian(k.chain, k.cmd.q, T, timing, p.get("duration"), lo, hi,
-                                           weights=k.ik_weights, turning=words)
-            turn = k.envelope.turn_problem(np.vstack([k.cmd.q, exact]), k.manifest.rate_hz)
-        except Refused as e:
-            failed = e
+
+        def exact_path(R):
+            T = np.eye(4)
+            T[:3, :3], T[:3, 3] = R, target
+            try:
+                lo, hi = k.envelope.bounds(k.cmd.q)
+                path, _, _ = motion.cartesian(k.chain, k.cmd.q, T, timing, p.get("duration"), lo, hi,
+                                              weights=k.ik_weights, turning=words)
+            except Refused as e:
+                return None, e, None
+            return path, None, k.envelope.turn_problem(np.vstack([k.cmd.q, path]), k.manifest.rate_hz)
+
+        exact, failed, turn = exact_path(R)
+        self.reversed = False
+        if exact is None or turn is not None or k.envelope.stop_room(exact[-1], k.cmd.q).min() < ROOM_RAD:
+            # Jaws opening along the same line the other way round close on the same thing, half a turn of the
+            # wrist away: take that grip when the nearer one is out of reach or ends close to a joint's stop.
+            other = exact_path(R @ geometry.axis_angle(g.approach, np.pi))
+            if other[0] is not None and other[2] is None and (
+                    exact is None or turn is not None or self._roomier(k, other[0][-1], exact[-1])):
+                (exact, failed, turn), self.reversed = other, True
         if exact is not None and turn is None:
             self.aimed = (want, False)
             return exact
@@ -319,6 +336,14 @@ class MoveTo(PathBehavior):
             raise Refused(str(turn), "turn_clearance", turn.hint + more, **turn.data)
         assert failed is not None
         raise failed
+
+    @staticmethod
+    def _roomier(k, q, than):
+        """Whether q leaves the joints that differ from `than` further from their stops."""
+        differ = np.abs(np.asarray(q) - than) > 0.1
+        if not differ.any():
+            return False
+        return k.envelope.stop_room(q, k.cmd.q)[differ].min() > k.envelope.stop_room(than, k.cmd.q)[differ].min()
 
     def _tilt(self, k, T0, target, want, jaws, timing, words):
         """Point as near to `want` as the pitch joints alone can, with the joints the turn-clearance rule guards
@@ -364,8 +389,10 @@ class MoveTo(PathBehavior):
         R = k.chain.fk(k.cmd.q)[:3, :3]
         off = np.degrees(geometry.angle(R @ g.approach, want))
         why = f" ({off:.1f} deg off: the wrist stays still below the turn height)" if tilted and off >= 0.5 else ""
+        turned = " (the other way round, further from a joint's stop)" if getattr(self, "reversed", False) else ""
         return self.done(f"{self.describe()}: now pointing {heading(W.T @ R @ g.approach)}{why}, jaws open "
-                         f"{along(W.T @ R @ g.opens_along)}", seconds=self.info["seconds"], off_deg=round(off, 1))
+                         f"{along(W.T @ R @ g.opens_along)}{turned}", seconds=self.info["seconds"],
+                         off_deg=round(off, 1))
 
 
 # -- contact ------------------------------------------------------------------------------------------
