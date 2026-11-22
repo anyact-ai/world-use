@@ -4,8 +4,20 @@
 (Isaac Sim) on four mobile robots. This pilot runs world-use's [hand tools](../../docs/hand-tools.md) on a tenth of
 them: the 34 cross-embodiment tasks, on the mobile Franka, against the same model on its own.
 
-**Status:** the setup runs end to end on an NVIDIA L40S, with a scripted model; no model has been evaluated yet,
-so there are no results.
+**Status:** on the 10 development tasks, GPT-6.2 Astra (low reasoning) solved none, with world-use or without.
+
+| arm | solved | model requests | Robot API calls | est. USD |
+| --- | --- | --- | --- | --- |
+| alone | 0 of 10 | 50 | 36 | 4.07 |
+| world-use | 0 of 10 | 72 | 98 | 5.32 |
+
+- Every attempt in both arms ended with the model calling `done`, after at most 34 of its 100 or 200 calls: it
+  stopped when it could not verify a clearance or a grasp point, or when contact stopped the mobile base.
+- With world-use the model acted more: it called the hand tools in 6 of the 10 tasks (11 grasps, 3 placements,
+  1 push), and it stopped in the middle of the manipulation instead of before it. In 37-01 it placed three chips
+  and stopped when the fourth would have closed on two.
+- The held-out tasks have not been run. [development-check.jsonl](development-check.jsonl) has a row per arm and
+  task, with the model's closing words; costs are estimates from token counts at the rates in `cases.toml`.
 
 ## The comparison
 
@@ -62,6 +74,8 @@ Two things the installer leaves to the machine:
 - The harness copies its agent-side interpreter into each task workspace. Interpreters that find `libpython`
   through a path baked in relative to themselves (Modal's, for one) fail there with exit status 127. Pass
   `--worker-python` an environment on a copyable Python 3.12, such as uv's, with the harness installed.
+- A virtual environment links to its interpreter. On a machine whose local disk is replaced while a mounted volume
+  keeps the environments, as a restarted container's is, install the interpreters again at the same paths first.
 
 ## Run
 
