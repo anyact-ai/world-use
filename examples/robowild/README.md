@@ -68,7 +68,7 @@ uv pip install --python agent/bin/python --no-deps -e RoboWild/robowild-harness 
 uv pip install --python agent/bin/python requests psutil transforms3d packaging pyyaml
 ```
 
-Two things the installer leaves to the machine:
+Three things the installer leaves to the machine:
 
 - RoboWild looks for Isaac Lab beside its checkout: link `IsaacLab` there if the installer's workspace is elsewhere.
 - The harness copies its agent-side interpreter into each task workspace. Interpreters that find `libpython`
@@ -99,16 +99,17 @@ python run.py --arm world-use --split development --model MODEL --credentials cr
 
 `creds.json` holds `{"base_url": ..., "key": ...}` for the model's Responses endpoint; `run.py` deletes it once
 read and starts [model_proxy.py](model_proxy.py), which alone holds the key, forwards the agents' requests and stops
-the arm's spending at `--budget-usd` (prices per model in `cases.toml`). `--authorization` records the approval of
-the paid run with it. Each arm's `short` and `long` directories hold the
-harness's `report.json`, `summary.md` and every run's videos and records; the world-use agent's own records
-(`world-use.jsonl`, `moves.jsonl`) are beside each run's command logs.
+the arm's spending at `--budget-usd` (prices per model in `cases.toml`). Each task is one harness evaluation, and
+the next starts only while the budget left covers the costliest task so far, so the cap does not cut an attempt
+short; `run.py` names the tasks it did not run. `--authorization` records the approval of the paid run with it.
+Each task's directory under the arm holds the harness's `report.json`, `summary.md` and the run's videos and
+records; the world-use agent's own records (`world-use.jsonl`, `moves.jsonl`) are beside its command logs.
 
 ## Checks
 
 ```bash
-uv run pytest examples/robowild/test_arm.py examples/robowild/test_model_proxy.py
+uv run pytest examples/robowild/test_arm.py examples/robowild/test_model_proxy.py examples/robowild/test_run.py
 ```
 
 They run the hand tools through `RoboWildArm` on a fake mobile Franka whose results follow the harness's schemas,
-and the model proxy against a stand-in endpoint.
+the model proxy against a stand-in endpoint, and `run.py` against a stand-in harness.

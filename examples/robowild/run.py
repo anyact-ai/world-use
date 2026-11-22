@@ -11,9 +11,10 @@ RTX-class GPU:
 
 creds.json is {"base_url": the model's Responses base URL, "key": its API key}; it is deleted once read, and the key
 then lives only in model_proxy.py, which the agents call with a placeholder key and which stops the run's spending
-at --budget-usd. Model calls cost money: such a run refuses to start without --authorization, which it records with
-the run. With --scripted PLAN.json instead of a model, scripted_model.py plays the plan's tool calls, at no cost, to
-check a setup.
+at --budget-usd. Tasks run one harness evaluation each, in the order given, and the next starts only while the
+budget left covers the costliest so far. Model calls cost money: such a run refuses to start without
+--authorization, which it records with the run. With --scripted PLAN.json instead of a model, scripted_model.py
+plays the plan's tool calls, at no cost, to check a setup.
 """
 
 from __future__ import annotations
@@ -60,6 +61,12 @@ def wait_for(port: int, process: subprocess.Popen):
                 return
         time.sleep(0.1)
     sys.exit("the local model endpoint did not start")
+
+
+def spent(ledger: Path) -> float:
+    """What the arm's model calls have cost so far, by model_proxy.py's ledger."""
+    lines = ledger.read_text().splitlines() if ledger.exists() else []
+    return json.loads(lines[-1])["spent_usd"] if lines else 0.0
 
 
 def main():
@@ -119,17 +126,23 @@ def main():
         world_use_commit=os.environ.get("WORLD_USE_COMMIT") or subprocess.run(
             ["git", "-C", str(HERE), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip(),
     ), indent=2) + "\n")
+    ledger = out / "ledger.jsonl"
+    costliest = 0.0
     try:
-        for budget in ("short", "long"):
-            ids = [t for t in tasks if (t in cases["tasks"]["long"]) == (budget == "long")]
-            if not ids:
-                continue
+        for index, task in enumerate(tasks):
+            before = spent(ledger)
+            # The proxy's cap ends an attempt that runs over, which wastes what it spent: a task starts only while
+            # the budget left covers the costliest task so far.
+            if not args.scripted and args.budget_usd - before < costliest:
+                sys.exit(f"stopped before {task} with ${args.budget_usd - before:.2f} of the budget left; the "
+                         f"costliest task took ${costliest:.2f}. Not run: {','.join(tasks[index:])}")
+            budget = "long" if task in cases["tasks"]["long"] else "short"
             options = dict(robot_type=cases["robot_type"], control_mode="joint_position",
                            assets_dir=os.environ["ASSETS_DIR"], curobo_source=os.environ["CUROBO_SOURCE"],
                            call_limit=cases["call_limit"][budget])
             command = ["robowild-harness", "eval", "--environment", "robowild",
-                       "--environment-checkout", str(args.robowild), "--tasks", ",".join(ids),
-                       "--agent", str(agent_file), "--output", str(out / budget),
+                       "--environment-checkout", str(args.robowild), "--tasks", task,
+                       "--agent", str(agent_file), "--output", str(out / task),
                        "--assignment-options", json.dumps(options), "--tool-profile", "react_move_points",
                        "--mode", "independent", "--seed", "0", "--rounds", "1", "--gpus", "1", "--envs-per-gpu", "1",
                        "--agent-timeout", str(args.agent_timeout)]
@@ -137,7 +150,8 @@ def main():
                 command += ["--worker-python", str(args.worker_python)]
             print("+", " ".join(command), flush=True)
             if subprocess.run(command).returncode:
-                sys.exit(f"the {budget} tasks' evaluation failed; resume it with robowild-harness eval --resume")
+                sys.exit(f"{task}'s evaluation failed; resume it with robowild-harness eval --resume")
+            costliest = max(costliest, spent(ledger) - before)
     finally:
         server.terminate()
 
