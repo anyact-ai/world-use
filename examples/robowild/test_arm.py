@@ -75,7 +75,8 @@ class FakeFranka:
         self.sequence += 1
         scene = self.scene()
         return dict(moved=True, executed_steps=10, execution_status="completed", finished=False,
-                    robot_state=scene["robot_state"], scene_state=scene, move=dict(goals=[entry]))
+                    robot_state=scene["robot_state"], scene_state=scene, move=dict(goals=[entry]),
+                    _harness=dict(robot_api_calls_used=len(self.calls), robot_api_call_limit=100))
 
 
 def tools(robot):
@@ -115,6 +116,14 @@ def test_a_grasp_opens_above_comes_down_closes_and_lifts_in_four_moves():
     assert down["position"] == pytest.approx([0.55, 0.05, 0.07])
     assert close == dict(target="left", gripper=1.0)
     assert lift["position"][2] == pytest.approx(robot.calls[1]["position"][2] + 0.04)
+
+
+def test_a_tools_result_ends_with_the_call_budget_its_moves_left():
+    robot = FakeFranka(block=BLOCK)
+    hand = tools(robot)
+    _, text = hand.call("grasp", GRASP)
+    assert json.loads(hand.arm.with_budget(text))["_harness"] == dict(robot_api_calls_used=4,
+                                                                       robot_api_call_limit=100)
 
 
 def test_an_approach_that_meets_the_object_above_its_pose_reports_how_far_short():

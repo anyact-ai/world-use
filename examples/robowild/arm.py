@@ -89,12 +89,15 @@ class RoboWildArm:
         # The client's error type. A rejected move becomes a refusal; one whose execution is unknown ends the call.
         self.failures = failures
         self.record_dir = record_dir
+        self.accounting = {}  # the harness's call count after the latest call: robot_api_calls_used and _limit
 
     # -- state ------------------------------------------------------------------------------------------
     def absorb(self, result) -> None:
-        """Keep the newest state a call returned."""
+        """Keep the newest state and call count a call returned."""
         if not isinstance(result, dict):
             return
+        if isinstance(result.get("_harness"), dict):
+            self.accounting = result["_harness"]
         scene = result.get("scene_state")
         if isinstance(scene, dict) and "robot_state" in scene:
             self.scene = scene
@@ -154,6 +157,12 @@ class RoboWildArm:
 
     def key(self):
         return self.scene.get("sequence")  # each call that changes the world publishes a new scene; none else does
+
+    def with_budget(self, text: str) -> str:
+        """A tool's brief result with the call count after it, as the harness ends its own results."""
+        if not self.accounting:
+            return text
+        return json.dumps(dict(json.loads(text), _harness=self.accounting), separators=(",", ":"))
 
     # -- commands -----------------------------------------------------------------------------------------
     def execute(self, command):

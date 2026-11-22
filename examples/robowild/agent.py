@@ -38,8 +38,9 @@ UNSUPPORTED = {"grasp": ("select", "offset"), "place": ("select_destination", "d
 EMBODIMENT_DOCS = (
     "Positions for these tools are x, y, z in the current robot_base frame, the frame of move_robot and of "
     "robot_state: get_camera_point_3d gives them from a pixel. The base moves that frame with it. Each tool runs "
-    "several move_robot calls, which count toward the call budget, and returns what was measured: the arm's "
-    "move_robot stays available for everything else, including the base and the lift."
+    "several move_robot calls, which count toward the call budget, and returns what was measured, ending with the "
+    "budget's count after it in _harness as a Robot API result does: the arm's move_robot stays available for "
+    "everything else, including the base and the lift."
 )
 
 
@@ -97,6 +98,7 @@ class WorldUseReact(ReactRunner):
             turn_id, f"{iteration}:call:{_call_id(call)}", f"{name}({_compact(arguments)})"))
         before = self._hand.arm.key()
         record, text = self._hand.call(name, arguments)
+        text = self._hand.arm.with_budget(text)
         self._hand.arm.record("world-use.jsonl", dict(tool=name, arguments=arguments, result=record))
         self._conversation.write(self._record(
             turn_id, f"{iteration}:result:{_call_id(call)}", f"{name} returned {text}"))
