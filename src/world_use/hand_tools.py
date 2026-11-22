@@ -284,7 +284,8 @@ def _schemas(hand_camera):
                 yaw_deg=dict(
                     type="number",
                     description="Turn of the finger axis about the vertical, from +y toward +x, in [-90, 90]: 0 along "
-                    "y, 45 along x+y, -45 along x-y, 90 along x. Fingers along (dx, dy) are atan2(dx, dy).",
+                    "y, 45 along x+y, -45 along x-y, 90 along x. For fingers along (dx, dy), atan2(dx, dy) in "
+                    "degrees, plus or minus 180 to bring it into the range: the axis has no sign.",
                 ),
                 tilt_deg=dict(
                     type="number", description="Lean of the hand from upright; it then comes in along its own axis."

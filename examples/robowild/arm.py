@@ -271,7 +271,7 @@ class RoboWildArm:
 
     def _opening(self, expect, outcome, message="the gripper stopped outside the expected opening"):
         observed = round(self.opening_mm(), 1)
-        if expect[0] - GRIP_SLACK_MM <= observed <= expect[1] + GRIP_SLACK_MM:
+        if max(expect[0] - GRIP_SLACK_MM, EMPTY_MM) <= observed <= expect[1] + GRIP_SLACK_MM:
             return outcome
         # Fingers stopped wider than an empty close met something, even where that is narrower than expected.
         gripper = "reached_end" if observed < EMPTY_MM else "stopped_apart"

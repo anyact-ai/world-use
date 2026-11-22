@@ -60,6 +60,8 @@ class Watched:
         return result
 
     def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
         return lambda **arguments: self.call(name, **arguments)
 
 

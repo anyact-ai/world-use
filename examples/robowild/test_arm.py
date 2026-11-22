@@ -118,6 +118,13 @@ def test_a_grasp_opens_above_comes_down_closes_and_lifts_in_four_moves():
     assert lift["position"][2] == pytest.approx(robot.calls[1]["position"][2] + 0.04)
 
 
+def test_a_reading_an_empty_close_could_give_is_never_taken_for_a_hold():
+    """3 mm is within the 1 mm slack of a 4-20 mm expectation, but empty fingers read as much."""
+    robot = FakeFranka(block=(BLOCK[0], np.array([0.02, 0.0015, 0.05])))
+    record, text = tools(robot).call("grasp", dict(GRASP, expect_grip_mm=[4, 20]))
+    assert record["status"] == "surprise" and json.loads(text)["last_command"]["gripper"] == "reached_end", text
+
+
 def test_a_tools_result_ends_with_the_call_budget_its_moves_left():
     robot = FakeFranka(block=BLOCK)
     hand = tools(robot)
