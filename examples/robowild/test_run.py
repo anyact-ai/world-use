@@ -48,6 +48,7 @@ def test_tasks_run_one_at_a_time_while_the_budget_covers_the_costliest_and_leave
     assert (tmp_path / "out/alone/ran.txt").read_text().split() == ["01-01", "02-06"]
     assert run.returncode != 0 and "Not run: 04-02" in run.stderr
     assert not credentials.exists()
+    assert json.loads((tmp_path / "out/alone/run.json").read_text())["not_run"] == ["04-02"]
     # The copy of the harness's environment in each workspace goes once the task has run; its records stay.
     (workspace,) = (tmp_path / "out/alone/01-01").glob("runs/*/*/*/agent-workspaces/*")
     assert sorted(p.name for p in workspace.iterdir()) == ["observations"]

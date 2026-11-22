@@ -30,10 +30,11 @@ def rows(arm_dir: Path, long_tasks) -> list[dict]:
     ledger = lines(arm_dir / "ledger.jsonl") if (arm_dir / "ledger.jsonl").exists() else []
     found = []
     for task in sorted(arm_dir.glob("*/runs/robowild/*"), key=lambda p: p.name):
-        (record,) = [p for p in task.iterdir() if p.is_dir()]
-        verdict = next(record.rglob("result.json"), None)
-        if verdict is None:  # still running
+        # A resumed evaluation can leave more than one run of a task: the row is the latest that finished.
+        finished = [(p, v) for p in sorted(task.iterdir()) if p.is_dir() and (v := next(p.rglob("result.json"), None))]
+        if not finished:  # still running
             continue
+        record, verdict = finished[-1]
         events = lines(record / "events.jsonl")
         start, end = (datetime.fromisoformat(events[i]["time"]).timestamp() for i in (0, -1))
         spent = [r for r in ledger if start <= r["at"] <= end]

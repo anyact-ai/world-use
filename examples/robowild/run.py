@@ -120,13 +120,14 @@ def main():
     args.base_url, args.api_key_env = f"http://127.0.0.1:{port}/v1", "MODEL_PLACEHOLDER_KEY"
     agent_file = out / "agent.json"
     agent_file.write_text(json.dumps(agent(args), indent=2) + "\n")
-    (out / "run.json").write_text(json.dumps(dict(
+    run = dict(
         authorization=args.authorization, arm=args.arm, split=args.split, tasks=tasks, model=args.model,
         reasoning_effort=args.reasoning_effort, budget_usd=args.budget_usd, robowild_commit=cases["robowild_commit"],
         harness_commit=cases["harness_commit"],
         world_use_commit=os.environ.get("WORLD_USE_COMMIT") or subprocess.run(
             ["git", "-C", str(HERE), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip(),
-    ), indent=2) + "\n")
+    )
+    (out / "run.json").write_text(json.dumps(run, indent=2) + "\n")
     ledger = out / "ledger.jsonl"
     costliest = 0.0
     try:
@@ -135,6 +136,7 @@ def main():
             # The proxy's cap ends an attempt that runs over, which wastes what it spent: a task starts only while
             # the budget left covers the costliest task so far.
             if not args.scripted and args.budget_usd - before < costliest:
+                (out / "run.json").write_text(json.dumps(dict(run, not_run=tasks[index:]), indent=2) + "\n")
                 sys.exit(f"stopped before {task} with ${args.budget_usd - before:.2f} of the budget left; the "
                          f"costliest task took ${costliest:.2f}. Not run: {','.join(tasks[index:])}")
             budget = "long" if task in cases["tasks"]["long"] else "short"
@@ -150,14 +152,17 @@ def main():
             if args.worker_python:
                 command += ["--worker-python", str(args.worker_python)]
             print("+", " ".join(command), flush=True)
-            if subprocess.run(command).returncode:
+            try:
+                failed = subprocess.run(command).returncode
+            finally:
+                # The harness copies its agent-side environment into each task's workspace: some 3,700 files of no
+                # use once the task has run, which filled a 500,000-file volume within 40 tasks.
+                for workspace in (out / task).glob("runs/*/*/*/agent-workspaces/*"):
+                    for copy in (".venv", "dependencies"):
+                        shutil.rmtree(workspace / copy, ignore_errors=True)
+            if failed:
                 sys.exit(f"{task}'s evaluation failed; resume it with robowild-harness eval --resume")
             costliest = max(costliest, spent(ledger) - before)
-            # The harness copies its agent-side environment into each task's workspace: some 3,700 files of no use
-            # once the task has run, which filled a 500,000-file volume within 40 tasks.
-            for workspace in (out / task).glob("runs/*/*/*/agent-workspaces/*"):
-                for copy in (".venv", "dependencies"):
-                    shutil.rmtree(workspace / copy, ignore_errors=True)
     finally:
         server.terminate()
 
