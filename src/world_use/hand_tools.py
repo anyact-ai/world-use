@@ -370,6 +370,8 @@ class HandTools:
             if h.hand_camera
             else ""
         )
+        offset = "; with an offset from a hand-camera region and no toward it leans toward the region's centre"
+        offset = offset if h.hand_camera else ""
         return (
             "You decide what every region is, where the hand goes and when to release; the tools run the motion "
             "between those decisions and report measurements, not success. "
@@ -378,14 +380,13 @@ class HandTools:
             "contact above it the hand stops there and approach_ended_short_m says how far above. To take a thing "
             f"by its handle or in under a roof, lean the hand with tilt_deg (up to {h.max_lean_deg:g}): it turns "
             f"where it is, then comes in along its own axis from {100 * h.standoff_m:g} cm back, and keeps the "
-            "lean; with an offset from a hand-camera region and no toward it leans toward the region's centre. "
-            "A pinch on a handle does not resist turning: look at how the object hangs before going on. A lean "
-            "the arm cannot make is refused before it moves. place stops before opening with a one-use "
-            "checkpoint; inspect the views, then call release_placement or correct the pose. push leans the hand "
-            f"{self.push_lean:g} degrees back from a level line so the fingertips lead, and backs off up to "
-            f"{100 * BACK_OFF_M:g} cm. Results: arm arrived, stopped_on_contact (short_m), not_approaching; gripper "
-            "reached_end (nothing between the fingers), stopped_apart. A surprise is a measurement: correct its "
-            "cause and try again."
+            f"lean{offset}. A pinch on a handle does not resist turning: look at how the object hangs before "
+            "going on. A lean the arm cannot make is refused before it moves. place stops before opening with a "
+            "one-use checkpoint; inspect the views, then call release_placement or correct the pose. push leans "
+            f"the hand {self.push_lean:g} degrees back from a level line so the fingertips lead, and backs off up "
+            f"to {100 * BACK_OFF_M:g} cm. Results: arm arrived, stopped_on_contact (short_m), not_approaching; "
+            "gripper reached_end (nothing between the fingers), stopped_apart. A surprise is a measurement: "
+            "correct its cause and try again."
         )
 
     def observe(self):
