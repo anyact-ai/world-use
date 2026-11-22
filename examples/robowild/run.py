@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -152,6 +153,11 @@ def main():
             if subprocess.run(command).returncode:
                 sys.exit(f"{task}'s evaluation failed; resume it with robowild-harness eval --resume")
             costliest = max(costliest, spent(ledger) - before)
+            # The harness copies its agent-side environment into each task's workspace: some 3,700 files of no use
+            # once the task has run, which filled a 500,000-file volume within 40 tasks.
+            for workspace in (out / task).glob("runs/*/*/*/agent-workspaces/*"):
+                for copy in (".venv", "dependencies"):
+                    shutil.rmtree(workspace / copy, ignore_errors=True)
     finally:
         server.terminate()
 
