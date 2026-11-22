@@ -275,7 +275,7 @@ def _schemas(hand_camera):
                 object_target=TEXT,
                 select=SELECTION,
                 approach=XYZ,
-                lift=dict(XYZ, description="{z}: the test-lift height"),
+                lift=dict(XYZ, description="{z}: the test-lift height, 3-5 cm above approach z"),
                 expect_grip_mm=RANGE,
                 offset=dict(
                     type="array",
@@ -290,7 +290,9 @@ def _schemas(hand_camera):
                     "degrees, plus or minus 180 to bring it into the range: the axis has no sign.",
                 ),
                 tilt_deg=dict(
-                    type="number", description="Lean of the hand from upright; it then comes in along its own axis."
+                    type="number",
+                    description="Lean of the hand from upright; it then comes in along its own axis. Not with "
+                    "yaw_deg: a leaning hand's finger axis lies across its lean.",
                 ),
                 toward=dict(type="object", description="{x, y}: the point a leaning hand's fingertips point toward."),
             ),
