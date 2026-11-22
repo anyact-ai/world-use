@@ -4,20 +4,36 @@
 (Isaac Sim) on four mobile robots. This pilot runs world-use's [hand tools](../../docs/hand-tools.md) on a tenth of
 them: the 34 cross-embodiment tasks, on the mobile Franka, against the same model on its own.
 
-**Status:** on the 10 development tasks, GPT-6.2 Astra (low reasoning) solved none, with world-use or without.
+**Status:** on the 10 development tasks, GPT-6.2 Astra at high reasoning solved 2 on its own and 1 with world-use;
+at low reasoning neither arm solved one. All results are from RoboWild's simulator.
 
-| arm | solved | model requests | Robot API calls | est. USD |
-| --- | --- | --- | --- | --- |
-| alone | 0 of 10 | 50 | 36 | 4.07 |
-| world-use | 0 of 10 | 72 | 98 | 5.32 |
+| reasoning | arm | solved | model requests | Robot API calls | est. USD |
+| --- | --- | --- | --- | --- | --- |
+| low | alone | 0 of 10 | 50 | 40 | 4.08 |
+| low | world-use | 0 of 10 | 72 | 98 | 5.32 |
+| high | alone | 2 of 10 (01-01, 37-01) | 560 | 551 | 324.92 |
+| high | world-use | 1 of 10 (01-01) | 405 | 500 | 163.43 |
 
-- Every attempt in both arms ended with the model calling `done`, after at most 34 of its 100 or 200 calls: it
-  stopped when it could not verify a clearance or a grasp point, or when contact stopped the mobile base.
-- With world-use the model acted more: it called the hand tools in 6 of the 10 tasks (11 grasps, 3 placements,
-  1 push), and it stopped in the middle of the manipulation instead of before it. In 37-01 it placed three chips
-  and stopped when the fourth would have closed on two.
-- The held-out tasks have not been run. [development-check.jsonl](development-check.jsonl) has a row per arm and
-  task, with the model's closing words; costs are estimates from token counts at the rates in `cases.toml`.
+- At low reasoning every attempt ended with the model calling `done` after at most 34 of its 100 or 200 calls, when
+  it could not verify a clearance or a grasp point, or when contact stopped the mobile base. With world-use it called
+  the hand tools in 5 tasks (11 grasps, 3 placements, 1 push) and stopped in the middle of the manipulation instead
+  of before it.
+- At high reasoning the model drove the arm itself with `move_robot` in both arms, measuring with
+  `get_camera_point_3d` between moves. With world-use it called the hand tools in 4 tasks (35 grasps, 7 placements)
+  and spent half as much.
+- 37-01, sorting poker chips into stacks, is the task the tools lost. A grasp makes 4 calls and a place with its
+  release 4: the model used `place` for 7 chips and then carried each with 2 `move_robot` calls, and 11 of its 32
+  grasps closed empty or slipped. It ran out of the task's 200 calls; on its own it sorted the chips in 155.
+- 788 of the 965 requests at high reasoning paid the full input price, and made 97% of the cost. The harness's loop
+  replaces the oldest images after each move, which changes the conversation's start and so misses the prompt
+  cache: a request with 130,000 tokens of context then costs about $1 instead of $0.10. Both arms run that loop.
+- Two runs did not go as planned. The baseline's 29-06 attempt was ended by its run's spending cap after 69 calls,
+  before the model called `done`: it counts as not solved. In 23-03 and 37-01 the baseline's cap was raised during
+  the attempt by restarting the model proxy on the same port and ledger, and the attempts carried on. `run.py` now
+  starts a task only while the budget left covers the costliest so far.
+- The held-out tasks have not been run. [development-check.jsonl](development-check.jsonl) has a row per reasoning
+  level, arm and task from [report.py](report.py), with the model's closing words; costs are estimates from token
+  counts at the rates in `cases.toml`.
 
 ## The comparison
 
@@ -45,6 +61,7 @@ tasks are not inspected for tuning.
   locating through the wrist camera and no lift or carry evidence from images yet.
 - A lean the arm cannot make fails at its first move with the planner's reason; this profile has no planning call
   to check it before the hand turns.
+- Each tool's result ends with `_harness`, the task's call count after it, as a Robot API result does.
 
 ## Set up
 
@@ -103,13 +120,19 @@ the arm's spending at `--budget-usd` (prices per model in `cases.toml`). Each ta
 the next starts only while the budget left covers the costliest task so far, so the cap does not cut an attempt
 short; `run.py` names the tasks it did not run. `--authorization` records the approval of the paid run with it.
 Each task's directory under the arm holds the harness's `report.json`, `summary.md` and the run's videos and
-records; the world-use agent's own records (`world-use.jsonl`, `moves.jsonl`) are beside its command logs.
+records; the world-use agent's own records (`world-use.jsonl`, `moves.jsonl`) are beside its command logs. One row
+per task, as in `development-check.jsonl`:
+
+```bash
+python report.py results/development/alone results/development/world-use > rows.jsonl
+```
 
 ## Checks
 
 ```bash
-uv run pytest examples/robowild/test_arm.py examples/robowild/test_model_proxy.py examples/robowild/test_run.py
+uv run pytest examples/robowild
 ```
 
 They run the hand tools through `RoboWildArm` on a fake mobile Franka whose results follow the harness's schemas,
-the model proxy against a stand-in endpoint, and `run.py` against a stand-in harness.
+the model proxy against a stand-in endpoint, `run.py` against a stand-in harness and `report.py` on a run's
+records.
