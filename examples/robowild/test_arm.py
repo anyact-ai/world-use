@@ -3,6 +3,8 @@
     uv run pytest examples/robowild/test_arm.py
 """
 
+import json
+
 import numpy as np
 import pytest
 from arm import HAND, NoTracking, RoboWildArm, quaternion, rotation
@@ -130,10 +132,13 @@ def test_a_move_on_the_way_may_end_off_its_goal_but_the_last_one_may_not(misses,
     assert {s["stage"]: s["status"] for s in record["stages"]}["approach"] == status, text
 
 
-def test_closing_on_nothing_is_a_surprise_that_names_the_empty_fingers():
-    robot = FakeFranka()
+@pytest.mark.parametrize("block,gripper", [(None, "reached_end"),
+                                           ((BLOCK[0], np.array([0.02, 0.003, 0.05])), "stopped_apart")])
+def test_a_close_outside_the_expected_opening_says_whether_the_fingers_met_anything(block, gripper):
+    """Empty fingers close; on a 6 mm part they stop apart, though narrower than the 35-45 mm expected."""
+    robot = FakeFranka(block=block)
     record, text = tools(robot).call("grasp", GRASP)
-    assert record["status"] == "surprise" and "reached_end" in text
+    assert record["status"] == "surprise" and json.loads(text)["last_command"]["gripper"] == gripper, text
     assert len(robot.calls) == 3   # no lift after a failed check
 
 

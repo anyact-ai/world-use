@@ -28,6 +28,9 @@ TRACKED_M = 0.02  # move_robot's own tracking limit; a command's last leg must e
 # of the wrist ended 2.4 cm off in the simulator, with nothing in the way.
 TRANSIT_M = 0.05
 GRIP_SLACK_MM = 1.0  # finger readings settle within this of the opening they stop at
+# Empty fingers read 0.2-2.7 mm in the development check. The tools take no expected opening below 4 mm, as a
+# reading there cannot be told from an empty close.
+EMPTY_MM = 4.0
 
 # The Panda's fingers each travel 0-40 mm; the opening is their sum.
 HAND = Hand(opening_mm=80, open_mm=(70, 80), fit_mm=70, arrive_m=TRACKED_M, hand_camera=None, fixed_camera=None,
@@ -261,6 +264,7 @@ class RoboWildArm:
         observed = round(self.opening_mm(), 1)
         if expect[0] - GRIP_SLACK_MM <= observed <= expect[1] + GRIP_SLACK_MM:
             return outcome
-        gripper = "reached_end" if observed < expect[0] else "stopped_apart"
+        # Fingers stopped wider than an empty close met something, even where that is narrower than expected.
+        gripper = "reached_end" if observed < EMPTY_MM else "stopped_apart"
         return Outcome("surprise", outcome.kind, message, dict(outcome.data, aperture_mm=observed, gripper=gripper),
                        list(expect), observed, "inspect the cameras; the opening does not show what is held")
