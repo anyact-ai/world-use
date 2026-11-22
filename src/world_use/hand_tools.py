@@ -231,7 +231,8 @@ RANGE = dict(
     minItems=2,
     maxItems=2,
     description="Expected measured finger opening [min, max] in mm, min at least 4: a reading under 4 mm cannot be "
-    "told from empty fingers.",
+    "told from empty fingers. The opening is where the pads stop, and a rounded or soft object can read well under "
+    "the width it looks.",
 )
 SELECTION = dict(
     type="object",
