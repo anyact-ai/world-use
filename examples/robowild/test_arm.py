@@ -85,12 +85,22 @@ GRASP = dict(object_target="block", approach=dict(x=0.55, y=0.05, z=0.07), lift=
              expect_grip_mm=[35, 45])
 
 
-def test_quaternions_round_trip_and_an_upright_hand_points_down():
-    R = rotation(DOWNWARD)
+@pytest.mark.parametrize("yaw_deg", range(-180, 180, 15))
+def test_a_hand_turned_down_at_any_yaw_reaches_the_robot_as_that_rotation(yaw_deg):
+    """Pointing down is a half turn, whose quaternion has w = 0: the case a sign rule gets wrong."""
+    turn = np.radians(yaw_deg)
+    jaws = np.array([np.sin(turn), np.cos(turn), 0.0])
+    R = np.column_stack([np.cross(jaws, DOWN), jaws, DOWN])  # panda_tcp: fingers open along y, approach along z
     assert np.allclose(rotation(quaternion(R)), R)
+
+
+def test_quaternions_round_trip_and_an_upright_hand_points_down():
+    for q in np.random.default_rng(0).normal(size=(200, 4)):
+        assert np.allclose(rotation(quaternion(rotation(q))), rotation(q))
     arm = RoboWildArm(FakeFranka(), FakeFranka().scene())
     targets, jaws = arm.orientation(DOWN, [1, 0, 0])
-    assert rotation(targets["quaternion_wxyz"]) @ [0, 0, 1] == pytest.approx(DOWN)
+    approach = rotation(targets["quaternion_wxyz"]) @ [0, 0, 1]
+    assert approach == pytest.approx(DOWN)
     assert abs(jaws @ [1, 0, 0]) == pytest.approx(1)
 
 

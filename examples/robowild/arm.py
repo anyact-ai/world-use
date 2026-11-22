@@ -35,13 +35,23 @@ HAND = Hand(opening_mm=80, open_mm=(70, 80), fit_mm=70, arrive_m=TRACKED_M, hand
 
 
 def quaternion(R) -> list[float]:
-    """wxyz of a rotation matrix."""
+    """wxyz of a rotation matrix, from its largest of trace and diagonal. A hand pointing down is a half turn,
+    whose w is 0: the signs of x, y and z then come from the matrix's symmetric part, not from w."""
     R = np.asarray(R, float)
-    w = math.sqrt(max(0.0, 1 + R[0, 0] + R[1, 1] + R[2, 2])) / 2
-    x = math.copysign(math.sqrt(max(0.0, 1 + R[0, 0] - R[1, 1] - R[2, 2])) / 2, R[2, 1] - R[1, 2])
-    y = math.copysign(math.sqrt(max(0.0, 1 - R[0, 0] + R[1, 1] - R[2, 2])) / 2, R[0, 2] - R[2, 0])
-    z = math.copysign(math.sqrt(max(0.0, 1 - R[0, 0] - R[1, 1] + R[2, 2])) / 2, R[1, 0] - R[0, 1])
-    return [w, x, y, z]
+    trace = float(np.trace(R))
+    if trace > 0:
+        s = 2 * math.sqrt(1 + trace)
+        q = [s / 4, (R[2, 1] - R[1, 2]) / s, (R[0, 2] - R[2, 0]) / s, (R[1, 0] - R[0, 1]) / s]
+    elif R[0, 0] >= R[1, 1] and R[0, 0] >= R[2, 2]:
+        s = 2 * math.sqrt(1 + R[0, 0] - R[1, 1] - R[2, 2])
+        q = [(R[2, 1] - R[1, 2]) / s, s / 4, (R[0, 1] + R[1, 0]) / s, (R[0, 2] + R[2, 0]) / s]
+    elif R[1, 1] >= R[2, 2]:
+        s = 2 * math.sqrt(1 + R[1, 1] - R[0, 0] - R[2, 2])
+        q = [(R[0, 2] - R[2, 0]) / s, (R[0, 1] + R[1, 0]) / s, s / 4, (R[1, 2] + R[2, 1]) / s]
+    else:
+        s = 2 * math.sqrt(1 + R[2, 2] - R[0, 0] - R[1, 1])
+        q = [(R[1, 0] - R[0, 1]) / s, (R[0, 2] + R[2, 0]) / s, (R[1, 2] + R[2, 1]) / s, s / 4]
+    return [float(v) for v in q]
 
 
 def rotation(q) -> np.ndarray:
