@@ -160,7 +160,9 @@ def main():
                 for workspace in (out / task).glob("runs/*/*/*/agent-workspaces/*"):
                     for copy in (".venv", "dependencies"):
                         shutil.rmtree(workspace / copy, ignore_errors=True)
-            if failed:
+            # The harness also exits non-zero for an attempt it judged, such as one the agent timeout ended: that is
+            # the task's result. Without a verdict the evaluation itself failed, and the run stops there.
+            if failed and not any((out / task).glob("runs/*/*/*/attempts/*/result.json")):
                 sys.exit(f"{task}'s evaluation failed; resume it with robowild-harness eval --resume")
             costliest = max(costliest, spent(ledger) - before)
     finally:

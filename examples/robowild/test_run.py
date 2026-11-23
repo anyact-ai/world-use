@@ -17,7 +17,8 @@ args = sys.argv[1:]
 out = Path(args[args.index("--output") + 1])
 with open(out.parent / "ran.txt", "a") as stream:
     stream.write(args[args.index("--tasks") + 1] + "\\n")
-workspace = out / "runs/robowild" / args[args.index("--tasks") + 1] / "run-0/agent-workspaces/job-0"
+task = args[args.index("--tasks") + 1]
+workspace = out / "runs/robowild" / task / "run-0/agent-workspaces/job-0"
 for name in (".venv/bin/python", "dependencies/robot_sdk.py", "observations/0.png"):
     (workspace / name).parent.mkdir(parents=True, exist_ok=True)
     (workspace / name).write_text("")
@@ -26,6 +27,10 @@ lines = ledger.read_text().splitlines() if ledger.exists() else []
 spent = json.loads(lines[-1])["spent_usd"] if lines else 0.0
 with open(ledger, "a") as stream:
     stream.write(json.dumps(dict(usd=30.0, spent_usd=spent + 30.0)) + "\\n")
+if task == "01-01":  # the agent timed out: the harness judged the attempt and exits non-zero
+    (out / "runs/robowild" / task / "run-0/attempts/01").mkdir(parents=True)
+    (out / "runs/robowild" / task / "run-0/attempts/01/result.json").write_text("{{}}")
+    sys.exit(1)
 """
 
 
@@ -44,7 +49,8 @@ def test_tasks_run_one_at_a_time_while_the_budget_covers_the_costliest_and_leave
          "--tasks", "01-01,02-06,04-02", "--model", "gpt-6.2-astra", "--credentials", str(credentials),
          "--budget-usd", "70", "--authorization", "a test", "--output", str(tmp_path / "out")],
         env=env, capture_output=True, text=True, timeout=60)
-    # $70: the first task takes $30, the second starts with $40 left and takes $30, and $10 cannot cover a third.
+    # $70: the first task takes $30 and times out, which is its result; the second starts with $40 left and takes
+    # $30, and $10 cannot cover a third.
     assert (tmp_path / "out/alone/ran.txt").read_text().split() == ["01-01", "02-06"]
     assert run.returncode != 0 and "Not run: 04-02" in run.stderr
     assert not credentials.exists()
