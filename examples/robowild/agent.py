@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -30,9 +31,30 @@ from robowild_harness.runtime.batch import _REACT_DEVELOPER_INSTRUCTIONS, _attem
 from world_use.hand_tools import HandTools
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from arm import HAND, NoTracking, RoboWildArm
+from arm import HAND, MAX_TILT_DEG, NoTracking, RoboWildArm
 
 TOOLS = ("grasp", "place", "release_placement", "push")
+POINT = dict(type="object", description="{x, y, z} in metres, in robot_base.")
+TILT = dict(
+    type="function", name="tilt", strict=False,
+    description=(
+        "Turn the held object about pivot, a point of it that should stay where it is, such as a container's mouth "
+        "over where it pours, until the hand leans tilt_deg from upright with its fingertips toward a level point. "
+        "With over, the hand first carries the pivot there. It turns at most 30 degrees per move_robot call, with "
+        "the grip monitored, and reports where the pivot ended. tilt_deg 0 stands the hand upright again about the "
+        "same point. The finger axis ends level and across the lean."
+    ),
+    parameters=dict(type="object", required=["object_target", "pivot", "toward", "tilt_deg", "expect_grip_mm"],
+                    properties=dict(
+                        object_target=dict(type="string"),
+                        pivot=POINT,
+                        over=POINT,
+                        toward=dict(type="object", description="{x, y}: the level point the fingertips lean toward."),
+                        tilt_deg=dict(type="number", description="Lean of the hand from upright, 0 to 150."),
+                        expect_grip_mm=dict(type="array", items=dict(type="number"), minItems=2, maxItems=2,
+                                            description="The measured opening that means the object is still held."),
+                    )),
+)
 # The loop keeps the images of its newest IMAGE_HISTORY image-bearing messages and drops older ones' images as new
 # ones come. Azure OpenAI's prompt cache ends at the first message whose images were dropped, so dropping one per
 # move made every request after a move pay for its whole context: in 01-01, 25 of 35 requests had only the
@@ -89,8 +111,8 @@ class WorldUseReact(ReactRunner):
                     parameters["properties"].pop(name)
                 added.append(dict(type="function", name=schema["name"], description=schema["description"],
                                   strict=False, parameters=parameters))
-        self._tools.extend(added)
-        self._hand_names = frozenset(TOOLS)
+        self._tools.extend([*added, TILT])
+        self._hand_names = frozenset(TOOLS) | {"tilt"}
         self._instructions += f"\n\n# Hand tools\n\n{self._hand.docs()} {EMBODIMENT_DOCS}"
         self._usage = None
 
@@ -115,13 +137,41 @@ class WorldUseReact(ReactRunner):
         self._conversation.write(self._record(
             turn_id, f"{iteration}:call:{_call_id(call)}", f"{name}({_compact(arguments)})"))
         before = self._hand.arm.key()
-        record, text = self._hand.call(name, arguments)
+        record, text = self._tilt(arguments) if name == "tilt" else self._hand.call(name, arguments)
         text = self._hand.arm.with_budget(text)
         self._hand.arm.record("world-use.jsonl", dict(tool=name, arguments=arguments, result=record))
         self._conversation.write(self._record(
             turn_id, f"{iteration}:result:{_call_id(call)}", f"{name} returned {text}"))
         moved = self._hand.arm.key() != before
         return text, self._result_images(self._hand.arm.scene) if moved else (), False
+
+    def _tilt(self, args):
+        try:
+            if not isinstance(args.get("object_target"), str):
+                raise ValueError("tilt needs object_target, the held object")
+            tilt = args.get("tilt_deg")
+            if type(tilt) not in (float, int) or not 0 <= tilt <= MAX_TILT_DEG:
+                raise ValueError(f"tilt_deg is between 0 and {MAX_TILT_DEG}")
+            points = []
+            for key in ("pivot", "over"):
+                if key in args:
+                    self._hand.arm.validate_pose(args[key])
+                    if args[key].keys() != {"x", "y", "z"}:
+                        raise ValueError(f"{key} is x, y and z in metres")
+                points.append([args[key][k] for k in "xyz"] if key in args else None)
+            toward = args.get("toward")
+            if not isinstance(toward, dict) or toward.keys() != {"x", "y"} or any(
+                    type(v) not in (float, int) or not math.isfinite(v) for v in toward.values()):
+                raise ValueError("toward is a level point: x and y in metres")
+            self._hand.pending = None  # any motion voids a release checkpoint
+            record = self._hand.arm.tilt(points[0], [toward["x"], toward["y"]], tilt,
+                                         self._hand._range(args["expect_grip_mm"]), over=points[1])
+        except (KeyError, ValueError, TypeError) as error:
+            record = dict(status="refused", message=str(error))
+        except RobotError as error:
+            record = dict(status="stopped", message=f"the arm's controller failed during this call: {error}",
+                          hint="what ran before the failure may have moved the arm: observe before going on")
+        return record, json.dumps(record, separators=(",", ":"))
 
     # The harness reads a command agent's model usage from ROBOT_TRACE_TELEMETRY_PATH, as it records the
     # react backend's itself, so both arms' reports count tokens the same way.

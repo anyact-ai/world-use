@@ -134,6 +134,36 @@ def test_an_approach_the_controller_ends_above_its_goal_says_how_far_above():
     assert "approach_ended_short_m" not in json.loads(text)
 
 
+def test_a_tilt_turns_the_hand_about_the_pivot_in_steps_of_at_most_30_degrees():
+    """A tube held at its mouth, 2 cm below the tool point, tipped to horizontal across the fingers: the mouth stays
+    put. The fingers lie along x, so a lean toward +y is a pure tilt."""
+    robot = FakeFranka()
+    robot.fingers = 0.01  # a 20 mm grip
+    arm = RoboWildArm(robot, robot.scene(), failures=(RobotError,))
+    start = robot.at.copy()
+    pivot = start + [0, 0, -0.02]
+    toward = [pivot[0], pivot[1] + 1.0]
+    told = arm.tilt(pivot.tolist(), toward, 90, [15, 25])
+    assert told["status"] == "done" and told["moves"] == 3 and told["pivot_moved_m"] < 1e-6, told
+    assert rotation(robot.q) @ [0, 0, 1] == pytest.approx([0, 1, 0], abs=1e-6)  # the fingertips point along +y
+    for goal in robot.calls:  # every step keeps the tool point 2 cm from the pivot
+        assert np.linalg.norm(np.asarray(goal["position"]) - pivot) == pytest.approx(0.02)
+    told = arm.tilt(told["pivot"], toward, 0, [15, 25])
+    assert told["moves"] == 3 and rotation(robot.q) @ [0, 0, 1] == pytest.approx([0, 0, -1], abs=1e-6)
+    assert robot.at == pytest.approx(start)
+
+
+def test_a_tilt_carries_the_pivot_over_its_target_first_and_refuses_a_pivot_off_the_hand():
+    robot = FakeFranka()
+    robot.fingers = 0.01
+    arm = RoboWildArm(robot, robot.scene(), failures=(RobotError,))
+    pivot = (robot.at + [0, 0, -0.02]).tolist()
+    told = arm.tilt(pivot, [0.6, 1.1], 60, [15, 25], over=[0.6, 0.1, 0.5])
+    assert told["moves"] == 2 and told["pivot"] == pytest.approx([0.6, 0.1, 0.5], abs=1e-6)
+    with pytest.raises(ValueError, match=r"within 0\.3 m"):
+        arm.tilt([2.0, 0.0, 0.4], [3.0, 0.0], 60, [15, 25])
+
+
 def test_a_tools_result_ends_with_the_call_budget_its_moves_left():
     robot = FakeFranka(block=BLOCK)
     hand = tools(robot)

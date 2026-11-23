@@ -19,7 +19,7 @@ import numpy as np
 
 from world_use import geometry
 from world_use.behaviors import Outcome
-from world_use.hand_tools import Hand
+from world_use.hand_tools import DOWN, Hand, tilted
 
 ARM = "left"  # the mobile Franka's one arm, as move_robot names it
 APPROACH, OPENS = (0.0, 0.0, 1.0), (0.0, 1.0, 0.0)  # in panda_tcp
@@ -34,6 +34,10 @@ GRIP_SLACK_MM = 1.0  # finger readings settle within this of the opening they st
 # Empty fingers read 0.2-2.7 mm in the development check. The tools take no expected opening below 4 mm, as a
 # reading there cannot be told from an empty close.
 EMPTY_MM = 4.0
+
+TILT_STEP_DEG = 30  # a tilt turns the hand at most this far per move, so the pivot stays near where it was
+MAX_TILT_DEG = 150  # past horizontal, as pouring out of a narrow container needs
+PIVOT_REACH_M = 0.3  # the pivot is on the held object: further from the hand than this, it is not
 
 # The Panda's fingers each travel 0-40 mm; the opening is their sum.
 HAND = Hand(opening_mm=80, open_mm=(70, 80), fit_mm=70, arrive_m=TRACKED_M, hand_camera=None, fixed_camera=None,
@@ -65,6 +69,23 @@ def rotation(q) -> np.ndarray:
     return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
                      [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
                      [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]])
+
+
+def _partial(turn, fraction) -> np.ndarray:
+    """The rotation `fraction` of the way along turn, about its axis."""
+    angle = math.acos(max(-1.0, min(1.0, (float(np.trace(turn)) - 1) / 2)))
+    if angle < 1e-9:
+        return np.eye(3)
+    if math.pi - angle < 1e-6:
+        # A half turn: its axis is the column of turn + I with the largest norm.
+        sym = turn + np.eye(3)
+        axis = sym[:, int(np.argmax(np.linalg.norm(sym, axis=0)))]
+    else:
+        axis = np.array([turn[2, 1] - turn[1, 2], turn[0, 2] - turn[2, 0], turn[1, 0] - turn[0, 1]])
+    axis = axis / np.linalg.norm(axis)
+    a = fraction * angle
+    K = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
+    return np.eye(3) + math.sin(a) * K + (1 - math.cos(a)) * K @ K
 
 
 class NoTracking:
@@ -276,6 +297,50 @@ class RoboWildArm:
         return Outcome("surprise", kind, f"the hand ended {100 * float(np.linalg.norm(target - at)):.1f} cm from "
                        "its goal", data, goal["position"], data["tool"],
                        "something blocks the way or the pose is at the edge of reach; look before going on")
+
+    def tilt(self, pivot, toward, tilt_deg, expect_mm, over=None) -> dict:
+        """Turn the hand, and what it holds, about pivot until it leans tilt_deg from upright toward a level point,
+        in moves of at most TILT_STEP_DEG with the grip monitored. With over, the hand first carries the pivot
+        there. The finger axis ends level and across the lean, as a leaning grasp's does."""
+        p0 = np.asarray(self.hand["eef_position"], float)
+        pivot = np.asarray(pivot, float)
+        if float(np.linalg.norm(pivot - p0)) > PIVOT_REACH_M:
+            raise ValueError(f"the pivot is a point of the held object, within {PIVOT_REACH_M:g} m of the hand")
+        end = pivot if over is None else np.asarray(over, float)
+        level = np.asarray(toward, float) - end[:2]
+        if float(np.linalg.norm(level)) < 0.01:
+            raise ValueError("toward is a level point at least 1 cm from where the pivot turns")
+        if over is not None:
+            p0 = p0 + end - pivot
+            moved = self._leg(dict(target=ARM, position=[float(v) for v in p0]), "tilt", False)
+            if not moved.ok:
+                return dict(status=moved.status, message=moved.message, stage="carry", **moved.data)
+            pivot = end
+        R0 = rotation(self.hand["eef_quaternion_wxyz"])
+        approach, across = tilted(level, tilt_deg) if tilt_deg else (DOWN, tilted(level, 0)[1])
+        if across @ (R0 @ OPENS) < 0:
+            across = -across  # the finger axis has no sign: keep the one that turns the wrist least
+        Rt = np.column_stack([np.cross(across, approach), across, approach])
+        turn = Rt @ R0.T
+        degrees = math.degrees(math.acos(max(-1.0, min(1.0, (float(np.trace(turn)) - 1) / 2))))
+        steps = math.ceil(degrees / TILT_STEP_DEG - 1e-6) if degrees >= 1 else 0
+        outcome, moves = Outcome("done", "tilt", "nothing to do: the hand already leans so",
+                                 dict(self.measure(), arm="arrived")), 0
+        for k in range(1, steps + 1):
+            Rk = _partial(turn, k / steps) @ R0
+            goal = dict(target=ARM, position=[float(v) for v in pivot + Rk @ R0.T @ (p0 - pivot)],
+                        quaternion_wxyz=quaternion(Rk))
+            outcome, moves = self._leg(goal, "tilt", False, transit=k < steps), k
+            if outcome.ok:
+                outcome = self._opening(expect_mm, outcome, "the grip changed during the tilt")
+            if not outcome.ok:
+                break
+        # Where the pivot is now, carried rigidly with the hand from where it was.
+        R = rotation(self.hand["eef_quaternion_wxyz"])
+        moved = np.asarray(self.hand["eef_position"], float) + R @ R0.T @ (pivot - p0)
+        return dict(status=outcome.status, message=outcome.message, moves=moves,
+                    pivot=[round(float(v), 4) for v in moved],
+                    pivot_moved_m=round(float(np.linalg.norm(moved - pivot)), 4), **outcome.data)
 
     def _opening(self, expect, outcome, message="the gripper stopped outside the expected opening"):
         observed = round(self.opening_mm(), 1)
