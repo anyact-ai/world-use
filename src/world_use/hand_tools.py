@@ -82,8 +82,7 @@ class Executor(Protocol):
     between them, as in a paused simulator, and None when that cannot be known. failures are the exceptions
     that mean the executor lost its arm during a call: the call then ends stopped, with what ran before.
     An executor whose moves can close the fingers as they arrive, in the same command, may set a true
-    closes_on_arrival: a grasp then sends its approach with close_mm, the opening to check once the fingers
-    have closed, and no separate close.
+    closes_on_arrival: a grasp then sends its approach with close set, and its close stage only measures.
     """
 
     failures: tuple[type[Exception], ...]
@@ -780,10 +779,10 @@ class HandTools:
             # A changed region, a lost one or a lift too short to compare proves nothing either way.
             return None
 
-        approaching = dict(_move(approach, "grasp_approach", expected=self.hand.open_mm), via={})
+        approaching: dict = dict(_move(approach, "grasp_approach", expected=self.hand.open_mm), via={})
         if getattr(self.arm, "closes_on_arrival", False):
             # One command fewer: under a call budget, a grasp's moves are what runs a long task out of calls.
-            approaching["close_mm"] = grip
+            approaching["close"] = True
             closing = dict(kind="check_grip", expect_mm=grip, stage="grasp_close")
         else:
             # Fingers closing across a box that is not square to them turn it first, slowly.

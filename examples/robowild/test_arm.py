@@ -192,7 +192,9 @@ def test_a_close_outside_the_expected_opening_says_whether_the_fingers_met_anyth
     """Empty fingers close; on a 6 mm part they stop apart, though narrower than the 35-45 mm expected."""
     robot = FakeFranka(block=block)
     record, text = tools(robot).call("grasp", GRASP)
-    assert record["status"] == "surprise" and json.loads(text)["last_command"]["gripper"] == gripper, text
+    brief = json.loads(text)
+    assert record["status"] == "surprise" and brief["last_command"]["gripper"] == gripper, text
+    assert brief["stages"] == {"approach": "done", "close": "surprise"}  # the close, not the approach, failed
     assert len(robot.calls) == 2   # no lift after a failed check
 
 
