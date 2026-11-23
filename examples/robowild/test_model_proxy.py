@@ -72,3 +72,13 @@ def test_the_ledger_keeps_usage_and_cost_and_nothing_of_the_conversation(endpoin
     (row,) = [json.loads(line) for line in ledger.path.read_text().splitlines()]
     assert row["usd"] == pytest.approx(0.82) and row["cached_input_tokens"] == 50_000
     assert "the agent" not in ledger.path.read_text() and "secret-key" not in ledger.path.read_text()
+
+
+def test_instructions_reach_the_model_as_a_leading_developer_message(endpoint):
+    url, seen, _ = endpoint
+    user = dict(type="message", role="user", content=[dict(type="input_text", text="go")])
+    post(url, json.dumps(dict(model="m", instructions="the rules", input=[user], store=False)).encode())
+    forwarded = json.loads(seen[0]["body"])
+    assert "instructions" not in forwarded and forwarded["store"] is False
+    assert forwarded["input"] == [dict(type="message", role="developer",
+                                       content=[dict(type="input_text", text="the rules")]), user]

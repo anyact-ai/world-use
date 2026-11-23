@@ -30,10 +30,12 @@ from RoboWild's simulator, one attempt per task.
 - The rerun, with the changes below, solved 29-06 and lost 01-01: with one attempt per task, the runs differ as much
   from each other as the arms do. In 37-01, with each tool's call count in its result, the model used `place` for
   20 chips and had all five denominations stacked in order, a few chips loose, at 197 calls and $20.
-- In the first runs at high reasoning, 788 of the 965 requests paid the full input price, and made 97% of the cost.
-  The harness's loop replaces the oldest images after each move, which changes the conversation's start and so
-  misses the prompt cache: a request with 130,000 tokens of context then costs about $1 instead of $0.10. Both arms
-  run that loop.
+- In the first runs at high reasoning, 788 of the 965 requests paid the full input price, and made 97% of the cost:
+  a request with 130,000 tokens of context cost about $1 instead of $0.10. Azure OpenAI caches no prompt prefix
+  through the Responses API's `instructions` field, which the harness's loop uses for its rules, so only the tool
+  definitions before it were cached. `model_proxy.py` now sends the instructions as a leading developer message
+  instead, for both arms: in a loop-shaped test every request after the first was cached but for its newest
+  tokens, where none had been. The runs above were made without that change.
 - Runs that did not go as planned. The baseline's 29-06 attempt was ended by its run's spending cap after 69 calls,
   before the model called `done`: it counts as not solved. In the baseline's 23-03 and 37-01 and the rerun's 04-02
   the cap was raised during the attempt by restarting the model proxy on the same port and ledger, and the attempts

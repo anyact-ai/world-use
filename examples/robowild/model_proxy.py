@@ -45,6 +45,23 @@ class Ledger:
                 stream.write(json.dumps(row) + "\n")
 
 
+def cacheable(body: bytes) -> bytes:
+    """The request with its instructions moved into a leading developer message, which the Responses API treats
+    alike. Azure OpenAI caches no prompt prefix through an instructions field: three identical requests with 6,600
+    tokens of instructions had none cached, and with the same text as a developer message all but the first were
+    cached in full. Every request of the agents' loops sends instructions, so without this each one paid full price
+    for the whole conversation."""
+    try:
+        request = json.loads(body)
+    except ValueError:
+        return body
+    instructions = request.pop("instructions", None) if isinstance(request, dict) else None
+    if not isinstance(instructions, str) or not instructions or not isinstance(request.get("input"), list):
+        return body
+    developer = dict(type="message", role="developer", content=[dict(type="input_text", text=instructions)])
+    return json.dumps(dict(request, input=[developer, *request["input"]])).encode()
+
+
 def serve(port: int, upstream: str, key: str, ledger: Ledger, *, ready=None):
     upstream = upstream.rstrip("/")
 
@@ -56,7 +73,7 @@ def serve(port: int, upstream: str, key: str, ledger: Ledger, *, ready=None):
             if not ledger.open():
                 # Not retryable for the agents' loops: the turn ends and the attempt with it.
                 return self.reply(400, {"error": {"message": f"the run's spending cap of ${ledger.cap:g} is reached"}})
-            request = urllib.request.Request(upstream + "/responses", data=body, method="POST",
+            request = urllib.request.Request(upstream + "/responses", data=cacheable(body), method="POST",
                                              headers={"api-key": key, "content-type": "application/json"})
             try:
                 with urllib.request.urlopen(request, timeout=1800) as response:
