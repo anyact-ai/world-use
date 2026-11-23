@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-TOOLS = ("move_robot", "get_camera_point_3d", "done", "grasp", "place", "push", "release_placement")
+TOOLS = ("move_robot", "get_camera_point_3d", "done", "grasp", "place", "push", "release_placement", "tilt")
 
 
 def lines(path: Path) -> list[dict]:
