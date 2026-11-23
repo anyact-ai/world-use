@@ -71,9 +71,11 @@ tasks are not inspected for tuning.
 
 ## What the tools do here, and what they do not
 
-- A grasp opens above its pose, fully or to `open_mm`, comes straight down and closes as it arrives, then checks
-  the measured finger opening and lifts 3-5 cm with the opening monitored: three `move_robot` calls. A lean comes
-  in along the hand's axis. A place carries, comes down to its pose, and stops with a one-use checkpoint before
+- A grasp opens above its pose, fully or to `open_mm`, comes straight down, closes, checks the measured finger
+  opening and lifts 3-5 cm with the opening monitored: four `move_robot` calls. A lean comes in along the hand's
+  axis. With `stop_before_close` it stops with the fingers open around the object and a one-use checkpoint, so the
+  model can look first; `close_grasp` then closes and lifts. The close is its own call: sent with the approach, it
+  runs while the arm is still settling, and from iter3 to final1 that doubled grasps that closed on nothing. A place carries, comes down to its pose, and stops with a one-use checkpoint before
   opening. A push follows a line with the fingers closed.
 - `tilt` turns the held object about a point of it, such as a container's mouth, at most 30 degrees per call with
   the grip checked after each, optionally after carrying that point over a target, and reports where it ended.

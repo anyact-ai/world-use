@@ -107,13 +107,15 @@ def test_quaternions_round_trip_and_an_upright_hand_points_down():
     assert abs(jaws @ [1, 0, 0]) == pytest.approx(1)
 
 
-def test_a_grasp_opens_above_comes_down_closing_as_it_arrives_and_lifts_in_three_moves():
+def test_a_grasp_opens_above_comes_down_closes_where_it_arrived_and_lifts():
     robot = FakeFranka(block=BLOCK)
     record, text = tools(robot).call("grasp", GRASP)
     assert record["status"] == "done", text
-    level, down, lift = robot.calls
+    level, down, close, lift = robot.calls
     assert level["position"] == pytest.approx([0.55, 0.05, 0.4]) and level["gripper"] == 0
-    assert down["position"] == pytest.approx([0.55, 0.05, 0.07]) and down["gripper"] == 1.0
+    # The close is its own call: one sent with the approach runs while the arm still settles above its goal.
+    assert down["position"] == pytest.approx([0.55, 0.05, 0.07]) and "gripper" not in down
+    assert close == dict(target="left", gripper=1.0)
     assert lift["position"][2] == pytest.approx(robot.calls[1]["position"][2] + 0.04)
 
 
@@ -184,7 +186,7 @@ def test_a_tools_result_ends_with_the_call_budget_its_moves_left():
     robot = FakeFranka(block=BLOCK)
     hand = tools(robot)
     _, text = hand.call("grasp", GRASP)
-    assert json.loads(hand.arm.with_budget(text))["_harness"] == dict(robot_api_calls_used=3,
+    assert json.loads(hand.arm.with_budget(text))["_harness"] == dict(robot_api_calls_used=4,
                                                                        robot_api_call_limit=100)
 
 
@@ -210,7 +212,6 @@ def test_a_move_on_the_way_may_end_off_its_goal_but_the_last_one_may_not(misses,
     robot = FakeFranka(block=BLOCK, misses=[np.asarray(m, float) for m in misses])
     record, text = tools(robot).call("grasp", GRASP)
     assert {s["stage"]: s["status"] for s in record["stages"]}["approach"] == status, text
-    assert ("told to close" in text) == (status == "surprise")  # the fingers closed with that last move
 
 
 @pytest.mark.parametrize("block,gripper", [(None, "reached_end"),
@@ -222,7 +223,7 @@ def test_a_close_outside_the_expected_opening_says_whether_the_fingers_met_anyth
     brief = json.loads(text)
     assert record["status"] == "surprise" and brief["last_command"]["gripper"] == gripper, text
     assert brief["stages"] == {"approach": "done", "close": "surprise"}  # the close, not the approach, failed
-    assert len(robot.calls) == 2   # no lift after a failed check
+    assert len(robot.calls) == 3   # no lift after a failed check
 
 
 @pytest.mark.parametrize("error,status", [("call_budget_exceeded", "stopped"), ("invalid_argument", "refused"),

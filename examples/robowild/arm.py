@@ -108,7 +108,6 @@ class RoboWildArm:
     """An Executor over the Robot API client. `scene` is the latest published scene_state; `absorb` takes each
     later result, whoever made the call."""
 
-    closes_on_arrival = True  # a move_robot goal's gripper acts as the arm arrives
     opens_partly = True  # its gripper value runs from 0, open, to 1, closed
 
     def __init__(self, robot, scene: dict, *, failures=(), record_dir: Path | None = None):
@@ -205,15 +204,11 @@ class RoboWildArm:
         for index, (goal, contact) in enumerate(legs):
             outcome = self._leg(goal, kind, contact, transit=index < len(legs) - 1)
             if not outcome.ok:
-                if command.get("close") and index == len(legs) - 1 and outcome.status == "surprise":
-                    outcome.message += "; the fingers were told to close as it arrived: aperture_mm is where they are"
                 return outcome
             if command.get("monitor_mm"):
                 outcome = self._opening(command["monitor_mm"], outcome, "the grip changed during the move")
                 if not outcome.ok:
                     return outcome
-        if command.get("close"):
-            return outcome  # the grasp's close stage measures the fingers it closed
         gripper = command["targets"].get("gripper")
         if gripper is not None and command.get("expect_mm"):
             return self._opening(command["expect_mm"], outcome)
@@ -253,12 +248,6 @@ class RoboWildArm:
             legs.append((leg(goal if np.linalg.norm(goal - here) > 1e-4 else None, **turn, **gripper), False))
         elif gripper:
             legs.append((leg(**gripper), False))  # the fingers open or close where the hand is
-        if command.get("close"):
-            # The fingers close as the last leg arrives, unless that leg already opens them.
-            if legs and "gripper" not in legs[-1][0]:
-                legs[-1] = (dict(legs[-1][0], gripper=1.0), legs[-1][1])
-            else:
-                legs.append((leg(gripper=1.0), False))
         return legs
 
     def _leg(self, goal, kind, contact, transit=False):

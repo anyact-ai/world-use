@@ -1,5 +1,6 @@
 """The tool set's sequences, on a fake arm that moves exactly where it is told unless told it meets contact."""
 import dataclasses
+import json
 import time
 from types import SimpleNamespace
 
@@ -167,31 +168,42 @@ def test_grasp_arguments_are_refused_before_any_motion(arguments, message):
     assert arm.commands == []
 
 
-class ClosingArm(Arm):
-    """An executor whose moves close the fingers as they arrive and can open them partway."""
+class PartlyOpeningArm(Arm):
+    """An executor whose fingers can open partway."""
 
-    closes_on_arrival = opens_partly = True
-
-    def execute(self, command):
-        outcome = super().execute(command)
-        if "opening_mm" in command.get("targets", {}):
-            self.aperture = command["targets"]["opening_mm"]
-        if command.get("close"):
-            self.aperture = 30.0
-        return outcome
+    opens_partly = True
 
 
-def test_a_hand_that_closes_on_arrival_grasps_in_one_command_fewer_and_may_open_partway():
-    arm = ClosingArm()
+def test_a_hand_that_opens_partly_takes_an_opening_wider_than_the_object():
+    arm = PartlyOpeningArm()
     hand = tools(arm)
     assert "open_mm" in next(s for s in hand.schemas() if s["name"] == "grasp")["parameters"]["properties"]
     record, _ = hand.call("grasp", dict(GRASP, open_mm=50))
-    approach = moves(arm)[0]
-    assert approach["close"] and approach["targets"]["opening_mm"] == 50
-    assert [c["kind"] for c in arm.commands[1:3]] == ["check_grip", "check_grip"]
-    assert all(m["stage"] != "grasp_close" for m in moves(arm)) and record["status"] == "done"
+    assert moves(arm)[0]["targets"]["opening_mm"] == 50 and record["status"] == "done"
     record, _ = hand.call("grasp", dict(GRASP, open_mm=30))
     assert record["status"] == "refused" and "wider than expect_grip_mm" in record["message"]
+
+
+def test_a_grasp_stopped_before_its_close_closes_only_on_its_checkpoint_while_nothing_moved():
+    arm = Arm()
+    hand = tools(arm)
+    record, text = hand.call("grasp", dict(GRASP, stop_before_close=True))
+    assert record["status"] == "stopped" and [m["stage"] for m in moves(arm)] == ["grasp_approach"]
+    assert arm.aperture == 80.0  # still open
+    checkpoint = next(a["data"]["checkpoint"] for a in json.loads(text)["assessments"])
+    _, text = hand.call("release_placement", dict(checkpoint=checkpoint, note="not a place"))
+    assert "release checkpoint is missing" in text  # nor does a grasp's checkpoint release anything
+    record, _ = hand.call("grasp", dict(GRASP, stop_before_close=True))
+    checkpoint = record["assessments"][-1]["outcome"]["data"]["checkpoint"]
+    record, _ = hand.call("close_grasp", dict(checkpoint=checkpoint, note="fingers either side of the mug"))
+    assert record["status"] == "done" and [m["stage"] for m in moves(arm)][-2:] == ["grasp_close", "grasp_test_lift"]
+    _, text = hand.call("close_grasp", dict(checkpoint=checkpoint, note="again"))
+    assert "grasp checkpoint is missing, stale or consumed" in text
+    record, _ = hand.call("grasp", dict(GRASP, stop_before_close=True))
+    checkpoint = record["assessments"][-1]["outcome"]["data"]["checkpoint"]
+    arm.steps += 1  # the arm moved since
+    _, text = hand.call("close_grasp", dict(checkpoint=checkpoint, note="moved"))
+    assert "stale" in text and arm.aperture == 80.0
 
 
 @pytest.mark.parametrize("max_lean_deg,lean_deg", [(60, 30), (20, 20)])

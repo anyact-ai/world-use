@@ -4,8 +4,9 @@ The harness runs it as a `command` backend, once per attempt, in the task worksp
 It is the `react` backend's loop (instructions, one tool call per turn, images after each result, context elision,
 retries) with three differences from that baseline: the extra tools and their help, one sentence of that help on how
 the attempt is judged, and old images dropped in batches rather than one per move (see IMAGE_BATCH). Robot API tools
-pass through as they do there; grasp, place, release_placement and push run world_use.hand_tools sequences, and tilt
-a stepped turn of the held object, through `RoboWildArm`, whose moves count toward the same call budget.
+pass through as they do there; grasp, close_grasp, place, release_placement and push run world_use.hand_tools
+sequences, and tilt a stepped turn of the held object, through `RoboWildArm`, whose moves count toward the same call
+budget.
 
     {"backend": "command", "command": ["<venv>/bin/python", "<world-use>/examples/robowild/agent.py",
                                        "--model", "MODEL", "--base-url", "URL", "--api-key-env", "NAME"]}
@@ -34,7 +35,7 @@ from world_use.hand_tools import HandTools
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from arm import HAND, MAX_TILT_DEG, NoTracking, RoboWildArm
 
-TOOLS = ("grasp", "place", "release_placement", "push")
+TOOLS = ("grasp", "close_grasp", "place", "release_placement", "push")
 POINT = dict(type="object", description="{x, y, z} in metres, in robot_base.")
 TILT = dict(
     type="function", name="tilt", strict=False,

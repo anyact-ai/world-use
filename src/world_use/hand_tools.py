@@ -81,11 +81,8 @@ class Executor(Protocol):
     its readings leaves it alone. key() is equal in two calls only when nothing in the world can have changed
     between them, as in a paused simulator, and None when that cannot be known. failures are the exceptions
     that mean the executor lost its arm during a call: the call then ends stopped, with what ran before.
-    An executor whose moves can close the fingers as they arrive, in the same command, may set a true
-    closes_on_arrival: a grasp then sends its approach with close set, and its close stage only measures, so the
-    grasp's before_close checkpoint observes after the fingers have closed. One
-    that can open them partway may set a true opens_partly: a grasp's approach may then carry opening_mm with
-    its open gripper.
+    An executor whose fingers can open partway may set a true opens_partly: a grasp's approach may then carry
+    opening_mm with its open gripper.
     """
 
     failures: tuple[type[Exception], ...]
@@ -275,7 +272,8 @@ def _schemas(hand_camera):
             f"Open, move above the approach pose (over the region itself when it was selected in "
             f"{hand}), come down to it or to contact short of it, or with tilt_deg come in leaning along the "
             "hand's own axis; close, check the measured opening, and lift 3-5 cm to test the hold. Stops at "
-            "the first failed check; never carries, retreats or retries.",
+            "the first failed check; never carries, retreats or retries. With stop_before_close it stops at the "
+            "approach pose with the fingers open and a one-use checkpoint for close_grasp.",
             dict(
                 object_target=TEXT,
                 select=SELECTION,
@@ -300,6 +298,11 @@ def _schemas(hand_camera):
                     "yaw_deg: a leaning hand's finger axis lies across its lean.",
                 ),
                 toward=dict(type="object", description="{x, y}: the point a leaning hand's fingertips point toward."),
+                stop_before_close=dict(
+                    type="boolean",
+                    description="Stop before closing, to look at the fingers around the object first: for a small, "
+                    "thin or crowded object, and after a close that met nothing.",
+                ),
             ),
             ["object_target", "approach", "lift", "expect_grip_mm"],
         ),
@@ -327,6 +330,13 @@ def _schemas(hand_camera):
             ["checkpoint", "note"],
         ),
         _schema(
+            "close_grasp",
+            "Close, check the measured opening and lift 3-5 cm after inspecting a grasp stopped before its "
+            "close. The checkpoint is valid once, and only while nothing has moved or been reselected since.",
+            dict(checkpoint=TEXT, note=TEXT),
+            ["checkpoint", "note"],
+        ),
+        _schema(
             "push",
             "Close the fingers, go to start through free space, move the fingertips straight to end or "
             "to where contact stops them, and back off. For a drawer, a door or sliding an object.",
@@ -349,7 +359,7 @@ def _schemas(hand_camera):
 
 
 class HandTools:
-    """select_target, observe_targets, locate, grasp, place, release_placement and push.
+    """select_target, observe_targets, locate, grasp, close_grasp, place, release_placement and push.
 
     `call(name, arguments)` returns the full record of what happened and the policy's brief copy as JSON
     text. Arguments are the policy's: poses are dicts of the executor's own target keys with x, y and z in
@@ -358,7 +368,7 @@ class HandTools:
 
     def __init__(self, executor: Executor, hand: Hand, tracking: Tracking):
         self.arm, self.hand, self.tracking = executor, hand, tracking
-        self.pending = None  # the one-use release checkpoint of the last place
+        self.pending = None  # the one-use checkpoint of the last place, or of a grasp stopped before its close
         self.seen = None
         self.located = {}  # where each target was last found; forgotten once it is reselected or taken
         self.outlined = set()  # targets selected with a box around them, whose region is the whole object
@@ -401,8 +411,10 @@ class HandTools:
             f"by its handle or in under a roof, lean the hand with tilt_deg (up to {h.max_lean_deg:g}): it turns "
             f"where it is, then comes in along its own axis from {100 * h.standoff_m:g} cm back, and keeps the "
             f"lean{offset}. A pinch on a handle does not resist turning: look at how the object hangs before "
-            "going on. A lean the arm cannot make is refused before it moves. place stops before opening with a "
-            "one-use checkpoint; inspect the views, then call release_placement or correct the pose. push leans "
+            "going on. A lean the arm cannot make is refused before it moves. A grasp with stop_before_close "
+            "stops with the fingers open around where the object should be: look, then call close_grasp, or grasp "
+            "again from a corrected pose. place stops before opening with a one-use checkpoint; inspect the views, "
+            "then call release_placement or correct the pose. push leans "
             f"the hand {self.push_lean:g} degrees back from a level line so the fingertips lead, and backs off up "
             f"to {100 * BACK_OFF_M:g} cm. Results: arm arrived, stopped_on_contact (short_m), not_approaching; "
             "gripper reached_end (nothing between the fingers), stopped_apart. A surprise is a measurement: "
@@ -680,9 +692,17 @@ class HandTools:
             return self._push(args)
         if name == "release_placement":
             return self._release(args)
+        if name == "close_grasp":
+            pending, self.pending = self.pending, None
+            if pending is None or pending["tool"] != "grasp" or args["checkpoint"] != pending["id"] or (
+                self.arm.fingerprint() != pending["fingerprint"]
+            ):
+                raise ValueError("grasp checkpoint is missing, stale or consumed")
+            return self._grasp(pending["args"], resume=dict(pending, note=args["note"]))
         raise ValueError("unknown tool")
 
-    def _grasp(self, args):
+    def _grasp(self, args, resume=None):
+        """A grasp, or with resume, the pending checkpoint of one stopped before its close, its close and lift."""
         grip = self._range(args["expect_grip_mm"])
         for key in ("approach", "lift"):
             self.arm.validate_pose(args[key])
@@ -740,7 +760,10 @@ class HandTools:
             )
         if toward is not None and not tilt:
             raise ValueError("toward is where tilt_deg leans the hand: give both or neither")
-        if "select" in args:
+        stop = args.get("stop_before_close", False)
+        if type(stop) is not bool:
+            raise ValueError("stop_before_close is true or false")
+        if "select" in args and resume is None:
             self.select(name, args["select"])
 
         found = {}
@@ -780,6 +803,19 @@ class HandTools:
             return dict(self.arm.measure(), targets=[])
 
         def lifted(checkpoint, observations):
+            if checkpoint == "before_close" and resume is not None:
+                return Outcome("done", "policy_assessment", "closed on the policy's recorded decision",
+                               dict(verified=False, policy_note=resume["note"]))
+            if checkpoint == "before_close" and stop:
+                self.pending = dict(tool="grasp", id=uuid.uuid4().hex, fingerprint=self.arm.fingerprint(),
+                                    args=copy.deepcopy(args))
+                return Outcome(
+                    "stopped",
+                    "grasp_decision",
+                    "the fingers are open at the approach pose: inspect fresh cameras, then call close_grasp or "
+                    "grasp again from a corrected pose",
+                    dict(checkpoint=self.pending["id"], completion_verified=False),
+                )
             if checkpoint != "after":
                 return Outcome("done", "not_assessed", "the region is compared after the test lift")
             facts = self._evidence(name, observations["before"], observations["after"], observations["before_lift"])
@@ -798,19 +834,14 @@ class HandTools:
             return None
 
         opened = self.hand.open_mm if opening is None else (opening - 3, opening + 3)
-        approaching: dict = dict(_move(approach, "grasp_approach", expected=opened), via={})
-        if getattr(self.arm, "closes_on_arrival", False):
-            # One command fewer: under a call budget, a grasp's moves are what runs a long task out of calls.
-            approaching["close"] = True
-            closing = dict(kind="check_grip", expect_mm=grip, stage="grasp_close")
-        else:
-            # Fingers closing across a box that is not square to them turn it first, slowly.
-            closing = _move({"gripper": 1}, "grasp_close", expected=grip, settle="close")
         outcome = procedures.grasp(
             run,
             observe,
-            approach=approaching,
-            close=closing,
+            approach=dict(kind="confirm_state", fingerprint=resume["fingerprint"]) if resume
+            else dict(_move(approach, "grasp_approach", expected=opened), via={}),
+            # Fingers closing across a box that is not square to them turn it first, slowly. A close sent with the
+            # approach itself would run while the arm still settles: on RoboWild's Franka that doubled empty closes.
+            close=_move({"gripper": 1}, "grasp_close", expected=grip, settle="close"),
             check=dict(kind="check_grip", expect_mm=grip),
             # The hand may have been centred, and stopped on contact above the requested height:
             # rise straight up from where it is.
@@ -856,7 +887,8 @@ class HandTools:
                     "the selection may sit on another object. Inspect both cameras, then reselect "
                     "or regrasp",
                 )
-            self.pending = dict(id=uuid.uuid4().hex, fingerprint=self.arm.fingerprint(), args=copy.deepcopy(args))
+            self.pending = dict(tool="place", id=uuid.uuid4().hex, fingerprint=self.arm.fingerprint(),
+                                args=copy.deepcopy(args))
             return Outcome(
                 "stopped",
                 "placement_decision",
@@ -870,7 +902,9 @@ class HandTools:
 
     def _release(self, args):
         pending, self.pending = self.pending, None
-        if pending is None or args["checkpoint"] != pending["id"] or self.arm.fingerprint() != pending["fingerprint"]:
+        if pending is None or pending["tool"] != "place" or args["checkpoint"] != pending["id"] or (
+            self.arm.fingerprint() != pending["fingerprint"]
+        ):
             raise ValueError("release checkpoint is missing, stale or consumed")
 
         def approved(checkpoint, observations):
