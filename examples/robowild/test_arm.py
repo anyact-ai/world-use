@@ -158,9 +158,26 @@ def test_a_tilt_carries_the_pivot_over_its_target_first_and_refuses_a_pivot_off_
     arm = RoboWildArm(robot, robot.scene(), failures=(RobotError,))
     pivot = (robot.at + [0, 0, -0.02]).tolist()
     told = arm.tilt(pivot, [0.6, 1.1], 60, [15, 25], over=[0.6, 0.1, 0.5])
-    assert told["moves"] == 2 and told["pivot"] == pytest.approx([0.6, 0.1, 0.5], abs=1e-6)
+    assert told["moves"] == 3 and told["pivot"] == pytest.approx([0.6, 0.1, 0.5], abs=1e-6)
     with pytest.raises(ValueError, match=r"within 0\.3 m"):
         arm.tilt([2.0, 0.0, 0.4], [3.0, 0.0], 60, [15, 25])
+
+
+def test_a_tilt_turns_about_where_the_carry_left_the_pivot_and_stops_if_the_carry_lost_the_grip():
+    robot = FakeFranka(misses=[np.array([0.015, 0, 0])])  # the carry arrives, 1.5 cm off
+    robot.fingers = 0.01
+    arm = RoboWildArm(robot, robot.scene(), failures=(RobotError,))
+    told = arm.tilt((robot.at + [0, 0, -0.02]).tolist(), [0.6, 1.1], 60, [15, 25], over=[0.6, 0.1, 0.5])
+    assert told["status"] == "done" and told["pivot"] == pytest.approx([0.615, 0.1, 0.5], abs=1e-6)
+    for goal in robot.calls[1:]:
+        assert np.linalg.norm(np.asarray(goal["position"]) - [0.615, 0.1, 0.5]) == pytest.approx(0.02)
+    robot = FakeFranka()
+    robot.fingers = 0.01
+    arm = RoboWildArm(robot, robot.scene(), failures=(RobotError,))
+    move = robot.move_robot
+    robot.move_robot = lambda goals: (setattr(robot, "fingers", 0.0), move(goals))[1]  # the object falls out
+    told = arm.tilt((robot.at + [0, 0, -0.02]).tolist(), [0.6, 1.1], 0, [15, 25], over=[0.6, 0.1, 0.5])
+    assert told["status"] == "surprise" and told["stage"] == "carry" and told["moves"] == 1
 
 
 def test_a_tools_result_ends_with_the_call_budget_its_moves_left():
@@ -193,6 +210,7 @@ def test_a_move_on_the_way_may_end_off_its_goal_but_the_last_one_may_not(misses,
     robot = FakeFranka(block=BLOCK, misses=[np.asarray(m, float) for m in misses])
     record, text = tools(robot).call("grasp", GRASP)
     assert {s["stage"]: s["status"] for s in record["stages"]}["approach"] == status, text
+    assert ("told to close" in text) == (status == "surprise")  # the fingers closed with that last move
 
 
 @pytest.mark.parametrize("block,gripper", [(None, "reached_end"),

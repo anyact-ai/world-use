@@ -82,7 +82,8 @@ class Executor(Protocol):
     between them, as in a paused simulator, and None when that cannot be known. failures are the exceptions
     that mean the executor lost its arm during a call: the call then ends stopped, with what ran before.
     An executor whose moves can close the fingers as they arrive, in the same command, may set a true
-    closes_on_arrival: a grasp then sends its approach with close set, and its close stage only measures. One
+    closes_on_arrival: a grasp then sends its approach with close set, and its close stage only measures, so the
+    grasp's before_close checkpoint observes after the fingers have closed. One
     that can open them partway may set a true opens_partly: a grasp's approach may then carry opening_mm with
     its open gripper.
     """

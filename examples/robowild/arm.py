@@ -205,6 +205,8 @@ class RoboWildArm:
         for index, (goal, contact) in enumerate(legs):
             outcome = self._leg(goal, kind, contact, transit=index < len(legs) - 1)
             if not outcome.ok:
+                if command.get("close") and index == len(legs) - 1 and outcome.status == "surprise":
+                    outcome.message += "; the fingers were told to close as it arrived: aperture_mm is where they are"
                 return outcome
             if command.get("monitor_mm"):
                 outcome = self._opening(command["monitor_mm"], outcome, "the grip changed during the move")
@@ -323,12 +325,17 @@ class RoboWildArm:
         level = np.asarray(toward, float) - end[:2]
         if float(np.linalg.norm(level)) < 0.01:
             raise ValueError("toward is a level point at least 1 cm from where the pivot turns")
+        calls = 0
         if over is not None:
-            p0 = p0 + end - pivot
-            moved = self._leg(dict(target=ARM, position=[float(v) for v in p0]), "tilt", False)
+            moved = self._leg(dict(target=ARM, position=[float(v) for v in p0 + end - pivot]), "tilt", False)
+            calls = 1
+            if moved.ok:
+                moved = self._opening(expect_mm, moved, "the grip changed during the carry")
             if not moved.ok:
-                return dict(status=moved.status, message=moved.message, stage="carry", **moved.data)
-            pivot = end
+                return dict(status=moved.status, message=moved.message, stage="carry", moves=calls, **moved.data)
+            # Arrived counts within 2 cm: turn about where the pivot is, carried with the hand, not where it was sent.
+            at = np.asarray(self.hand["eef_position"], float)
+            p0, pivot = at, at + pivot - p0
         R0 = rotation(self.hand["eef_quaternion_wxyz"])
         approach, across = tilted(level, tilt_deg) if tilt_deg else (DOWN, tilted(level, 0)[1])
         if across @ (R0 @ OPENS) < 0:
@@ -337,13 +344,14 @@ class RoboWildArm:
         turn = Rt @ R0.T
         degrees = math.degrees(math.acos(max(-1.0, min(1.0, (float(np.trace(turn)) - 1) / 2))))
         steps = math.ceil(degrees / TILT_STEP_DEG - 1e-6) if degrees >= 1 else 0
-        outcome, moves = Outcome("done", "tilt", "nothing to do: the hand already leans so",
-                                 dict(self.measure(), arm="arrived")), 0
+        outcome = Outcome("done", "tilt", "nothing to do: the hand already leans so",
+                          dict(self.measure(), arm="arrived"))
         for k in range(1, steps + 1):
             Rk = _partial(turn, k / steps) @ R0
             goal = dict(target=ARM, position=[float(v) for v in pivot + Rk @ R0.T @ (p0 - pivot)],
                         quaternion_wxyz=quaternion(Rk))
-            outcome, moves = self._leg(goal, "tilt", False, transit=k < steps), k
+            outcome = self._leg(goal, "tilt", False, transit=k < steps)
+            calls += 1
             if outcome.ok:
                 outcome = self._opening(expect_mm, outcome, "the grip changed during the tilt")
             if not outcome.ok:
@@ -351,7 +359,7 @@ class RoboWildArm:
         # Where the pivot is now, carried rigidly with the hand from where it was.
         R = rotation(self.hand["eef_quaternion_wxyz"])
         moved = np.asarray(self.hand["eef_position"], float) + R @ R0.T @ (pivot - p0)
-        return dict(status=outcome.status, message=outcome.message, moves=moves,
+        return dict(status=outcome.status, message=outcome.message, moves=calls,
                     pivot=[round(float(v), 4) for v in moved],
                     pivot_moved_m=round(float(np.linalg.norm(moved - pivot)), 4), **outcome.data)
 

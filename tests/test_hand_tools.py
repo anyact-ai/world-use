@@ -158,12 +158,40 @@ def test_an_arm_lost_during_a_call_ends_it_stopped_after_what_ran():
     (dict(tilt_deg=75, toward=dict(x=0.3, y=0.2)), "tilt_deg is between 0 and 60"),
     (dict(lift=dict(z=0.2)), "the test lift rises 3-5 cm"),
     (dict(expect_grip_mm=[20, 90]), "max <= 78"),
+    (dict(open_mm=60), "give no open_mm"),
 ])
 def test_grasp_arguments_are_refused_before_any_motion(arguments, message):
     arm = Arm()
     record, _ = tools(arm).call("grasp", dict(GRASP, **arguments))
     assert record["status"] == "refused" and message in record["message"]
     assert arm.commands == []
+
+
+class ClosingArm(Arm):
+    """An executor whose moves close the fingers as they arrive and can open them partway."""
+
+    closes_on_arrival = opens_partly = True
+
+    def execute(self, command):
+        outcome = super().execute(command)
+        if "opening_mm" in command.get("targets", {}):
+            self.aperture = command["targets"]["opening_mm"]
+        if command.get("close"):
+            self.aperture = 30.0
+        return outcome
+
+
+def test_a_hand_that_closes_on_arrival_grasps_in_one_command_fewer_and_may_open_partway():
+    arm = ClosingArm()
+    hand = tools(arm)
+    assert "open_mm" in next(s for s in hand.schemas() if s["name"] == "grasp")["parameters"]["properties"]
+    record, _ = hand.call("grasp", dict(GRASP, open_mm=50))
+    approach = moves(arm)[0]
+    assert approach["close"] and approach["targets"]["opening_mm"] == 50
+    assert [c["kind"] for c in arm.commands[1:3]] == ["check_grip", "check_grip"]
+    assert all(m["stage"] != "grasp_close" for m in moves(arm)) and record["status"] == "done"
+    record, _ = hand.call("grasp", dict(GRASP, open_mm=30))
+    assert record["status"] == "refused" and "wider than expect_grip_mm" in record["message"]
 
 
 @pytest.mark.parametrize("max_lean_deg,lean_deg", [(60, 30), (20, 20)])

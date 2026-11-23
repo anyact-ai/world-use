@@ -35,13 +35,13 @@ def rows(arm_dir: Path, long_tasks) -> list[dict]:
         if not finished:  # still running
             continue
         record, verdict = finished[-1]
-        events = lines(record / "events.jsonl")
-        start, end = (datetime.fromisoformat(events[i]["time"]).timestamp() for i in (0, -1))
-        spent = [r for r in ledger if start <= r["at"] <= end]
+        # An attempt the harness judged before the agent's first call may have no events, audit or conversation.
+        events, audit, conversation = (lines(file) if (file := next(record.rglob(name), None)) else []
+                                       for name in ("events.jsonl", "audit.jsonl", "conversation.jsonl"))
+        times = [datetime.fromisoformat(events[i]["time"]).timestamp() for i in (0, -1)] if events else [0, -1]
+        spent = [r for r in ledger if times[0] <= r["at"] <= times[1]]
         result = json.loads(verdict.read_text())
-        audit = lines(next(record.rglob("audit.jsonl")))
         robot = sum(1 for r in audit if r.get("event") == "capability_call" and r.get("capability") != "done")
-        conversation = lines(next(record.rglob("conversation.jsonl")))
         called = [m[1] for m in (re.match(r"(\w+)\(", c.get("text") or "") for c in conversation) if m]
         final = [c.get("text") or "" for c in conversation if c.get("phase") == "final"]
         found.append(dict(

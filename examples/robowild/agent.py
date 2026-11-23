@@ -1,10 +1,11 @@
 """World-use's agent for RoboWild-Harness: the harness's own ReAct loop, with the hand tools added.
 
 The harness runs it as a `command` backend, once per attempt, in the task workspace, with the attempt prompt on stdin.
-It is the `react` backend's loop unchanged (instructions, one tool call per turn, images after each result, context
-elision, retries), so it differs from that baseline only in the extra tools and their help text. Robot API tools pass
-through as they do there; grasp, place, release_placement and push run world_use.hand_tools sequences through
-`RoboWildArm`, whose moves count toward the same call budget.
+It is the `react` backend's loop (instructions, one tool call per turn, images after each result, context elision,
+retries) with three differences from that baseline: the extra tools and their help, one sentence of that help on how
+the attempt is judged, and old images dropped in batches rather than one per move (see IMAGE_BATCH). Robot API tools
+pass through as they do there; grasp, place, release_placement and push run world_use.hand_tools sequences, and tilt
+a stepped turn of the held object, through `RoboWildArm`, whose moves count toward the same call budget.
 
     {"backend": "command", "command": ["<venv>/bin/python", "<world-use>/examples/robowild/agent.py",
                                        "--model", "MODEL", "--base-url", "URL", "--api-key-env", "NAME"]}
@@ -59,7 +60,8 @@ TILT = dict(
 # The loop keeps the images of its newest IMAGE_HISTORY image-bearing messages and drops older ones' images as new
 # ones come. Azure OpenAI's prompt cache ends at the first message whose images were dropped, so dropping one per
 # move made every request after a move pay for its whole context: in 01-01, 25 of 35 requests had only the
-# instructions cached. Dropped IMAGE_BATCH at a time, the cache breaks once in that many moves.
+# instructions cached. Dropped IMAGE_BATCH at a time, the cache breaks once in that many moves, and the model sees up
+# to IMAGE_BATCH more images than the loop's rules say.
 IMAGE_BATCH = 6
 # Arguments that need region tracking or a camera on the hand, which this robot's tools do not have.
 UNSUPPORTED = {"grasp": ("select", "offset"), "place": ("select_destination", "destination_target")}
