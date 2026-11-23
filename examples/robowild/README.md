@@ -58,8 +58,8 @@ the `react_move_points` Robot API profile (`move_robot`, `get_camera_point_3d`, 
 one round, and each task's own call budget: 100 Robot API calls for a short task, 200 for a long one.
 
 - **alone** is the harness's `react` backend, unchanged.
-- **world-use** is [agent.py](agent.py), run as a `command` backend: the same `react` loop, with `grasp`, `place`,
-  `release_placement`, `push` and `tilt` added and their help appended to its instructions. They run through
+- **world-use** is [agent.py](agent.py), run as a `command` backend: the same `react` loop, with `grasp`, `close_grasp`,
+  `place`, `release_placement`, `push` and `tilt` added and their help appended to its instructions. They run through
   [arm.py](arm.py), whose moves are `move_robot` calls on the same budget. Two other differences came from the
   development runs: the help ends with one sentence that the attempt is judged on the scene as it ends, so the
   model should leave what the task asks for in place, and old images are dropped six at a time, not one per move,
@@ -75,8 +75,9 @@ tasks are not inspected for tuning.
   opening and lifts 3-5 cm with the opening monitored: four `move_robot` calls. A lean comes in along the hand's
   axis. With `stop_before_close` it stops with the fingers open around the object and a one-use checkpoint, so the
   model can look first; `close_grasp` then closes and lifts. The close is its own call: sent with the approach, it
-  runs while the arm is still settling, and from iter3 to final1 that doubled grasps that closed on nothing. A place carries, comes down to its pose, and stops with a one-use checkpoint before
-  opening. A push follows a line with the fingers closed.
+  runs while the arm is still settling, and in the runs that did so it nearly doubled grasps that closed on
+  nothing. A place carries, comes down to its pose, and stops with a one-use checkpoint before opening. A push
+  follows a line with the fingers closed.
 - `tilt` turns the held object about a point of it, such as a container's mouth, at most 30 degrees per call with
   the grip checked after each, optionally after carrying that point over a target, and reports where it ended.
 - An approach that stops short along its line, as on a counter or the object, reports how far short. The harness
