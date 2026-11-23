@@ -40,9 +40,10 @@ TILT = dict(
     description=(
         "Turn the held object about pivot, a point of it that should stay where it is, such as a container's mouth "
         "over where it pours, until the hand leans tilt_deg from upright with its fingertips toward a level point. "
-        "With over, the hand first carries the pivot there. It turns at most 30 degrees per move_robot call, with "
-        "the grip monitored, and reports where the pivot ended. tilt_deg 0 stands the hand upright again about the "
-        "same point. The finger axis ends level and across the lean."
+        "With over, the hand first carries the pivot there at its current lean: an object leaning far sweeps its far "
+        "end through what lies below, so bring the pivot close before leaning far. It turns at most 30 degrees per "
+        "move_robot call, with the grip monitored, and reports where the pivot ended. tilt_deg 0 stands the hand "
+        "upright again about the same point. The finger axis ends level and across the lean."
     ),
     parameters=dict(type="object", required=["object_target", "pivot", "toward", "tilt_deg", "expect_grip_mm"],
                     properties=dict(
