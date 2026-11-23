@@ -74,7 +74,8 @@ EMBODIMENT_DOCS = (
     "arrived within 2 cm of its goal, and approach_ended_short_m also reports an approach that ended more than 3 mm "
     "above its pose, where fingers may close over a thin part. A large turn of the wrist in one move_robot call can "
     "shake a held object loose: a keychain pinched by its tag fell out of a 100-degree turn. tilt turns what the "
-    "hand holds in steps, about a point of it."
+    "hand holds in steps, about a point of it. The attempt is judged on the scene as it is when it ends: leave what "
+    "the instruction asks for in place rather than undoing it."
 )
 
 
