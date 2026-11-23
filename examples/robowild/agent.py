@@ -71,7 +71,9 @@ EMBODIMENT_DOCS = (
     "of the finger pads, which reach 12 mm above it. To pinch something thinner than about 1 cm, give an approach z "
     "at or a few millimetres below the surface it rests on: contact stops the fingertips there. A move counts as "
     "arrived within 2 cm of its goal, and approach_ended_short_m also reports an approach that ended more than 3 mm "
-    "above its pose, where fingers may close over a thin part."
+    "above its pose, where fingers may close over a thin part. A large turn of the wrist in one move_robot call can "
+    "shake a held object loose: a keychain pinched by its tag fell out of a 100-degree turn. tilt turns what the "
+    "hand holds in steps, about a point of it."
 )
 
 
