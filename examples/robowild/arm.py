@@ -108,6 +108,8 @@ class RoboWildArm:
     """An Executor over the Robot API client. `scene` is the latest published scene_state; `absorb` takes each
     later result, whoever made the call."""
 
+    closes_on_arrival = True  # a move_robot goal's gripper acts as the arm arrives
+
     def __init__(self, robot, scene: dict, *, failures=(), record_dir: Path | None = None):
         self.robot, self.scene = robot, scene
         # The client's error type. A rejected move becomes a refusal; one whose execution is unknown ends the call.
@@ -207,6 +209,8 @@ class RoboWildArm:
                 outcome = self._opening(command["monitor_mm"], outcome, "the grip changed during the move")
                 if not outcome.ok:
                     return outcome
+        if command.get("close_mm"):
+            return self._opening(command["close_mm"], outcome)
         gripper = command["targets"].get("gripper")
         if gripper is not None and command.get("expect_mm"):
             return self._opening(command["expect_mm"], outcome)
@@ -244,6 +248,12 @@ class RoboWildArm:
             legs.append((leg(goal if np.linalg.norm(goal - here) > 1e-4 else None, **turn, **gripper), False))
         elif gripper:
             legs.append((leg(**gripper), False))  # the fingers open or close where the hand is
+        if command.get("close_mm"):
+            # The fingers close as the last leg arrives, unless that leg already opens them.
+            if legs and "gripper" not in legs[-1][0]:
+                legs[-1] = (dict(legs[-1][0], gripper=1.0), legs[-1][1])
+            else:
+                legs.append((leg(gripper=1.0), False))
         return legs
 
     def _leg(self, goal, kind, contact, transit=False):

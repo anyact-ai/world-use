@@ -81,6 +81,9 @@ class Executor(Protocol):
     its readings leaves it alone. key() is equal in two calls only when nothing in the world can have changed
     between them, as in a paused simulator, and None when that cannot be known. failures are the exceptions
     that mean the executor lost its arm during a call: the call then ends stopped, with what ran before.
+    An executor whose moves can close the fingers as they arrive, in the same command, may set a true
+    closes_on_arrival: a grasp then sends its approach with close_mm, the opening to check once the fingers
+    have closed, and no separate close.
     """
 
     failures: tuple[type[Exception], ...]
@@ -777,12 +780,19 @@ class HandTools:
             # A changed region, a lost one or a lift too short to compare proves nothing either way.
             return None
 
+        approaching = dict(_move(approach, "grasp_approach", expected=self.hand.open_mm), via={})
+        if getattr(self.arm, "closes_on_arrival", False):
+            # One command fewer: under a call budget, a grasp's moves are what runs a long task out of calls.
+            approaching["close_mm"] = grip
+            closing = dict(kind="check_grip", expect_mm=grip, stage="grasp_close")
+        else:
+            # Fingers closing across a box that is not square to them turn it first, slowly.
+            closing = _move({"gripper": 1}, "grasp_close", expected=grip, settle="close")
         outcome = procedures.grasp(
             run,
             observe,
-            approach=dict(_move(approach, "grasp_approach", expected=self.hand.open_mm), via={}),
-            # Fingers closing across a box that is not square to them turn it first, slowly.
-            close=_move({"gripper": 1}, "grasp_close", expected=grip, settle="close"),
+            approach=approaching,
+            close=closing,
             check=dict(kind="check_grip", expect_mm=grip),
             # The hand may have been centred, and stopped on contact above the requested height:
             # rise straight up from where it is.
