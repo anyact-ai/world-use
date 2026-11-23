@@ -33,6 +33,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from arm import HAND, NoTracking, RoboWildArm
 
 TOOLS = ("grasp", "place", "release_placement", "push")
+# The loop keeps the images of its newest IMAGE_HISTORY image-bearing messages and drops older ones' images as new
+# ones come. Azure OpenAI's prompt cache ends at the first message whose images were dropped, so dropping one per
+# move made every request after a move pay for its whole context: in 01-01, 25 of 35 requests had only the
+# instructions cached. Dropped IMAGE_BATCH at a time, the cache breaks once in that many moves.
+IMAGE_BATCH = 6
 # Arguments that need region tracking or a camera on the hand, which this robot's tools do not have.
 UNSUPPORTED = {"grasp": ("select", "offset"), "place": ("select_destination", "destination_target")}
 EMBODIMENT_DOCS = (
@@ -88,6 +93,13 @@ class WorldUseReact(ReactRunner):
         self._hand_names = frozenset(TOOLS)
         self._instructions += f"\n\n# Hand tools\n\n{self._hand.docs()} {EMBODIMENT_DOCS}"
         self._usage = None
+
+    def _elide_old_images(self):
+        bearing = sum(1 for item in self._input if item.get("type") == "message" and item.get("role") == "user"
+                      and any(isinstance(part, dict) and part.get("type") == "input_image"
+                              for part in item.get("content", ())))
+        if bearing > self._image_history + IMAGE_BATCH:
+            super()._elide_old_images()
 
     def _invoke(self, turn_id, iteration, call):
         name = str(call.get("name") or "")
