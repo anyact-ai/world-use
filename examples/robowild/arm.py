@@ -109,6 +109,7 @@ class RoboWildArm:
     later result, whoever made the call."""
 
     closes_on_arrival = True  # a move_robot goal's gripper acts as the arm arrives
+    opens_partly = True  # its gripper value runs from 0, open, to 1, closed
 
     def __init__(self, robot, scene: dict, *, failures=(), record_dir: Path | None = None):
         self.robot, self.scene = robot, scene
@@ -225,6 +226,8 @@ class RoboWildArm:
             goal[2] = here[2] + command["rise_m"]
         turn = {k: targets[k] for k in ("quaternion_wxyz",) if k in targets}
         gripper = {"gripper": float(targets["gripper"])} if "gripper" in targets else {}
+        if gripper and not gripper["gripper"] and "opening_mm" in targets:
+            gripper["gripper"] = round(1 - targets["opening_mm"] / HAND.opening_mm, 4)
 
         def leg(to=None, **extra):
             return dict(target=ARM, **({} if to is None else dict(position=[float(v) for v in to])), **extra)

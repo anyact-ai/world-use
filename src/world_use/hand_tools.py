@@ -82,7 +82,9 @@ class Executor(Protocol):
     between them, as in a paused simulator, and None when that cannot be known. failures are the exceptions
     that mean the executor lost its arm during a call: the call then ends stopped, with what ran before.
     An executor whose moves can close the fingers as they arrive, in the same command, may set a true
-    closes_on_arrival: a grasp then sends its approach with close set, and its close stage only measures.
+    closes_on_arrival: a grasp then sends its approach with close set, and its close stage only measures. One
+    that can open them partway may set a true opens_partly: a grasp's approach may then carry opening_mm with
+    its open gripper.
     """
 
     failures: tuple[type[Exception], ...]
@@ -367,7 +369,15 @@ class HandTools:
 
     def schemas(self) -> list[dict]:
         """Each tool's name, description and JSON Schema parameters, for an agent loop to register."""
-        return _schemas(self.hand.hand_camera)
+        schemas = _schemas(self.hand.hand_camera)
+        if getattr(self.arm, "opens_partly", False):
+            grasp = next(schema for schema in schemas if schema["name"] == "grasp")
+            grasp["parameters"]["properties"]["open_mm"] = dict(
+                type="number",
+                description="How far to open the fingers before the approach, when neighbours crowd the object: "
+                f"wider than it, at most {self.hand.opening_mm:g}. Fully open without it.",
+            )
+        return schemas
 
     def docs(self) -> str:
         """What the policy needs to know beyond each tool's description, with this hand's numbers."""
@@ -699,7 +709,14 @@ class HandTools:
             raise ValueError("offset is [dx, dy] in metres, each within 0.2")
         if any(offset) and not wrist:
             raise ValueError(f"offset is measured from a region selected in the {hand_camera} camera")
-        approach = dict(args["approach"], gripper=0)
+        approach: dict = dict(args["approach"], gripper=0)
+        opening = args.get("open_mm")
+        if opening is not None:
+            if not getattr(self.arm, "opens_partly", False):
+                raise ValueError("this hand's fingers open fully: give no open_mm")
+            if type(opening) not in (float, int) or not grip[1] < opening <= self.hand.opening_mm:
+                raise ValueError(f"open_mm is wider than expect_grip_mm and at most {self.hand.opening_mm:g}")
+            approach["opening_mm"] = float(opening)
         if (yaw := args.get("yaw_deg")) is not None:
             if type(yaw) not in (float, int) or not -90 <= yaw <= 90:
                 raise ValueError("yaw_deg is between -90 and 90")
@@ -779,7 +796,8 @@ class HandTools:
             # A changed region, a lost one or a lift too short to compare proves nothing either way.
             return None
 
-        approaching: dict = dict(_move(approach, "grasp_approach", expected=self.hand.open_mm), via={})
+        opened = self.hand.open_mm if opening is None else (opening - 3, opening + 3)
+        approaching: dict = dict(_move(approach, "grasp_approach", expected=opened), via={})
         if getattr(self.arm, "closes_on_arrival", False):
             # One command fewer: under a call budget, a grasp's moves are what runs a long task out of calls.
             approaching["close"] = True

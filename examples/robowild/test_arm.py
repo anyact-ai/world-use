@@ -171,6 +171,15 @@ def test_a_tools_result_ends_with_the_call_budget_its_moves_left():
                                                                        robot_api_call_limit=100)
 
 
+def test_a_grasp_can_open_the_fingers_only_as_wide_as_the_crowd_around_the_object_allows():
+    robot = FakeFranka(block=BLOCK)
+    record, text = tools(robot).call("grasp", dict(GRASP, open_mm=50))
+    assert record["status"] == "done", text
+    assert robot.calls[0]["gripper"] == pytest.approx(0.375)  # 50 of the Panda's 80 mm
+    _, text = tools(FakeFranka(block=BLOCK)).call("grasp", dict(GRASP, open_mm=40))
+    assert json.loads(text)["status"] == "refused"  # no wider than the 35-45 mm expected
+
+
 def test_an_approach_that_meets_the_object_above_its_pose_reports_how_far_short():
     robot = FakeFranka(block=(BLOCK[0], np.array([0.06, 0.06, 0.07])))   # 12 cm wide, top 5 cm above the pose
     record, _ = tools(robot).call("grasp", GRASP)
