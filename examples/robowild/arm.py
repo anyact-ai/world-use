@@ -27,6 +27,9 @@ TRACKED_M = 0.02  # move_robot's own tracking limit; a command's last leg must e
 # A leg on the way, which the next leg's absolute goal corrects, may end this far off: a free move with a large turn
 # of the wrist ended 2.4 cm off in the simulator, with nothing in the way.
 TRANSIT_M = 0.05
+# move_robot counts an approach within TRACKED_M as arrived, but grasp approaches ended up to 17 mm above their goal
+# so: a pinch of a 3.5 mm part that ends this far short closes above it, and the result says by how much.
+SHORT_REPORT_M = 0.003
 GRIP_SLACK_MM = 1.0  # finger readings settle within this of the opening they stop at
 # Empty fingers read 0.2-2.7 mm in the development check. The tools take no expected opening below 4 mm, as a
 # reading there cannot be told from an empty close.
@@ -247,15 +250,20 @@ class RoboWildArm:
             return Outcome("stopped", kind, f"the move ended {result.get('execution_status')}: "
                            f"{stop.get('message', '')}".rstrip(": "), data)
         reached = (result.get("move") or {}).get("goals", [{}])[0]
-        if "position" not in goal or reached.get("tracked", True):
+        if "position" not in goal:
             data["arm"] = "arrived"
             return Outcome("done", kind, "done; inspect the measured result", data)
         target = np.asarray(goal["position"], float)
         at = np.asarray(data["tool"], float)
+        line = target - np.asarray(reached.get("start_position", at), float)
+        unit = line / max(float(np.linalg.norm(line)), 1e-9)
+        short = float((target - at) @ unit)
+        if reached.get("tracked", True):
+            data["arm"] = "arrived"
+            if contact and short > SHORT_REPORT_M:
+                data["short_m"] = round(short, 4)
+            return Outcome("done", kind, "done; inspect the measured result", data)
         if contact:
-            line = target - np.asarray(reached.get("start_position", at), float)
-            unit = line / max(float(np.linalg.norm(line)), 1e-9)
-            short = float((target - at) @ unit)
             # A hand blocked on its way is pushed aside and tilted a little as the controller keeps driving: the
             # fingertips on a counter 5.7 cm above the goal ended 2.2 cm aside and 0.12 rad turned.
             if short > TRACKED_M and short >= float(np.linalg.norm((target - at) - short * unit)):

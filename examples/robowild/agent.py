@@ -40,7 +40,11 @@ EMBODIMENT_DOCS = (
     "robot_state: get_camera_point_3d gives them from a pixel. The base moves that frame with it. Each tool runs "
     "several move_robot calls, which count toward the call budget, and returns what was measured, ending with the "
     "budget's count after it in _harness as a Robot API result does: the arm's move_robot stays available for "
-    "everything else, including the base and the lift."
+    "everything else, including the base and the lift. The tool point is 5 mm above the fingertips, near the bottom "
+    "of the finger pads, which reach 12 mm above it. To pinch something thinner than about 1 cm, give an approach z "
+    "at or a few millimetres below the surface it rests on: contact stops the fingertips there. A move counts as "
+    "arrived within 2 cm of its goal, and approach_ended_short_m also reports an approach that ended more than 3 mm "
+    "above its pose, where fingers may close over a thin part."
 )
 
 

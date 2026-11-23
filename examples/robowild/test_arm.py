@@ -125,6 +125,15 @@ def test_a_reading_an_empty_close_could_give_is_never_taken_for_a_hold():
     assert record["status"] == "surprise" and json.loads(text)["last_command"]["gripper"] == "reached_end", text
 
 
+def test_an_approach_the_controller_ends_above_its_goal_says_how_far_above():
+    """move_robot calls an approach within 2 cm arrived; fingers 8 mm above a thin part close over it."""
+    robot = FakeFranka(block=BLOCK, misses=[np.zeros(3), np.array([0, 0, 0.008])])
+    _, text = tools(robot).call("grasp", GRASP)
+    assert json.loads(text)["approach_ended_short_m"] == pytest.approx(0.008, abs=1e-4), text
+    _, text = tools(FakeFranka(block=BLOCK)).call("grasp", GRASP)
+    assert "approach_ended_short_m" not in json.loads(text)
+
+
 def test_a_tools_result_ends_with_the_call_budget_its_moves_left():
     robot = FakeFranka(block=BLOCK)
     hand = tools(robot)
