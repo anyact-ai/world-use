@@ -4,8 +4,9 @@
 (Isaac Sim) on four mobile robots. This pilot runs world-use's [hand tools](../../docs/hand-tools.md) on a tenth of
 them: the 34 cross-embodiment tasks, on the mobile Franka, against the same model on its own.
 
-**Status:** on the 10 development tasks, GPT-6.2 Astra at high reasoning solved 2 on its own and 1 with world-use;
-at low reasoning neither arm solved one. All results are from RoboWild's simulator.
+**Status:** on the 10 development tasks, GPT-6.2 Astra at high reasoning solved 2 on its own, and 1 with world-use
+both before and after the changes the first runs led to; at low reasoning neither arm solved one. All results are
+from RoboWild's simulator, one attempt per task.
 
 | reasoning | arm | solved | model requests | Robot API calls | est. USD |
 | --- | --- | --- | --- | --- | --- |
@@ -13,6 +14,8 @@ at low reasoning neither arm solved one. All results are from RoboWild's simulat
 | low | world-use | 0 of 10 | 72 | 98 | 5.32 |
 | high | alone | 2 of 10 (01-01, 37-01) | 560 | 551 | 324.92 |
 | high | world-use | 1 of 10 (01-01) | 405 | 500 | 163.43 |
+| high | world-use, rerun at 4977816 | 1 of 10 (29-06) | 589 | 736 | 256.35 |
+| high | world-use, 06-06 and 22-10 at 7f328b9 | 1 of 2 (22-10) | 68 | 86 | 18.27 |
 
 - At low reasoning every attempt ended with the model calling `done` after at most 34 of its 100 or 200 calls, when
   it could not verify a clearance or a grasp point, or when contact stopped the mobile base. With world-use it called
@@ -24,15 +27,26 @@ at low reasoning neither arm solved one. All results are from RoboWild's simulat
 - 37-01, sorting poker chips into stacks, is the task the tools lost. A grasp makes 4 calls and a place with its
   release 4: the model used `place` for 7 chips and then carried each with 2 `move_robot` calls, and 11 of its 32
   grasps closed empty or slipped. It ran out of the task's 200 calls; on its own it sorted the chips in 155.
-- 788 of the 965 requests at high reasoning paid the full input price, and made 97% of the cost. The harness's loop
-  replaces the oldest images after each move, which changes the conversation's start and so misses the prompt
-  cache: a request with 130,000 tokens of context then costs about $1 instead of $0.10. Both arms run that loop.
-- Two runs did not go as planned. The baseline's 29-06 attempt was ended by its run's spending cap after 69 calls,
-  before the model called `done`: it counts as not solved. In 23-03 and 37-01 the baseline's cap was raised during
-  the attempt by restarting the model proxy on the same port and ledger, and the attempts carried on. `run.py` now
-  starts a task only while the budget left covers the costliest so far.
-- The held-out tasks have not been run. [development-check.jsonl](development-check.jsonl) has a row per reasoning
-  level, arm and task from [report.py](report.py), with the model's closing words; costs are estimates from token
+- The rerun, with the changes below, solved 29-06 and lost 01-01: with one attempt per task, the runs differ as much
+  from each other as the arms do. In 37-01, with each tool's call count in its result, the model used `place` for
+  20 chips and had all five denominations stacked in order, a few chips loose, at 197 calls and $20.
+- In the first runs at high reasoning, 788 of the 965 requests paid the full input price, and made 97% of the cost.
+  The harness's loop replaces the oldest images after each move, which changes the conversation's start and so
+  misses the prompt cache: a request with 130,000 tokens of context then costs about $1 instead of $0.10. Both arms
+  run that loop.
+- Runs that did not go as planned. The baseline's 29-06 attempt was ended by its run's spending cap after 69 calls,
+  before the model called `done`: it counts as not solved. In the baseline's 23-03 and 37-01 and the rerun's 04-02
+  the cap was raised during the attempt by restarting the model proxy on the same port and ledger, and the attempts
+  carried on. `run.py` now starts a task only while the budget left covers the costliest so far.
+- What the runs changed: `yaw_deg`'s help gives the direction of a turn; fingers stopped on something narrower than
+  expected are `stopped_apart`, not `reached_end`; each result ends with the call count. After the rerun the grasp
+  schema also states the rules behind five of its six refusals (the 4 mm floor of an expected opening, the 3-5 cm
+  test lift, `tilt_deg` without `yaw_deg`) and that a rounded object reads under its visible width. Run once on
+  the two tasks they bear on most, no grasp was refused; the model expected 5-38 mm for a sausage, whose grasps had
+  read 5.5-8 mm against 12 mm or more expected in every earlier run, and its grasp passed; and 22-10, the cake dome,
+  was solved for the first time in any run.
+- The held-out tasks have not been run. [development-check.jsonl](development-check.jsonl) has a row per run and task
+  from [report.py](report.py), with the model's closing words; costs are estimates from token
   counts at the rates in `cases.toml`.
 
 ## The comparison
