@@ -127,10 +127,12 @@ class WorldUseReact(ReactRunner):
                 added.append(dict(type="function", name=schema["name"], description=schema["description"],
                                   strict=False, parameters=parameters))
         move = next(tool for tool in self._tools if tool["name"] == "move_robot")
+        goals = dict(type="object", required=["goals"], additionalProperties=False,
+                     properties=dict(goals=move["parameters"]["properties"]["goals"]))
         sequence = dict(type="function", name="move_sequence", strict=False, description=SEQUENCE,
                         parameters=dict(type="object", required=["moves"], additionalProperties=False,
                                         properties=dict(moves=dict(type="array", minItems=1, maxItems=MAX_MOVES,
-                                                                   items=move["parameters"]))))
+                                                                   items=goals))))
         self._tools.extend([*added, TILT, sequence])
         self._hand_names = frozenset(TOOLS) | {"tilt", "move_sequence"}
         self._instructions += f"\n\n# Hand tools\n\n{self._hand.docs()} {EMBODIMENT_DOCS}"
