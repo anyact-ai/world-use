@@ -4,52 +4,65 @@
 (Isaac Sim) on four mobile robots. This pilot runs world-use's [hand tools](../../docs/hand-tools.md) on a tenth of
 them: the 34 cross-embodiment tasks, on the mobile Franka, against the same model on its own.
 
-**Status:** on the 10 development tasks, GPT-6.2 Astra at high reasoning solved 2 on its own, and 1 with world-use
-both before and after the changes the first runs led to; at low reasoning neither arm solved one. All results are
-from RoboWild's simulator, one attempt per task.
+**Status:** on the 10 development tasks, GPT-6.2 Astra at high reasoning solved 2 on its own. With world-use, the
+two full runs closest to the tools as they are solved 4 (at d3eed9f) and 1 (at e57e81e, this code); over all 59
+world-use attempts at high reasoning, 13 were solved, 22%. All results are from RoboWild's simulator, one attempt per
+task. The held-out tasks have not been run.
 
-| reasoning | arm | solved | model requests | Robot API calls | est. USD |
-| --- | --- | --- | --- | --- | --- |
-| low | alone | 0 of 10 | 50 | 40 | 4.08 |
-| low | world-use | 0 of 10 | 72 | 98 | 5.32 |
-| high | alone | 2 of 10 (01-01, 37-01) | 560 | 551 | 324.92 |
-| high | world-use | 1 of 10 (01-01) | 405 | 500 | 163.43 |
-| high | world-use, rerun at 4977816 | 1 of 10 (29-06) | 589 | 736 | 256.35 |
-| high | world-use, 06-06 and 22-10 at 7f328b9 | 1 of 2 (22-10) | 68 | 86 | 18.27 |
+| reasoning | arm | world-use commit | solved | model requests | Robot API calls | est. USD |
+| --- | --- | --- | --- | --- | --- | --- |
+| low | alone | | 0 of 10 | 50 | 40 | 4.08 |
+| low | world-use | bd36c12 | 0 of 10 | 72 | 98 | 5.32 |
+| high | alone | | 2 of 10 (01-01, 37-01) | 560 | 551 | 324.92 |
+| high | world-use | babe7cf | 1 of 10 (01-01) | 405 | 500 | 163.43 |
+| high | world-use | 4977816 | 1 of 10 (29-06) | 589 | 736 | 256.35 |
+| high | world-use, one or a few tasks per change | 7f328b9 to ba7f0bc | 5 of 13 | 873 | 1,225 | 124.54 |
+| high | world-use, stopped after 6 tasks | 600d12d | 1 of 6 (01-01) | 382 | 415 | 50.40 |
+| high | world-use | d3eed9f | 4 of 10 (01-01, 02-06, 09-06, 29-06) | 781 | 952 | 99.06 |
+| high | world-use | e57e81e | 1 of 10 (37-01) | 854 | 1,108 | 108.35 |
 
+- One attempt per task is too few to tell these changes apart. The runs at d3eed9f and e57e81e differ by
+  `move_sequence`, the quaternion scaling, the recovery sentence (see the comparison below) and the pose a resumed
+  `close_grasp` reports starting from. At e57e81e the four tasks solved at d3eed9f failed as single attempts do: the
+  keychain ended on the table below its hook, a rim grip on the bottle slipped, 44% of the reagent reached the
+  beaker, and the carrot lay in the basin outside the faucet's stream. By task, the 59 attempts solved 01-01 4 times
+  in 7; 09-06, 22-10, 29-06 and 37-01 2 in 7; 02-06 once in 5; and 04-02, 06-06, 23-03 and 36-01 never. At 22% per
+  attempt a run of 10 averages about 2.
+- Cost: since the prompt-cache fix a full run costs $99-108 for 781-854 model requests, about $0.13 each, against
+  $0.40-0.43 a request in the world-use runs before it and $0.58 in the model's own run, where 788 of 965 requests
+  paid the full input price. Azure OpenAI caches no prompt prefix through the Responses API's `instructions` field,
+  which the harness's loop uses for its rules: `model_proxy.py` sends them as a leading developer message instead,
+  for both arms, and the world-use arm drops old images six at a time, so a move does not end the cached prefix. The
+  model's own arm was not run again with the fix.
+- What the changes since 4977816 measurably did:
+  - A grasp that closed as its approach arrived, one call fewer, closed empty 27 times in 48 at 600d12d. Closing as
+    its own call once the arm settles, as since d3eed9f, closed empty 14 times in 83 and 22 in 101 in the two full
+    runs after it.
+  - `tilt`: 09-06, the pour, was solved in 2 of its 5 attempts since, and in neither before.
+  - No quaternion was refused at e57e81e, against 6 calls at d3eed9f; across all runs, 21 of the 26 refused
+    `move_robot` calls were quaternions off unit length.
+  - `move_sequence` ran 78 sequences at e57e81e, and model requests took 41 s on average there against 38 s at
+    d3eed9f. It did not keep the long tasks inside the 5,400 s timeout: 06-06 and 23-03 reached it at 118 and 137
+    calls.
+  - The sentences on how an attempt is judged and that a setback does not end it showed no effect on when the model
+    stops: at e57e81e it called `done` with 73 calls left in 22-10, the cake dome having fallen out of reach, and
+    with 49 left in 29-06, taking the carrot for rinsed.
+  - The grasp schema's rules (a 4 mm floor under an expected opening, the 3-5 cm test lift, `tilt_deg` only with
+    `yaw_deg`, a rounded object reading under its visible width) left no grasp refused in the check run on the two
+    tasks they bear on most, 06-06 and 22-10.
+- Where attempts are lost: of the 22 and 23 slips in the two full runs, 20 and 18 came in moves the model sent
+  itself, often short straight carries, which points at the grip it took more than at the speed. Nine in ten of the
+  tools' free moves end within 2 mm of their goal, and approaches that may end on contact within 10 mm.
 - At low reasoning every attempt ended with the model calling `done` after at most 34 of its 100 or 200 calls, when
-  it could not verify a clearance or a grasp point, or when contact stopped the mobile base. With world-use it called
-  the hand tools in 5 tasks (11 grasps, 3 placements, 1 push) and stopped in the middle of the manipulation instead
-  of before it.
-- At high reasoning the model drove the arm itself with `move_robot` in both arms, measuring with
-  `get_camera_point_3d` between moves. With world-use it called the hand tools in 4 tasks (35 grasps, 7 placements)
-  and spent half as much.
-- 37-01, sorting poker chips into stacks, is the task the tools lost. A grasp makes 4 calls and a place with its
-  release 4: the model used `place` for 7 chips and then carried each with 2 `move_robot` calls, and 11 of its 32
-  grasps closed empty or slipped. It ran out of the task's 200 calls; on its own it sorted the chips in 155.
-- The rerun, with the changes below, solved 29-06 and lost 01-01: with one attempt per task, the runs differ as much
-  from each other as the arms do. In 37-01, with each tool's call count in its result, the model used `place` for
-  20 chips and had all five denominations stacked in order, a few chips loose, at 197 calls and $20.
-- In the first runs at high reasoning, 788 of the 965 requests paid the full input price, and made 97% of the cost:
-  a request with 130,000 tokens of context cost about $1 instead of $0.10. Azure OpenAI caches no prompt prefix
-  through the Responses API's `instructions` field, which the harness's loop uses for its rules, so only the tool
-  definitions before it were cached. `model_proxy.py` now sends the instructions as a leading developer message
-  instead, for both arms: in a loop-shaped test every request after the first was cached but for its newest
-  tokens, where none had been. The runs above were made without that change.
+  it could not verify a clearance or a grasp point, or when contact stopped the mobile base.
 - Runs that did not go as planned. The baseline's 29-06 attempt was ended by its run's spending cap after 69 calls,
-  before the model called `done`: it counts as not solved. In the baseline's 23-03 and 37-01 and the rerun's 04-02
-  the cap was raised during the attempt by restarting the model proxy on the same port and ledger, and the attempts
-  carried on. `run.py` now starts a task only while the budget left covers the costliest so far.
-- What the runs changed: `yaw_deg`'s help gives the direction of a turn; fingers stopped on something narrower than
-  expected are `stopped_apart`, not `reached_end`; each result ends with the call count. After the rerun the grasp
-  schema also states the rules behind five of its six refusals (the 4 mm floor of an expected opening, the 3-5 cm
-  test lift, `tilt_deg` without `yaw_deg`) and that a rounded object reads under its visible width. Run once on
-  the two tasks they bear on most, no grasp was refused; the model expected 5-38 mm for a sausage, whose grasps had
-  read 5.5-8 mm against 12 mm or more expected in every earlier run, and its grasp passed; and 22-10, the cake dome,
-  was solved for the first time in any run.
-- The held-out tasks have not been run. [development-check.jsonl](development-check.jsonl) has a row per run and task
-  from [report.py](report.py), with the model's closing words; costs are estimates from token
-  counts at the rates in `cases.toml`.
+  before the model called `done`: it counts as not solved. In the baseline's 23-03 and 37-01 and the 4977816 run's
+  04-02 the cap was raised during the attempt by restarting the model proxy on the same port and ledger, and the
+  attempts carried on. `run.py` now starts a task only while the budget left covers the costliest so far. The run at
+  600d12d was stopped during its seventh task, once its empty closes showed the regression above; that attempt is
+  not counted, and the run spent $69.31 in all.
+- [development-check.jsonl](development-check.jsonl) has a row per run and task from [report.py](report.py), with
+  the model's closing words; costs are estimates from token counts at the rates in `cases.toml`.
 
 ## The comparison
 
