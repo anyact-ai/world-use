@@ -445,7 +445,10 @@ def test_on_the_twin_a_leaning_hand_carries_a_mug_by_its_handle_in_under_a_roof(
         assert at[2] - STAND > 0.01 and 10 < tilt < 45 and 8 <= client.status()["gripper"]["aperture_mm"] <= 16
 
         here = np.array(client.status()["tool"]["base"])
-        release = np.array([0.42 - 0.065, 0.0, here[2] - 0.035])          # the mug's centre over the box's middle
+        # The tilted mug hangs against the stand. Coming down 3.75-5 cm at via, the hand slides it along onto the box's
+        # floor; 3.25 cm or less, or 5.5 cm or more, and it turns in the fingers and stays on the stand. 3.5 cm passed
+        # on Linux and failed on macOS: the drop is the middle of that range.
+        release = np.array([0.42 - 0.065, 0.0, here[2] - 0.0425])         # the mug's centre over the box's middle
         record, text = hand.call("place", dict(object_target="mug", move=xyz(release), via=xyz(release - [0.12, 0, 0]),
                                                withdraw=xyz(release - [0.10, 0, 0]), expect_grip_mm=[6, 20]))
         (decision,) = (a["outcome"] for a in record["assessments"])
