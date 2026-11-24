@@ -2,11 +2,12 @@
 
 The harness runs it as a `command` backend, once per attempt, in the task workspace, with the attempt prompt on stdin.
 It is the `react` backend's loop (instructions, one tool call per turn, images after each result, context elision,
-retries) with three differences from that baseline: the extra tools and their help, one sentence of that help on how
-the attempt is judged, and old images dropped in batches rather than one per move (see IMAGE_BATCH). Robot API tools
-pass through as they do there; grasp, close_grasp, place, release_placement and push run world_use.hand_tools
-sequences, tilt a stepped turn of the held object and move_sequence several move_robot calls in one turn, through
-`RoboWildArm`, whose moves count toward the same call budget.
+retries) with four differences from that baseline: the extra tools and their help, two sentences of that help on how
+the attempt is judged and when it ends, near-unit quaternions scaled to unit length (see UNIT_SLACK), and old images
+dropped in batches rather than one per move (see IMAGE_BATCH). Robot API tools otherwise pass through as they do
+there; grasp, close_grasp, place, release_placement and push run world_use.hand_tools sequences, tilt a stepped turn
+of the held object and move_sequence several move_robot calls in one turn, through `RoboWildArm`, whose moves count
+toward the same call budget.
 
     {"backend": "command", "command": ["<venv>/bin/python", "<world-use>/examples/robowild/agent.py",
                                        "--model", "MODEL", "--base-url", "URL", "--api-key-env", "NAME"]}
@@ -33,7 +34,7 @@ from robowild_harness.runtime.batch import _REACT_DEVELOPER_INSTRUCTIONS, _attem
 from world_use.hand_tools import HandTools
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from arm import HAND, MAX_MOVES, MAX_TILT_DEG, NoTracking, RoboWildArm
+from arm import HAND, MAX_MOVES, MAX_TILT_DEG, NoTracking, RoboWildArm, unit_quaternions
 
 TOOLS = ("grasp", "close_grasp", "place", "release_placement", "push")
 POINT = dict(type="object", description="{x, y, z} in metres, in robot_base.")
@@ -86,7 +87,9 @@ EMBODIMENT_DOCS = (
     "above its pose, where fingers may close over a thin part. A large turn of the wrist in one move_robot call can "
     "shake a held object loose: a keychain pinched by its tag fell out of a 100-degree turn. tilt turns what the "
     "hand holds in steps, about a point of it. The attempt is judged on the scene as it is when it ends: leave what "
-    "the instruction asks for in place rather than undoing it."
+    "the instruction asks for in place rather than undoing it. A refused move leaves the robot where it was, a stop "
+    "on contact where it stopped, and a dropped object can be grasped again where it lies: while calls remain, "
+    "recover from these and go on with the task rather than calling done."
 )
 
 
@@ -97,6 +100,8 @@ class Watched:
         self._robot, self._absorb = robot, absorb
 
     def call(self, name, **arguments):
+        if name == "move_robot" and "goals" in arguments:
+            arguments = dict(arguments, goals=unit_quaternions(arguments["goals"]))
         try:
             result = self._robot.call(name, **arguments)
         except RobotError as error:

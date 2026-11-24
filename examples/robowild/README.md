@@ -60,11 +60,16 @@ one round, and each task's own call budget: 100 Robot API calls for a short task
 - **alone** is the harness's `react` backend, unchanged.
 - **world-use** is [agent.py](agent.py), run as a `command` backend: the same `react` loop, with `grasp`,
   `close_grasp`, `place`, `release_placement`, `push`, `tilt` and `move_sequence` added and their help appended to
-  its instructions. They run through [arm.py](arm.py), whose moves are `move_robot` calls on the same budget. Two
-  other differences came from the development runs: the help ends with one sentence that the attempt is judged on
-  the scene as it ends, so the model should leave what the task asks for in place, and old images are dropped six at
-  a time, not one per move, so the prompt cache holds (the model can then see up to six more images than the loop's
-  rules say).
+  its instructions. They run through [arm.py](arm.py), whose moves are `move_robot` calls on the same budget. Other
+  differences came from the development runs:
+  - The help ends with two sentences: the attempt is judged on the scene as it ends, so the model should leave
+    what the task asks for in place; and a refused move, a stop on contact or a dropped object does not end it, so
+    while calls remain the model should recover rather than call `done`.
+  - A `move_robot` quaternion within 3% of unit length is scaled to it. `move_robot` refuses one more than 0.1% off,
+    and the refusal counts toward the budget: the model's, written to three or four decimals, were 21 of the 26
+    refused calls in the development runs, in both arms.
+  - Old images are dropped six at a time, not one per move, so the prompt cache holds. The model can then see up to
+    six more images than the loop's rules say.
 
 [cases.toml](cases.toml) lists the tasks, their budgets and a development/held-out split (10 and 24 tasks, chosen
 by hash within short and long tasks). Development tasks may be inspected and replayed to build the tools; held-out

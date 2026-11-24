@@ -36,6 +36,10 @@ GRIP_SLACK_MM = 1.0  # finger readings settle within this of the opening they st
 EMPTY_MM = 4.0
 
 MAX_MOVES = 8  # move_robot calls in one move_sequence
+# move_robot refuses a quaternion more than 1e-3 from unit length, and the refusal counts toward the call budget.
+# Written to three or four decimals, the model's missed that 21 times in the development runs, never by more than
+# 2.4%; this far from unit length it is scaled to it instead.
+UNIT_SLACK = 0.03
 TILT_STEP_DEG = 30  # a tilt turns the hand at most this far per move, so the pivot stays near where it was
 MAX_TILT_DEG = 150  # past horizontal, as pouring out of a narrow container needs
 PIVOT_REACH_M = 0.3  # the pivot is on the held object: further from the hand than this, it is not
@@ -70,6 +74,21 @@ def rotation(q) -> np.ndarray:
     return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
                      [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
                      [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]])
+
+
+def unit_quaternions(goals):
+    """move_robot goals with each quaternion_wxyz within UNIT_SLACK of unit length scaled to it. Anything else is
+    left as it is, for move_robot to accept or refuse with its own reason."""
+    if not isinstance(goals, list):
+        return goals
+    scaled = []
+    for goal in goals:
+        q = goal.get("quaternion_wxyz") if isinstance(goal, dict) else None
+        if (isinstance(q, list) and len(q) == 4 and all(type(v) in (float, int) and math.isfinite(v) for v in q)
+                and abs(math.hypot(*q) - 1) <= UNIT_SLACK):
+            goal = dict(goal, quaternion_wxyz=[v / math.hypot(*q) for v in q])
+        scaled.append(goal)
+    return scaled
 
 
 def _partial(turn, fraction) -> np.ndarray:

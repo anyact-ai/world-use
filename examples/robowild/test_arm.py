@@ -7,7 +7,7 @@ import json
 
 import numpy as np
 import pytest
-from arm import HAND, NoTracking, RoboWildArm, quaternion, rotation
+from arm import HAND, NoTracking, RoboWildArm, quaternion, rotation, unit_quaternions
 
 from world_use.hand_tools import DOWN, HandTools
 
@@ -274,6 +274,18 @@ def test_a_move_sequence_stops_after_a_move_that_is_refused_fails_or_ends_off_it
     record = RoboWildArm(robot, robot.scene(), failures=(RobotError,)).sequence(
         arm_moves([0.5, 0.0, 0.3], [0.6, 0.1, 0.3], [0.6, 0.1, 0.2]))
     assert record["status"] == "stopped" and record["ran"] == ran == len(robot.calls)
+
+
+def test_a_quaternion_rounded_off_unit_length_is_scaled_to_it_and_any_other_is_left_for_move_robot():
+    rounded = [0.203, 0.676, -0.203, 0.676]  # 0.18% short of unit length: move_robot refused it
+    goals = [dict(target="left", position=[0.8, -0.3, 1.1], quaternion_wxyz=rounded, gripper=0),
+             dict(target="base", position_xy=[0.1, 0.0])]
+    (left, base) = unit_quaternions(goals)
+    assert np.linalg.norm(left["quaternion_wxyz"]) == pytest.approx(1)
+    assert np.allclose(left["quaternion_wxyz"], np.asarray(rounded) / np.linalg.norm(rounded))
+    assert left.keys() == goals[0].keys() and base == goals[1] and goals[0]["quaternion_wxyz"] == rounded
+    for wrong in ([0, 0.9, 0, 0], [1, 0, 0], ["1", 0, 0, 0], [float("nan"), 1, 0, 0]):
+        assert unit_quaternions([dict(target="left", quaternion_wxyz=wrong)])[0]["quaternion_wxyz"] == wrong
 
 
 @pytest.mark.parametrize("moves", [[], arm_moves(*[[0.5, 0, 0.3]] * 9), [dict(goals=[], speed=1)], ["up"]])
