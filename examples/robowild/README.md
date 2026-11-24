@@ -58,12 +58,13 @@ the `react_move_points` Robot API profile (`move_robot`, `get_camera_point_3d`, 
 one round, and each task's own call budget: 100 Robot API calls for a short task, 200 for a long one.
 
 - **alone** is the harness's `react` backend, unchanged.
-- **world-use** is [agent.py](agent.py), run as a `command` backend: the same `react` loop, with `grasp`, `close_grasp`,
-  `place`, `release_placement`, `push` and `tilt` added and their help appended to its instructions. They run through
-  [arm.py](arm.py), whose moves are `move_robot` calls on the same budget. Two other differences came from the
-  development runs: the help ends with one sentence that the attempt is judged on the scene as it ends, so the
-  model should leave what the task asks for in place, and old images are dropped six at a time, not one per move,
-  so the prompt cache holds (the model can then see up to six more images than the loop's rules say).
+- **world-use** is [agent.py](agent.py), run as a `command` backend: the same `react` loop, with `grasp`,
+  `close_grasp`, `place`, `release_placement`, `push`, `tilt` and `move_sequence` added and their help appended to
+  its instructions. They run through [arm.py](arm.py), whose moves are `move_robot` calls on the same budget. Two
+  other differences came from the development runs: the help ends with one sentence that the attempt is judged on
+  the scene as it ends, so the model should leave what the task asks for in place, and old images are dropped six at
+  a time, not one per move, so the prompt cache holds (the model can then see up to six more images than the loop's
+  rules say).
 
 [cases.toml](cases.toml) lists the tasks, their budgets and a development/held-out split (10 and 24 tasks, chosen
 by hash within short and long tasks). Development tasks may be inspected and replayed to build the tools; held-out
@@ -80,6 +81,12 @@ tasks are not inspected for tuning.
   follows a line with the fingers closed.
 - `tilt` turns the held object about a point of it, such as a container's mouth, at most 30 degrees per call with
   the grip checked after each, optionally after carrying that point over a target, and reports where it ended.
+- `move_sequence` runs up to 8 `move_robot` calls in one turn, each with its own goals, and stops after the first
+  that is refused, ends in a safety stop or leaves a goal untracked. The harness's loop takes one tool call per turn,
+  and at high reasoning a turn took 25-81 s on average, so a long task's 200 calls, one per turn, would fill its
+  5,400 s timeout. On real robots, [Robocurve](https://robocurve.org/blog/codex-vs-inspect-robots/) traced the same
+  model's better scores in one harness to the tools it wrote there, and suspects that sending several moves per turn
+  is what does the work.
 - An approach that stops short along its line, as on a counter or the object, reports how far short. The harness
   reports no forces: this is judged from where the hand ended.
 - Positions come from the policy, in robot_base, with `get_camera_point_3d`. There is no region tracking, no

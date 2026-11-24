@@ -252,3 +252,33 @@ def test_a_release_checkpoint_is_void_once_the_arm_has_moved():
     hand.arm.robot.move_robot(goals=[dict(target="left", position=[0.5, -0.1, 0.12])])
     hand.arm.absorb(dict(scene_state=robot.scene()))
     assert hand.call("release_placement", release)[0]["status"] == "refused"
+
+
+def arm_moves(*positions):
+    return [dict(goals=[dict(target="left", position=list(p))]) for p in positions]
+
+
+def test_a_move_sequence_runs_each_move_as_its_own_call_and_returns_the_last_result():
+    robot = FakeFranka()
+    arm = RoboWildArm(robot, robot.scene(), failures=(RobotError,))
+    record = arm.sequence(arm_moves([0.5, 0.0, 0.3], [0.6, 0.1, 0.3], [0.6, 0.1, 0.2]))
+    assert record["status"] == "done" and record["ran"] == record["of"] == 3 and len(robot.calls) == 3
+    assert record["last"]["_harness"]["robot_api_calls_used"] == 3
+    assert np.allclose(arm.measure()["tool"], [0.6, 0.1, 0.2])
+
+
+@pytest.mark.parametrize("robot,ran", [(FakeFranka(misses=[0, [0.05, 0, 0]]), 2),
+                                       (FakeFranka(refuse="out_of_reach"), 1),
+                                       (FakeFranka(error="call_budget_exceeded"), 1)])
+def test_a_move_sequence_stops_after_a_move_that_is_refused_fails_or_ends_off_its_goal(robot, ran):
+    record = RoboWildArm(robot, robot.scene(), failures=(RobotError,)).sequence(
+        arm_moves([0.5, 0.0, 0.3], [0.6, 0.1, 0.3], [0.6, 0.1, 0.2]))
+    assert record["status"] == "stopped" and record["ran"] == ran == len(robot.calls)
+
+
+@pytest.mark.parametrize("moves", [[], arm_moves(*[[0.5, 0, 0.3]] * 9), [dict(goals=[], speed=1)], ["up"]])
+def test_a_move_sequence_takes_one_to_eight_move_robot_arguments(moves):
+    robot = FakeFranka()
+    with pytest.raises(ValueError):
+        RoboWildArm(robot, robot.scene(), failures=(RobotError,)).sequence(moves)
+    assert not robot.calls

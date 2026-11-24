@@ -35,6 +35,7 @@ GRIP_SLACK_MM = 1.0  # finger readings settle within this of the opening they st
 # reading there cannot be told from an empty close.
 EMPTY_MM = 4.0
 
+MAX_MOVES = 8  # move_robot calls in one move_sequence
 TILT_STEP_DEG = 30  # a tilt turns the hand at most this far per move, so the pivot stays near where it was
 MAX_TILT_DEG = 150  # past horizontal, as pouring out of a narrow container needs
 PIVOT_REACH_M = 0.3  # the pivot is on the held object: further from the hand than this, it is not
@@ -351,6 +352,40 @@ class RoboWildArm:
         return dict(status=outcome.status, message=outcome.message, moves=calls,
                     pivot=[round(float(v), 4) for v in moved],
                     pivot_moved_m=round(float(np.linalg.norm(moved - pivot)), 4), **outcome.data)
+
+    def sequence(self, moves) -> dict:
+        """move_robot calls in order, each with its own arguments, stopping after the first that is refused, does
+        not move, does not complete or leaves a goal untracked. The record holds each move's outcome and, as last,
+        the result of the last move run, as move_robot returns it."""
+        if not isinstance(moves, list) or not 1 <= len(moves) <= MAX_MOVES or any(
+                not isinstance(move, dict) or move.keys() != {"goals"} or not isinstance(move["goals"], list)
+                for move in moves):
+            raise ValueError(f"moves is a list of 1 to {MAX_MOVES} move_robot arguments, each {{\"goals\": [...]}}")
+        ran = []
+        for move in moves:
+            try:
+                last = self.robot.move_robot(goals=move["goals"])
+            except self.failures as error:
+                if getattr(error, "code", "") in ("connection_closed", "internal_error"):
+                    raise  # whether it moved is unknown: the caller ends the call
+                self.absorb(getattr(error, "details", None) or {})
+                last = dict(ok=False, error=str(error), code=getattr(error, "code", None),
+                            execution_started=getattr(error, "execution_started", None))
+                ran.append(dict(ok=False, code=last["code"]))
+                break
+            self.absorb(last)
+            goals = (last.get("move") or {}).get("goals") or []
+            tracked = last.get("tracked", all(goal.get("tracked", True) for goal in goals))
+            ran.append(dict(moved=last.get("moved"), execution_status=last.get("execution_status"),
+                            tracked=tracked))
+            self.record("moves.jsonl", dict(goal=move["goals"], sequence=True, moved=last.get("moved"),
+                                            status=last.get("execution_status"), failure=last.get("failure"),
+                                            goals=goals, at=self.measure()))
+            if not last.get("moved") or last.get("execution_status") != "completed" or not tracked:
+                break
+        else:
+            return dict(status="done", ran=len(ran), of=len(moves), moves=ran, last=last)
+        return dict(status="stopped", ran=len(ran), of=len(moves), moves=ran, last=last)
 
     def _opening(self, expect, outcome, message="the gripper stopped outside the expected opening"):
         observed = round(self.opening_mm(), 1)
