@@ -136,21 +136,22 @@ python run.py --arm world-use --split development --tasks 01-01 --scripted plan.
 ```
 
 A plan is a list of tool calls, such as `[{"name": "done", "arguments": {}}]`; an argument `"$checkpoint"` passes on
-the release checkpoint the call before it issued. Then each arm, on each split:
+the checkpoint the call before it issued. Then each arm, on each split:
 
 ```bash
-python run.py --arm alone --split development --model MODEL --credentials creds.json --budget-usd 50 --robowild RoboWild --output results/development --authorization "..."
+python run.py --arm alone --split development --model MODEL --reasoning-effort high --credentials creds.json --budget-usd 50 --robowild RoboWild --output results/development --authorization "..."
 ```
 
 ```bash
-python run.py --arm world-use --split development --model MODEL --credentials creds.json --budget-usd 50 --agent-python agent/bin/python --robowild RoboWild --output results/development --authorization "..."
+python run.py --arm world-use --split development --model MODEL --reasoning-effort high --credentials creds.json --budget-usd 50 --agent-python agent/bin/python --robowild RoboWild --output results/development --authorization "..."
 ```
 
 `creds.json` holds `{"base_url": ..., "key": ...}` for the model's Responses endpoint; `run.py` deletes it once
 read and starts [model_proxy.py](model_proxy.py), which alone holds the key, forwards the agents' requests and stops
 the arm's spending at `--budget-usd` (prices per model in `cases.toml`). Each task is one harness evaluation, and
 the next starts only while the budget left covers the costliest task so far, so the cap does not cut an attempt
-short; `run.py` names the tasks it did not run. `--authorization` records the approval of the paid run with it.
+short; `run.py` names the tasks it did not run. An attempt gets 5,400 s (`--agent-timeout`). `--authorization`
+records the approval of the paid run with it.
 Each task's directory under the arm holds the harness's `report.json`, `summary.md` and the run's videos and
 records; the world-use agent's own records (`world-use.jsonl`, `moves.jsonl`) are beside its command logs. One row
 per task, as in `development-check.jsonl`:

@@ -86,7 +86,7 @@ def main():
                         help="the harness's agent-side interpreter, when the simulator's cannot be copied")
     parser.add_argument("--robowild", type=Path, default=Path(os.environ.get("ROBOWILD_CHECKOUT", "RoboWild")))
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--agent-timeout", type=float, default=3600)
+    parser.add_argument("--agent-timeout", type=float, default=5400, help="seconds per attempt")
     args = parser.parse_args()
     if args.arm == "world-use" and args.agent_python is None:
         parser.error("--agent-python is required for the world-use arm")
@@ -122,8 +122,8 @@ def main():
     agent_file.write_text(json.dumps(agent(args), indent=2) + "\n")
     run = dict(
         authorization=args.authorization, arm=args.arm, split=args.split, tasks=tasks, model=args.model,
-        reasoning_effort=args.reasoning_effort, budget_usd=args.budget_usd, robowild_commit=cases["robowild_commit"],
-        harness_commit=cases["harness_commit"],
+        reasoning_effort=args.reasoning_effort, budget_usd=args.budget_usd, agent_timeout_s=args.agent_timeout,
+        robowild_commit=cases["robowild_commit"], harness_commit=cases["harness_commit"],
         world_use_commit=os.environ.get("WORLD_USE_COMMIT") or subprocess.run(
             ["git", "-C", str(HERE), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip(),
     )

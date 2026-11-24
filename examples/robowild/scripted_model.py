@@ -3,8 +3,9 @@ model: each request gets the next call, and once the list is spent it answers in
 
     python scripted_model.py PORT PLAN.json      PLAN.json: [{"name": ..., "arguments": {...}}, ...]
 
-An argument "$checkpoint" becomes the release checkpoint the latest tool result issued. Every request's tool names
-and latest tool result are appended to requests.jsonl beside PLAN.json.
+An argument "$checkpoint" becomes the checkpoint, of a place or of a grasp stopped before its close, that the
+latest tool result issued. Every request's tool names and latest tool result are appended to requests.jsonl beside
+PLAN.json.
 """
 
 import json
