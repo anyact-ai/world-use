@@ -797,7 +797,10 @@ class HandTools:
 
         def observe():
             # While the hand is over the object it hides it from the fixed camera, and a region the
-            # tracker loses stays lost. Look at it before the approach and after a completed lift only.
+            # tracker loses stays lost. Look at it before the approach and after a completed lift only;
+            # a close after a checkpoint starts with the hand down, from the look before its approach.
+            if resume is not None and not ran:
+                return copy.deepcopy(resume["before"])
             if not ran or (len(ran) == 5 and all(ran)):
                 return self.observe()
             return dict(self.arm.measure(), targets=[])
@@ -808,7 +811,7 @@ class HandTools:
                                dict(verified=False, policy_note=resume["note"]))
             if checkpoint == "before_close" and stop:
                 self.pending = dict(tool="grasp", id=uuid.uuid4().hex, fingerprint=self.arm.fingerprint(),
-                                    args=copy.deepcopy(args))
+                                    args=copy.deepcopy(args), before=copy.deepcopy(observations["before"]))
                 return Outcome(
                     "stopped",
                     "grasp_decision",

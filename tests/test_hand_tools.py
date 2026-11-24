@@ -195,8 +195,12 @@ def test_a_grasp_stopped_before_its_close_closes_only_on_its_checkpoint_while_no
     assert "release checkpoint is missing" in text  # nor does a grasp's checkpoint release anything
     record, _ = hand.call("grasp", dict(GRASP, stop_before_close=True))
     checkpoint = record["assessments"][-1]["outcome"]["data"]["checkpoint"]
+    looked = []  # where the hand was each time the tracker looked
+    track = hand.tracking.observe
+    hand.tracking.observe = lambda names: looked.append(arm.at[2]) or track(names)
     record, _ = hand.call("close_grasp", dict(checkpoint=checkpoint, note="fingers either side of the mug"))
     assert record["status"] == "done" and [m["stage"] for m in moves(arm)][-2:] == ["grasp_close", "grasp_test_lift"]
+    assert looked == [pytest.approx(0.14)]  # after the lift only: a hand down over the object hides it
     _, text = hand.call("close_grasp", dict(checkpoint=checkpoint, note="again"))
     assert "grasp checkpoint is missing, stale or consumed" in text
     record, _ = hand.call("grasp", dict(GRASP, stop_before_close=True))
