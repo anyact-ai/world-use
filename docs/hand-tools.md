@@ -1,7 +1,7 @@
 # Hand tools for an agent
 
-`world_use.hand_tools` gives an agent seven tools: `select_target`, `observe_targets`, `locate`, `grasp`,
-`place`, `release_placement` and `push`. Each call runs a measured sequence, such as a grasp from
+`world_use.hand_tools` gives an agent eight tools: `select_target`, `observe_targets`, `locate`, `grasp`,
+`close_grasp`, `place`, `release_placement` and `push`. Each call runs a measured sequence, such as a grasp from
 approach to test lift, and returns what was measured. The agent still decides what every region is, where the
 hand goes and when to release. These are the tools behind the [LIBERO-10 results](../examples/libero), where
 they cut model calls by more than half; LIBERO's arm and any robot the daemon runs use the same code.
@@ -44,8 +44,10 @@ time.
 - **Lift and carry evidence.** A region tracked in `fixed_camera` that stayed where it was while the hand rose
   or travelled vertically means the hand holds something else or nothing: the grasp returns a `surprise` and
   `place` issues no checkpoint.
-- **A release checkpoint.** `place` stops before opening and returns a one-use checkpoint, void after any
-  motion or reselection; `release_placement` opens and withdraws.
+- **Checkpoints before closing and opening.** `place` stops before opening and returns a one-use checkpoint,
+  void after any motion or reselection; `release_placement` opens and withdraws. A grasp with
+  `stop_before_close` stops the same way with the fingers open at its approach pose, so the policy can look
+  before committing; `close_grasp` closes, checks and lifts.
 - **Pushes.** `push` closes the fingers, goes to a start point through free space, follows a line to its end or
   to contact, and backs off along it.
 

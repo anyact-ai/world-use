@@ -1,5 +1,6 @@
 """The tool set's sequences, on a fake arm that moves exactly where it is told unless told it meets contact."""
 import dataclasses
+import json
 import time
 from types import SimpleNamespace
 
@@ -158,12 +159,55 @@ def test_an_arm_lost_during_a_call_ends_it_stopped_after_what_ran():
     (dict(tilt_deg=75, toward=dict(x=0.3, y=0.2)), "tilt_deg is between 0 and 60"),
     (dict(lift=dict(z=0.2)), "the test lift rises 3-5 cm"),
     (dict(expect_grip_mm=[20, 90]), "max <= 78"),
+    (dict(open_mm=60), "give no open_mm"),
 ])
 def test_grasp_arguments_are_refused_before_any_motion(arguments, message):
     arm = Arm()
     record, _ = tools(arm).call("grasp", dict(GRASP, **arguments))
     assert record["status"] == "refused" and message in record["message"]
     assert arm.commands == []
+
+
+class PartlyOpeningArm(Arm):
+    """An executor whose fingers can open partway."""
+
+    opens_partly = True
+
+
+def test_a_hand_that_opens_partly_takes_an_opening_wider_than_the_object():
+    arm = PartlyOpeningArm()
+    hand = tools(arm)
+    assert "open_mm" in next(s for s in hand.schemas() if s["name"] == "grasp")["parameters"]["properties"]
+    record, _ = hand.call("grasp", dict(GRASP, open_mm=50))
+    assert moves(arm)[0]["targets"]["opening_mm"] == 50 and record["status"] == "done"
+    record, _ = hand.call("grasp", dict(GRASP, open_mm=30))
+    assert record["status"] == "refused" and "wider than expect_grip_mm" in record["message"]
+
+
+def test_a_grasp_stopped_before_its_close_closes_only_on_its_checkpoint_while_nothing_moved():
+    arm = Arm()
+    hand = tools(arm)
+    record, text = hand.call("grasp", dict(GRASP, stop_before_close=True))
+    assert record["status"] == "stopped" and [m["stage"] for m in moves(arm)] == ["grasp_approach"]
+    assert arm.aperture == 80.0  # still open
+    checkpoint = next(a["data"]["checkpoint"] for a in json.loads(text)["assessments"])
+    _, text = hand.call("release_placement", dict(checkpoint=checkpoint, note="not a place"))
+    assert "release checkpoint is missing" in text  # nor does a grasp's checkpoint release anything
+    record, _ = hand.call("grasp", dict(GRASP, stop_before_close=True))
+    checkpoint = record["assessments"][-1]["outcome"]["data"]["checkpoint"]
+    looked = []  # where the hand was each time the tracker looked
+    track = hand.tracking.observe
+    hand.tracking.observe = lambda names: looked.append(arm.at[2]) or track(names)
+    record, _ = hand.call("close_grasp", dict(checkpoint=checkpoint, note="fingers either side of the mug"))
+    assert record["status"] == "done" and [m["stage"] for m in moves(arm)][-2:] == ["grasp_close", "grasp_test_lift"]
+    assert looked == [pytest.approx(0.14)]  # after the lift only: a hand down over the object hides it
+    _, text = hand.call("close_grasp", dict(checkpoint=checkpoint, note="again"))
+    assert "grasp checkpoint is missing, stale or consumed" in text
+    record, _ = hand.call("grasp", dict(GRASP, stop_before_close=True))
+    checkpoint = record["assessments"][-1]["outcome"]["data"]["checkpoint"]
+    arm.steps += 1  # the arm moved since
+    _, text = hand.call("close_grasp", dict(checkpoint=checkpoint, note="moved"))
+    assert "stale" in text and arm.aperture == 80.0
 
 
 @pytest.mark.parametrize("max_lean_deg,lean_deg", [(60, 30), (20, 20)])
@@ -363,9 +407,12 @@ def mug(spec):
                  handle=([-0.065, 0, 0.045], [0.006, 0.006, 0.025], 0.01),
                  handle_top=([-0.05, 0, 0.066], [0.015, 0.006, 0.004], 0.005),
                  handle_low=([-0.05, 0, 0.024], [0.015, 0.006, 0.004], 0.005))
+    # The handle resists turning in a pinch, as under rubber pads: torsional friction 3 cm. At MuJoCo's default, 0.5 cm,
+    # the mug turned 20 degrees in the fingers as it rose and turned again as the hand dragged it along the stand, and
+    # where it ended varied between macOS runs of the same code.
     for name, (centre, half, mass) in parts.items():
         body.add_geom(name=name, type=mj.mjtGeom.mjGEOM_BOX, pos=centre, size=half, mass=mass,
-                      friction=[1.0, 0.005, 0.0001], condim=4)
+                      friction=[1.0, 0.03 if name.startswith("handle") else 0.005, 0.0001], condim=4)
 
 
 def test_on_the_twin_a_leaning_hand_carries_a_mug_by_its_handle_in_under_a_roof(tmp_path, rehearser):
@@ -397,10 +444,13 @@ def test_on_the_twin_a_leaning_hand_carries_a_mug_by_its_handle_in_under_a_roof(
                                                expect_grip_mm=[6, 20]))
         assert record["status"] == "done" and record["leaning"] == dict(tilt_deg=45, toward=[1.0, 0.0]), text
         at, tilt = mug_pose()
-        # Off its stand and held, but turned in the fingers, whose opening still reads the handle's thickness.
-        assert at[2] - STAND > 0.01 and 10 < tilt < 45 and 8 <= client.status()["gripper"]["aperture_mm"] <= 16
+        # Off its stand and held near upright by the handle, whose thickness the fingers' opening reads.
+        assert at[2] - STAND > 0.02 and tilt < 10 and 8 <= client.status()["gripper"]["aperture_mm"] <= 16
 
         here = np.array(client.status()["tool"]["base"])
+        # The hand comes down at via to pass under the roof's keep-out: 2.5 cm or less and the carry would enter it.
+        # The mug then brushes the stand on its way in; 5 cm or more presses it down, and the carry stops on contact
+        # with the mug still on the stand. The drop is near the middle of the 3-4.25 cm that passed.
         release = np.array([0.42 - 0.065, 0.0, here[2] - 0.035])          # the mug's centre over the box's middle
         record, text = hand.call("place", dict(object_target="mug", move=xyz(release), via=xyz(release - [0.12, 0, 0]),
                                                withdraw=xyz(release - [0.10, 0, 0]), expect_grip_mm=[6, 20]))
