@@ -2,11 +2,10 @@
 
 The harness runs it as a `command` backend, once per attempt, in the task workspace, with the attempt prompt on stdin.
 It is the `react` backend's loop (instructions, one tool call per turn, images after each result, context elision,
-retries) with four differences from that baseline: the extra tools and their help, two sentences of that help on how
-the attempt is judged and when it ends, near-unit quaternions scaled to unit length (see UNIT_SLACK), and old images
-dropped in batches rather than one per move (see IMAGE_BATCH). Robot API tools otherwise pass through as they do
-there; grasp, close_grasp, place, release_placement and push run world_use.hand_tools sequences, tilt a stepped turn
-of the held object and move_sequence several move_robot calls in one turn, through `RoboWildArm`, whose moves count
+retries) with three differences from that baseline: the extra tools and their help, near-unit quaternions scaled to
+unit length (see UNIT_SLACK), and old images dropped in batches rather than one per move (see IMAGE_BATCH). Robot API
+tools otherwise pass through as they do there; grasp, close_grasp, place, release_placement and push run
+world_use.hand_tools sequences, and tilt a stepped turn of the held object, through `RoboWildArm`, whose moves count
 toward the same call budget.
 
     {"backend": "command", "command": ["<venv>/bin/python", "<world-use>/examples/robowild/agent.py",
@@ -28,13 +27,13 @@ from pathlib import Path
 
 from robot_sdk import RobotError
 from robowild_harness.agents.common import AgentConfig
-from robowild_harness.agents.react import ReactRunner, _call_id, _compact, _reject_constant, _truncate
+from robowild_harness.agents.react import ReactRunner, _call_id, _compact, _reject_constant
 from robowild_harness.runtime.batch import _REACT_DEVELOPER_INSTRUCTIONS, _attempt_prompt
 
 from world_use.hand_tools import HandTools
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from arm import HAND, MAX_MOVES, MAX_TILT_DEG, NoTracking, RoboWildArm, unit_quaternions
+from arm import HAND, MAX_TILT_DEG, NoTracking, RoboWildArm, unit_quaternions
 
 TOOLS = ("grasp", "close_grasp", "place", "release_placement", "push")
 POINT = dict(type="object", description="{x, y, z} in metres, in robot_base.")
@@ -59,14 +58,6 @@ TILT = dict(
                                             description="The measured opening that means the object is still held."),
                     )),
 )
-SEQUENCE = (
-    "Run several move_robot calls in order in one turn: moves holds their arguments, each {\"goals\": [...]} as "
-    "move_robot takes it. It stops after the first move that is refused or not moved, ends in safety_stop, or leaves "
-    "a goal untracked. Each move counts toward the call budget as a move_robot call does. Returns each move's "
-    "moved, execution_status and tracked, and as last the full result of the last move run, with its fresh images. "
-    "Use it for a path whose every move you can choose from what you see now, such as raise the torso, drive, then "
-    "bring the hand above the object; call move_robot alone when the next move depends on what this one shows."
-)
 # The loop keeps the images of its newest IMAGE_HISTORY image-bearing messages and drops older ones' images as new
 # ones come. Azure OpenAI's prompt cache ends at the first message whose images were dropped, so dropping one per
 # move made every request after a move pay for its whole context: in 01-01, 25 of 35 requests had only the
@@ -85,11 +76,7 @@ EMBODIMENT_DOCS = (
     "at or a few millimetres below the surface it rests on: contact stops the fingertips there. A move counts as "
     "arrived within 2 cm of its goal, and approach_ended_short_m also reports an approach that ended more than 3 mm "
     "above its pose, where fingers may close over a thin part. A large turn of the wrist in one move_robot call can "
-    "shake a held object loose: a keychain pinched by its tag fell out of a 100-degree turn. tilt turns what the "
-    "hand holds in steps, about a point of it. The attempt is judged on the scene as it is when it ends: leave what "
-    "the instruction asks for in place rather than undoing it. A refused move leaves the robot where it was, a stop "
-    "on contact where it stopped, and a dropped object can be grasped again where it lies: while calls remain, "
-    "recover from these and go on with the task rather than calling done."
+    "shake a held object loose: tilt turns what the hand holds in steps, about a point of it."
 )
 
 
@@ -131,15 +118,8 @@ class WorldUseReact(ReactRunner):
                     parameters["properties"].pop(name)
                 added.append(dict(type="function", name=schema["name"], description=schema["description"],
                                   strict=False, parameters=parameters))
-        move = next(tool for tool in self._tools if tool["name"] == "move_robot")
-        goals = dict(type="object", required=["goals"], additionalProperties=False,
-                     properties=dict(goals=move["parameters"]["properties"]["goals"]))
-        sequence = dict(type="function", name="move_sequence", strict=False, description=SEQUENCE,
-                        parameters=dict(type="object", required=["moves"], additionalProperties=False,
-                                        properties=dict(moves=dict(type="array", minItems=1, maxItems=MAX_MOVES,
-                                                                   items=goals))))
-        self._tools.extend([*added, TILT, sequence])
-        self._hand_names = frozenset(TOOLS) | {"tilt", "move_sequence"}
+        self._tools.extend([*added, TILT])
+        self._hand_names = frozenset(TOOLS) | {"tilt"}
         self._instructions += f"\n\n# Hand tools\n\n{self._hand.docs()} {EMBODIMENT_DOCS}"
         self._usage = None
 
@@ -164,13 +144,9 @@ class WorldUseReact(ReactRunner):
         self._conversation.write(self._record(
             turn_id, f"{iteration}:call:{_call_id(call)}", f"{name}({_compact(arguments)})"))
         before = self._hand.arm.key()
-        if name in ("tilt", "move_sequence"):
-            record, text = (self._tilt if name == "tilt" else self._sequence)(arguments)
-        else:
-            record, text = self._hand.call(name, arguments)
-        text = _truncate(self._hand.arm.with_budget(text))
-        kept = {k: v for k, v in record.items() if k != "last"}  # a move's full result is in the harness's records
-        self._hand.arm.record("world-use.jsonl", dict(tool=name, arguments=arguments, result=kept))
+        record, text = self._tilt(arguments) if name == "tilt" else self._hand.call(name, arguments)
+        text = self._hand.arm.with_budget(text)
+        self._hand.arm.record("world-use.jsonl", dict(tool=name, arguments=arguments, result=record))
         self._conversation.write(self._record(
             turn_id, f"{iteration}:result:{_call_id(call)}", f"{name} returned {text}"))
         moved = self._hand.arm.key() != before
@@ -203,19 +179,6 @@ class WorldUseReact(ReactRunner):
             record = dict(status="stopped", message=f"the arm's controller failed during this call: {error}",
                           hint="what ran before the failure may have moved the arm: observe before going on")
         return record, json.dumps(record, separators=(",", ":"))
-
-    def _sequence(self, args):
-        try:
-            if args.keys() != {"moves"}:
-                raise ValueError("move_sequence takes moves only")
-            self._hand.pending = None  # any motion voids a checkpoint
-            record = self._hand.arm.sequence(args["moves"])
-        except ValueError as error:
-            record = dict(status="refused", message=str(error))
-        except RobotError as error:
-            record = dict(status="stopped", message=f"the arm's controller failed during this call: {error}",
-                          hint="what ran before the failure may have moved the arm: observe before going on")
-        return record, json.dumps(record, ensure_ascii=True, default=str)
 
     # The harness reads a command agent's model usage from ROBOT_TRACE_TELEMETRY_PATH, as it records the
     # react backend's itself, so both arms' reports count tokens the same way.

@@ -5,9 +5,10 @@
 them: the 34 cross-embodiment tasks, on the mobile Franka, against the same model on its own.
 
 **Status:** on the 10 development tasks, GPT-6.2 Astra at high reasoning solved 2 on its own. With world-use, the
-two full runs closest to the tools as they are solved 4 (at d3eed9f) and 1 (at e57e81e, this code); over all 59
-world-use attempts at high reasoning, 13 were solved, 22%. All results are from RoboWild's simulator, one attempt per
-task. The held-out tasks have not been run.
+two full runs closest to this code solved 4 (at d3eed9f) and 1 (at e57e81e); over all 59 world-use attempts at
+high reasoning, 13 were solved, 22%. This code is d3eed9f's with near-unit quaternions scaled, and without the
+changes the runs showed no effect of (below); no full run used it exactly. All results are from RoboWild's simulator,
+one attempt per task. The held-out tasks have not been run.
 
 | reasoning | arm | world-use commit | solved | model requests | Robot API calls | est. USD |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -22,10 +23,10 @@ task. The held-out tasks have not been run.
 | high | world-use | e57e81e | 1 of 10 (37-01) | 854 | 1,108 | 108.35 |
 
 - One attempt per task is too few to tell these changes apart. The runs at d3eed9f and e57e81e differ by
-  `move_sequence`, the quaternion scaling, the recovery sentence (see the comparison below) and the pose a resumed
-  `close_grasp` reports starting from. At e57e81e the four tasks solved at d3eed9f failed as single attempts do: the
-  keychain ended on the table below its hook, a rim grip on the bottle slipped, 44% of the reagent reached the
-  beaker, and the carrot lay in the basin outside the faucet's stream. By task, the 59 attempts solved 01-01 4 times
+  `move_sequence` and a sentence on recovering from setbacks, both since removed, the quaternion scaling and the
+  pose a resumed `close_grasp` reports starting from. At e57e81e the four tasks solved at d3eed9f failed as single
+  attempts do: the keychain ended on the table below its hook, a rim grip on the bottle slipped, 44% of the reagent
+  reached the beaker, and the carrot lay in the basin outside the faucet's stream. By task, the 59 attempts solved 01-01 4 times
   in 7; 09-06, 22-10, 29-06 and 37-01 2 in 7; 02-06 once in 5; and 04-02, 06-06, 23-03 and 36-01 never. At 22% per
   attempt a run of 10 averages about 2.
 - Cost: since the prompt-cache fix a full run costs $99-108 for 781-854 model requests, about $0.13 each, against
@@ -43,10 +44,12 @@ task. The held-out tasks have not been run.
     `move_robot` calls were quaternions off unit length.
   - `move_sequence` ran 78 sequences at e57e81e, and model requests took 41 s on average there against 38 s at
     d3eed9f. It did not keep the long tasks inside the 5,400 s timeout: 06-06 and 23-03 reached it at 118 and 137
-    calls.
+    calls. It was removed.
   - The sentences on how an attempt is judged and that a setback does not end it showed no effect on when the model
     stops: at e57e81e it called `done` with 73 calls left in 22-10, the cake dome having fallen out of reach, and
-    with 49 left in 29-06, taking the carrot for rinsed.
+    with 49 left in 29-06, taking the carrot for rinsed. They were removed: they told the world-use arm how the
+    benchmark scores an attempt, which the model alone is not told, so they confounded the comparison. So was the
+    help's example of a keychain shaken loose by a turn of the wrist, from 01-01; the general caution stays.
   - The grasp schema's rules (a 4 mm floor under an expected opening, the 3-5 cm test lift, `tilt_deg` only with
     `yaw_deg`, a rounded object reading under its visible width) left no grasp refused in the check run on the two
     tasks they bear on most, 06-06 and 22-10.
@@ -72,12 +75,9 @@ one round, and each task's own call budget: 100 Robot API calls for a short task
 
 - **alone** is the harness's `react` backend, unchanged.
 - **world-use** is [agent.py](agent.py), run as a `command` backend: the same `react` loop, with `grasp`,
-  `close_grasp`, `place`, `release_placement`, `push`, `tilt` and `move_sequence` added and their help appended to
-  its instructions. They run through [arm.py](arm.py), whose moves are `move_robot` calls on the same budget. Other
+  `close_grasp`, `place`, `release_placement`, `push` and `tilt` added and their help appended to its
+  instructions. They run through [arm.py](arm.py), whose moves are `move_robot` calls on the same budget. Two other
   differences came from the development runs:
-  - The help ends with two sentences: the attempt is judged on the scene as it ends, so the model should leave
-    what the task asks for in place; and a refused move, a stop on contact or a dropped object does not end it, so
-    while calls remain the model should recover rather than call `done`.
   - A `move_robot` quaternion within 3% of unit length is scaled to it. `move_robot` refuses one more than 0.1% off,
     and the refusal counts toward the budget: the model's, written to three or four decimals, were 21 of the 26
     refused calls in the development runs, in both arms.
@@ -99,12 +99,6 @@ tasks are not inspected for tuning.
   follows a line with the fingers closed.
 - `tilt` turns the held object about a point of it, such as a container's mouth, at most 30 degrees per call with
   the grip checked after each, optionally after carrying that point over a target, and reports where it ended.
-- `move_sequence` runs up to 8 `move_robot` calls in one turn, each with its own goals, and stops after the first
-  that is refused, ends in a safety stop or leaves a goal untracked. The harness's loop takes one tool call per turn,
-  and at high reasoning a turn took 25-81 s on average, so a long task's 200 calls, one per turn, would fill its
-  5,400 s timeout. On real robots, [Robocurve](https://robocurve.org/blog/codex-vs-inspect-robots/) traced the same
-  model's better scores in one harness to the tools it wrote there, and suspects that sending several moves per turn
-  is what does the work.
 - An approach that stops short along its line, as on a counter or the object, reports how far short. The harness
   reports no forces: this is judged from where the hand ended.
 - Positions come from the policy, in robot_base, with `get_camera_point_3d`. There is no region tracking, no

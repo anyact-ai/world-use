@@ -254,28 +254,6 @@ def test_a_release_checkpoint_is_void_once_the_arm_has_moved():
     assert hand.call("release_placement", release)[0]["status"] == "refused"
 
 
-def arm_moves(*positions):
-    return [dict(goals=[dict(target="left", position=list(p))]) for p in positions]
-
-
-def test_a_move_sequence_runs_each_move_as_its_own_call_and_returns_the_last_result():
-    robot = FakeFranka()
-    arm = RoboWildArm(robot, robot.scene(), failures=(RobotError,))
-    record = arm.sequence(arm_moves([0.5, 0.0, 0.3], [0.6, 0.1, 0.3], [0.6, 0.1, 0.2]))
-    assert record["status"] == "done" and record["ran"] == record["of"] == 3 and len(robot.calls) == 3
-    assert record["last"]["_harness"]["robot_api_calls_used"] == 3
-    assert np.allclose(arm.measure()["tool"], [0.6, 0.1, 0.2])
-
-
-@pytest.mark.parametrize("robot,ran", [(FakeFranka(misses=[0, [0.05, 0, 0]]), 2),
-                                       (FakeFranka(refuse="out_of_reach"), 1),
-                                       (FakeFranka(error="call_budget_exceeded"), 1)])
-def test_a_move_sequence_stops_after_a_move_that_is_refused_fails_or_ends_off_its_goal(robot, ran):
-    record = RoboWildArm(robot, robot.scene(), failures=(RobotError,)).sequence(
-        arm_moves([0.5, 0.0, 0.3], [0.6, 0.1, 0.3], [0.6, 0.1, 0.2]))
-    assert record["status"] == "stopped" and record["ran"] == ran == len(robot.calls)
-
-
 def test_a_quaternion_rounded_off_unit_length_is_scaled_to_it_and_any_other_is_left_for_move_robot():
     rounded = [0.203, 0.676, -0.203, 0.676]  # 0.18% short of unit length: move_robot refused it
     goals = [dict(target="left", position=[0.8, -0.3, 1.1], quaternion_wxyz=rounded, gripper=0),
@@ -286,11 +264,3 @@ def test_a_quaternion_rounded_off_unit_length_is_scaled_to_it_and_any_other_is_l
     assert left.keys() == goals[0].keys() and base == goals[1] and goals[0]["quaternion_wxyz"] == rounded
     for wrong in ([0, 0.9, 0, 0], [1, 0, 0], ["1", 0, 0, 0], [float("nan"), 1, 0, 0]):
         assert unit_quaternions([dict(target="left", quaternion_wxyz=wrong)])[0]["quaternion_wxyz"] == wrong
-
-
-@pytest.mark.parametrize("moves", [[], arm_moves(*[[0.5, 0, 0.3]] * 9), [dict(goals=[], speed=1)], ["up"]])
-def test_a_move_sequence_takes_one_to_eight_move_robot_arguments(moves):
-    robot = FakeFranka()
-    with pytest.raises(ValueError):
-        RoboWildArm(robot, robot.scene(), failures=(RobotError,)).sequence(moves)
-    assert not robot.calls

@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+# move_sequence was a tool of the runs at e57e81e, whose rows report.py must still reproduce.
 TOOLS = ("move_robot", "get_camera_point_3d", "done", "grasp", "close_grasp", "place", "release_placement", "push",
          "tilt", "move_sequence")
 
