@@ -407,9 +407,12 @@ def mug(spec):
                  handle=([-0.065, 0, 0.045], [0.006, 0.006, 0.025], 0.01),
                  handle_top=([-0.05, 0, 0.066], [0.015, 0.006, 0.004], 0.005),
                  handle_low=([-0.05, 0, 0.024], [0.015, 0.006, 0.004], 0.005))
+    # The handle resists turning in a pinch, as under rubber pads: torsional friction 3 cm. At MuJoCo's default, 0.5 cm,
+    # the mug turned 20 degrees in the fingers as it rose and turned again as the hand dragged it along the stand, and
+    # where it ended varied between macOS runs of the same code.
     for name, (centre, half, mass) in parts.items():
         body.add_geom(name=name, type=mj.mjtGeom.mjGEOM_BOX, pos=centre, size=half, mass=mass,
-                      friction=[1.0, 0.005, 0.0001], condim=4)
+                      friction=[1.0, 0.03 if name.startswith("handle") else 0.005, 0.0001], condim=4)
 
 
 def test_on_the_twin_a_leaning_hand_carries_a_mug_by_its_handle_in_under_a_roof(tmp_path, rehearser):
@@ -441,14 +444,14 @@ def test_on_the_twin_a_leaning_hand_carries_a_mug_by_its_handle_in_under_a_roof(
                                                expect_grip_mm=[6, 20]))
         assert record["status"] == "done" and record["leaning"] == dict(tilt_deg=45, toward=[1.0, 0.0]), text
         at, tilt = mug_pose()
-        # Off its stand and held, but turned in the fingers, whose opening still reads the handle's thickness.
-        assert at[2] - STAND > 0.01 and 10 < tilt < 45 and 8 <= client.status()["gripper"]["aperture_mm"] <= 16
+        # Off its stand and held near upright by the handle, whose thickness the fingers' opening reads.
+        assert at[2] - STAND > 0.02 and tilt < 10 and 8 <= client.status()["gripper"]["aperture_mm"] <= 16
 
         here = np.array(client.status()["tool"]["base"])
-        # The tilted mug hangs against the stand. Coming down 3.75-5 cm at via, the hand slides it along onto the box's
-        # floor; 3.25 cm or less, or 5.5 cm or more, and it turns in the fingers and stays on the stand. 3.5 cm passed
-        # on Linux and failed on macOS: the drop is the middle of that range.
-        release = np.array([0.42 - 0.065, 0.0, here[2] - 0.0425])         # the mug's centre over the box's middle
+        # The hand comes down at via to pass under the roof's keep-out: 2.5 cm or less and the carry would enter it.
+        # The mug then brushes the stand on its way in; 5 cm or more presses it down, and the carry stops on contact
+        # with the mug still on the stand. The drop is near the middle of the 3-4.25 cm that passed.
+        release = np.array([0.42 - 0.065, 0.0, here[2] - 0.035])          # the mug's centre over the box's middle
         record, text = hand.call("place", dict(object_target="mug", move=xyz(release), via=xyz(release - [0.12, 0, 0]),
                                                withdraw=xyz(release - [0.10, 0, 0]), expect_grip_mm=[6, 20]))
         (decision,) = (a["outcome"] for a in record["assessments"])
